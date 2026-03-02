@@ -144,8 +144,7 @@ These applications demonstrate the package's capability to tackle cutting-edge p
 
 # AI usage disclosure
 
-Github Copilot were used to update the CUDA usage. No generative AI tools were used in the writing
-of this manuscript, or the preparation of supporting materials.
+GitHub Copilot was used to assist with updating CUDA-related code, improving tests and documentation, and polishing the manuscript for clarity and readability. The authors reviewed, edited, and validated all AI-assisted contributions and take full responsibility for the content of this publication.
 
 # Acknowledgements
 
