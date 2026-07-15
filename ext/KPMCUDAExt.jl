@@ -102,6 +102,7 @@ function KPM.chebyshevT_xn(x_grid::CuArray{T, 1} where {T <: KPM.dt_num}, n_grid
     Nx = length(x_grid)
     Nn = length(n_grid)
     T_xn = CUDA.zeros(KPM.dt_real, Nx, Nn)
+    (Nx == 0 || Nn == 0) && return T_xn
     blocks = (min(cld(Nx, 16), 1024), min(cld(Nn, 16), 1024))
     @cuda threads=(16, 16) blocks=blocks chebyshevT_xn_cuda!(x_grid, n_grid, T_xn, Nx, Nn)
     return T_xn
@@ -124,6 +125,7 @@ function KPM.chebyshev_lin_trans(x_grid::CuArray, n_grid::CuArray, mu_tilde::CuA
     Nx = length(x_grid)
     Nn = length(n_grid)
     y = CUDA.zeros(complex(eltype(x_grid)), Nx)
+    Nx == 0 && return y  # empty in-band grid: dos() permits this
     threads = 256
     blocks = min(cld(Nx, threads), 1024)
     @cuda threads=threads blocks=blocks chebyshev_lin_trans_cuda!(x_grid, n_grid, mu_tilde, Nx, Nn, y)
@@ -153,6 +155,9 @@ function _gamma_nm(n, m, ε)
            (ε + im * n * sqrt(1 - ε^2)) * exp(-im * n * acos(ε)) * Tm
 end
 
+# NOTE: ε is restricted to Float64, so d_dc_cond with dE_order >= 1 (which
+# feeds ForwardDiff duals through this function) is not supported on GPU;
+# compute derivative spectra on the CPU.
 function KPM.Γnmμnmαβ(μtilde::CuArray, ε::Float64, NC::Int64)
     temp_result = copy(μtilde)
     blocks = (min(cld(NC, 16), 1024), min(cld(NC, 16), 1024))

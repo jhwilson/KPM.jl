@@ -35,14 +35,26 @@ shifted to its midpoint: returns `(a, b, H_norm)` with
 Use this for spectra that are not particle-hole symmetric, and pass `b` on to
 `dos` so energies are mapped back correctly.
 
-`fixed_a != 0` skips the edge estimation and uses the given scale (no shift).
+`fixed_a != 0` skips the edge estimation and uses the given scale (no shift);
+it is incompatible with `center=true`.
 """
+eps_float(H) = eps(real(float(eltype(H))))
+
 function normalizeH(H; eps::Float64=0.1, fixed_a::Number=0.0, center::Bool=false)
-    ishermitian(H) || throw(ArgumentError("normalizeH: H must be Hermitian."))
+    # exact check first; fall back to a roundoff-level tolerance so
+    # floating-point construction noise does not reject a physical H
+    if !ishermitian(H)
+        dev = maximum(abs, H - H')
+        scale = maximum(abs, H)
+        if !(dev <= sqrt(eps_float(H)) * scale)
+            throw(ArgumentError("normalizeH: H must be Hermitian (max |H - H'| = $dev)."))
+        end
+    end
 
     if fixed_a != 0
+        center && throw(ArgumentError("normalizeH: center=true is incompatible with fixed_a — the center shift is derived from the spectral edges, which fixed_a skips."))
         a = fixed_a
-        return center ? (a, 0.0, H / a) : (a, H / a)
+        return a, H / a
     end
 
     if center

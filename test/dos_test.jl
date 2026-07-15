@@ -63,6 +63,56 @@ end
     @test vec(real.(sum(mu_all, dims=1) ./ NR)) ≈ mu_par atol = 1e-12
 end
 
+@testset "stochastic trace is unbiased (no mean-centering of probes)" begin
+    # H = 0.8 |u><u| with u the uniform state: mean-centered probe vectors
+    # are orthogonal to u and give exactly mu_1 = 0 instead of 0.8/D.
+    rng = Xoshiro(21)
+    D = 8
+    u = fill(1 / sqrt(D), D)
+    H = 0.8 * u * u'
+    NR = 512
+    psi_in = exp.(2im * pi * rand(rng, D, NR))
+    KPM.normalize_by_col(psi_in, NR)
+    mu = KPM.kpm_1d(H, 4, NR; psi_in=psi_in)
+    @test isapprox(mu[2], 0.8 / D; rtol=0.3)   # biased estimator gives ~0
+end
+
+@testset "kpm_1d moments scale as <psi|psi> for unnormalized input" begin
+    rng = Xoshiro(13)
+    NH = 32
+    NC = 16
+    A = randn(rng, ComplexF64, NH, NH)
+    H = sparse((A + A') / (2 * NH))
+    ψ = randn(rng, ComplexF64, NH)
+    ψ ./= norm(ψ)
+    mu1x = KPM.kpm_1d(H, NC, 1; psi_in=reshape(ψ, NH, 1))
+    mu2x = KPM.kpm_1d(H, NC, 1; psi_in=reshape(2ψ, NH, 1))
+    # mu_n = <psi|T_n|psi> scales by |c|^2; the old hardcoded mu_0 = 1 mixed
+    # normalized and unnormalized terms in the doubling identities
+    @test mu2x ≈ 4 .* mu1x rtol = 1e-10
+end
+
+@testset "dos energy derivative (dE_order=1)" begin
+    rng = Xoshiro(17)
+    NH = 256
+    NC = 64
+    A = randn(rng, ComplexF64, NH, NH)
+    H = sparse((A + A') / 2)
+    a, H_norm = KPM.normalizeH(H)
+    mu = KPM.kpm_1d(H_norm, NC, 8)
+
+    E_grid = collect(range(-0.4a, 0.4a; length=9))
+    _, drho = KPM.dos(mu, a; E_grid=E_grid, N_tilde=length(E_grid), dE_order=1)
+    @test all(isfinite, drho)
+
+    # compare against a centered finite difference of the dE_order=0 curve
+    h = 1e-4 * a
+    _, rp = KPM.dos(mu, a; E_grid=E_grid .+ h, N_tilde=length(E_grid))
+    _, rm = KPM.dos(mu, a; E_grid=E_grid .- h, N_tilde=length(E_grid))
+    fd = (rp .- rm) ./ (2h)
+    @test drho ≈ fd rtol = 1e-5
+end
+
 @testset "normalizeH: hermiticity check and center shift" begin
     rng = Xoshiro(3)
     A = sprandn(rng, ComplexF64, 100, 100, 0.05)
