@@ -71,6 +71,16 @@ Lorentzian broadening).
 The older `dc_cond0` / `dc_cond_single` return bare Chebyshev Fermi-surface
 sums, proportional to the longitudinal Kubo–Greenwood conductivity but not
 in physical units; prefer `kubo_bastin_cond` for quantitative work.
+`d_dc_cond` returns the Kubo–Bastin integrand dσ(E), related to the physical
+conductivity by σ = -(2e²/h)·(D/(A·a))·∫dE f(E) dσ(E).
+
+The optical (`optical_cond1/2`) and nonlinear (`cpge`) responses are quoted
+in the natural units stated in their docstrings; their absolute
+normalizations have **not** been validated against exact diagonalization.
+
+```@docs; canonical=false
+kubo_bastin_cond
+```
 
 ## Quick examples
 
@@ -312,6 +322,7 @@ Below is a concise list of the main public APIs provided by the package.
   - `ldos_mu`
 
 - Conductivity (DC / optical):
+  - `kubo_bastin_cond` (absolute units, e²/h; ED-validated)
   - `d_dc_cond`, `dc_cond0`, `dc_cond_single`
   - `optical_cond1`, `d_optical_cond1`
   - `optical_cond2`, `d_optical_cond2`
