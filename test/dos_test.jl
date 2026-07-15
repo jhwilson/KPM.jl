@@ -169,21 +169,25 @@ end
 
 @testset "kpm_1d!: workspace reuse allocates no large buffers" begin
     rng = Xoshiro(11)
-    NH = 1024
     NC = 64
     NR = 4
-    H = spdiagm(1 => fill(-0.4 + 0im, NH - 1), -1 => fill(-0.4 + 0im, NH - 1))
 
-    psi_in = exp.(2im * pi * rand(rng, NH, NR))
-    KPM.normalize_by_col(psi_in, NR)
+    measure_allocs = function (NH)
+        H = spdiagm(1 => fill(-0.4 + 0im, NH - 1), -1 => fill(-0.4 + 0im, NH - 1))
+        psi_in = exp.(2im * pi * rand(rng, NH, NR))
+        KPM.normalize_by_col(psi_in, NR)
+        mu_all = zeros(ComplexF64, NR, NC)
+        α_all = zeros(ComplexF64, NH, NR, 2)
+        KPM.kpm_1d!(H, NC, NR, NH, mu_all, psi_in; α_all=α_all)  # warm up
+        @allocated KPM.kpm_1d!(H, NC, NR, NH, mu_all, psi_in; α_all=α_all)
+    end
 
-    mu_all = zeros(ComplexF64, NR, NC)
-    α_all = zeros(ComplexF64, NH, NR, 2)
+    NH_small, NH_big = 1024, 4096
+    allocs_small = measure_allocs(NH_small)
+    allocs_big = measure_allocs(NH_big)
 
-    KPM.kpm_1d!(H, NC, NR, NH, mu_all, psi_in; α_all=α_all)  # warm up
-    allocs = @allocated KPM.kpm_1d!(H, NC, NR, NH, mu_all, psi_in; α_all=α_all)
-
-    # per-call overhead (views, thread tasks) must stay far below one
-    # workspace-sized buffer: no O(NH·NR) allocations inside the loop
-    @test allocs < NH * NR * 16
+    # per-call overhead (views, broadcast temporaries) is O(NC), independent
+    # of the workspace size: a single leaked NH_big×NR buffer would add
+    # ≥ (NH_big - NH_small)·NR·16 bytes going from NH_small to NH_big
+    @test allocs_big - allocs_small < (NH_big - NH_small) * NR * 16 ÷ 2
 end
