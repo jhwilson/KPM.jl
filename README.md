@@ -38,15 +38,19 @@ E, rho = KPM.dos(mu, a)                  # pass b=b for a centered rescaling
 where `NC` is the expansion order and `NR` is the number of random vectors
 for the stochastic trace.
 
-KPM for DC conductivity (linear response) (RevModPhys.78.275):
+KPM for DC conductivity (linear response) (RevModPhys.78.275; Garcia et al.,
+PRL 114, 116602):
 ```julia
 μ2Dxy = KPM.kpm_2d(H_norm, Jx, Jy, NC, NR, NH)
-dσxyE = KPM.d_dc_cond(μ2Dxy, a, Evals)
+σxy = KPM.kubo_bastin_cond(μ2Dxy, a, Ef; b=b, NH=NH, area=A)   # in e²/h
+dσxyE = KPM.d_dc_cond(μ2Dxy, a, Evals)                          # integrand only
 ```
-where `Jx, Jy` are current operators and `NH` is the dimension of `H_norm`.
-`KPM.d_dc_cond` evaluates the differential conductivity at the energies
-`Evals`; integrating it against the Fermi distribution gives the DC
-conductivity at finite temperature.
+where `Jx, Jy` are bond-current operators `(J_α)_ij = H_ij (r_i - r_j)_α`
+and `NH` is the dimension of `H_norm`. `kubo_bastin_cond` returns the
+Kubo–Bastin conductivity at Fermi energy `Ef` in units of e²/h (`A` is the
+sample area); its normalization is validated against exact diagonalization
+(quantized Hall plateaus on the Haldane model — see
+`test/kubo_bastin_test.jl`).
 
 KPM for frequency-dependent nonlinear response (arXiv:1810.03732):
 ```julia

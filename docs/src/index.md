@@ -54,6 +54,24 @@ matrix-vector recurrence steps), so `NC` must be even. The reconstruction is
 with `h_0 = 1`, `h_n = 2` for `n ≥ 1`, and `g_n` a damping kernel
 (Jackson by default).
 
+### Conductivity units
+
+`KPM.kubo_bastin_cond(mu2D, a, Ef; b, NH, area)` returns the Kubo–Bastin DC
+conductivity **in units of e²/h**, where `mu2D = kpm_2d(H_norm, Jα, Jβ, NC,
+NR, NH)` and the current operators follow the bond convention
+`(J_α)_ij = H_ij (r_i - r_j)_α` (i.e. `J_α = iħ v_α`, as in
+`examples/GrapheneModel.jl`). `α` is the response direction, `β` the field
+direction, and `σ_xy = +1 e²/h` corresponds to Chern number `C = +1`. The
+absolute normalization — including the `1/a²` rescaling, the `D/A`
+trace-to-density conversion, and the sign — is validated against exact
+diagonalization on the Haldane model in `test/kubo_bastin_test.jl`
+(quantized Hall plateau to ~1%, longitudinal channel to ~5% with matched
+Lorentzian broadening).
+
+The older `dc_cond0` / `dc_cond_single` return bare Chebyshev Fermi-surface
+sums, proportional to the longitudinal Kubo–Greenwood conductivity but not
+in physical units; prefer `kubo_bastin_cond` for quantitative work.
+
 ## Quick examples
 
 ### 1) Density of States (DOS) — concise example
