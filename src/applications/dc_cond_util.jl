@@ -12,12 +12,21 @@ Complex-valued for ε in (-1, 1).
 """
 Contract the (complex) Γnm(ε) matrix with the kernel-improved moments:
 Σ_{nm} Γnm(ε) μ̃nm. `μtilde` must already have the kernel and hn factors applied.
+
+Γnm factorizes into rank-one pieces in n and m, so the contraction reduces to
+two matrix-vector products — no NC×NC Γ matrix is materialized per energy.
 """
 function Γnmμnmαβ(μtilde::Array, ε, NC)
-    Γnm_matrix = Γnm.(0:NC-1, (0:NC-1)', ε)
-    @assert size(Γnm_matrix) == size(μtilde)
-    result = sum(Γnm_matrix .* μtilde)
-    return result
+    @assert size(μtilde) == (NC, NC)
+    θ = acos(ε)
+    s = sqrt(1 - ε^2)
+    ns = 0:(NC - 1)
+    c = @. cos(ns * θ)                      # T_n(ε)
+    e = @. cis(ns * θ)                      # e^{inθ}
+    w_m = @. (ε - im * ns * s) * e
+    w_n = @. (ε + im * ns * s) * conj(e)
+    # Σ_{nm} [c_n w_m + w_n c_m] μ̃_{nm}   (plain sums: transpose, no conjugation)
+    return transpose(c) * (μtilde * w_m) + transpose(w_n) * (μtilde * c)
 end
 
 """

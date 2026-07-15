@@ -13,6 +13,10 @@ end
     include("dos_test.jl")
 end
 
+@testset "applications/conductivity.jl" begin
+    include("cond_test.jl")
+end
+
 @testset "KPM.jl" begin
     include("integration_test.jl")
 end
