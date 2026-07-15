@@ -27,10 +27,17 @@ mu2D_xy = KPM.kpm_2d(H_norm, Jx, Jy, NC, D, D; psi_in=psi)
 mu2D_xx = KPM.kpm_2d(H_norm, Jx, Jx, NC, D, D; psi_in=psi)
 
 @testset "quantum Hall: σ_xy quantized and matches ED (units pinned)" begin
-    # exact ED reference: quantized Chern number up to finite-size corrections
-    σxy_ed = ed_hall_conductivity_T0(H, Jx, Jy, area; Ef=0.0)
-    C = round(σxy_ed)
+    # independent sign anchor: Fukui–Hatsugai–Suzuki Berry flux of the same
+    # model's Bloch Hamiltonian — wavefunction overlaps only, no velocity
+    # operators, so a simultaneous sign error in the ED and KPM Kubo formulas
+    # cannot fool it. TKNN: σ_xy = +C e²/h.
+    C_fhs = chern_number_fhs(haldane_bloch(; t=1.0, t2=t2, ϕ=π/2, m=0.0); Nk=30)
+    C = round(C_fhs)
     @test abs(C) == 1
+    @test C_fhs ≈ C atol = 1e-10
+
+    # exact ED reference: quantized to the FHS Chern number, including sign
+    σxy_ed = ed_hall_conductivity_T0(H, Jx, Jy, area; Ef=0.0)
     @test abs(σxy_ed - C) < 0.02
 
     # the two independent ED routines agree in the gap
@@ -45,6 +52,21 @@ mu2D_xx = KPM.kpm_2d(H_norm, Jx, Jx, NC, D, D; psi_in=psi)
     # finite temperature deep in the gap changes nothing (T ≪ gap)
     σxy_T = KPM.kubo_bastin_cond(mu2D_xy, a, 0.0; b=b, NH=D, area=area, beta=50.0)
     @test σxy_T ≈ σxy_kpm atol = 0.01
+end
+
+@testset "shifted spectrum: center shift b flows through the Kubo–Bastin chain" begin
+    # same Chern insulator, spectrum rigidly shifted: b ≈ shift, and the
+    # Fermi function argument f(a x + b) plus x_F = (Ef - b)/a must all be
+    # exercised for the plateau to survive at Ef = shift
+    shift = 2.5
+    Hs = H + shift * sparse(I, D, D)
+    as, bs, Hs_norm = KPM.normalizeH(Hs; center=true)
+    @test abs(bs - shift) < 0.05
+
+    mu_s = KPM.kpm_2d(Hs_norm, Jx, Jy, NC, D, D; psi_in=psi)
+    σxy_s = KPM.kubo_bastin_cond(mu_s, as, shift; b=bs, NH=D, area=area)
+    σxy_ed = ed_hall_conductivity_T0(H, Jx, Jy, area; Ef=0.0)
+    @test σxy_s ≈ σxy_ed atol = 0.03
 end
 
 @testset "trivial phase: KPM tracks the exact (non-quantized) ED value" begin

@@ -10,7 +10,8 @@ module EDReference
 using LinearAlgebra
 using SparseArrays
 
-export haldane_model, ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0
+export haldane_model, haldane_bloch, chern_number_fhs,
+       ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0
 
 """
     haldane_model(Lx, Ly; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
@@ -82,6 +83,64 @@ function _cell_offset(d, a1, a2)
 end
 
 """
+    haldane_bloch(; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
+
+Bloch Hamiltonian h(k) of the same Haldane model as `haldane_model`
+(periodic gauge, k in reciprocal coordinates): returns a function
+`(k1, k2) -> 2×2 Hermitian matrix` with k = k1·b1 + k2·b2, k1, k2 ∈ [0, 1).
+"""
+function haldane_bloch(; t::Real=1.0, t2::Real=0.2, ϕ::Real=π/2, m::Real=0.0)
+    # cell offsets of the hops, matching haldane_model exactly:
+    # NN B <- A from cells (0,0), (1,0), (0,1); NNN along a1, a2-a1, -a2
+    nnn = ((1, 0), (-1, 1), (0, -1))
+    function hk(k1, k2)
+        phase(off) = cis(2π * (k1 * off[1] + k2 * off[2]))
+        hBA = -t * (1 + phase((1, 0)) + phase((0, 1)))
+        hAA = m + 0im
+        hBB = -m + 0im
+        # real-space hop <A_{R+v}|H|A_R> = t2 e^{iϕ} contributes
+        # e^{iϕ} e^{-ik·v} + h.c. => 2 t2 cos(k·v - ϕ)
+        for off in nnn
+            hAA += t2 * cis(ϕ) * conj(phase(off)) + t2 * cis(-ϕ) * phase(off)
+            hBB += t2 * cis(-ϕ) * conj(phase(off)) + t2 * cis(ϕ) * phase(off)
+        end
+        return [hAA conj(hBA); hBA hBB]
+    end
+    return hk
+end
+
+"""
+    chern_number_fhs(hk; Nk=24, band=1)
+
+Chern number of band `band` of a 2×2 Bloch Hamiltonian `hk(k1, k2)` (reciprocal
+coordinates) via the Fukui–Hatsugai–Suzuki lattice-gauge method [JPSJ 74, 1674
+(2005)]. Built purely from wavefunction overlaps — no velocity operators or
+Kubo formula — so it independently anchors the absolute sign convention
+σ_xy = C e²/h of the ED and KPM Hall calculations.
+"""
+function chern_number_fhs(hk; Nk::Int=24, band::Int=1)
+    u = Matrix{Vector{ComplexF64}}(undef, Nk, Nk)
+    for i in 1:Nk, j in 1:Nk
+        F = eigen(Hermitian(hk((i - 1) / Nk, (j - 1) / Nk)))
+        u[i, j] = F.vectors[:, band]
+    end
+    wrap(i) = mod(i - 1, Nk) + 1
+    total = 0.0
+    for i in 1:Nk, j in 1:Nk
+        u00 = u[i, j]
+        u10 = u[wrap(i + 1), j]
+        u11 = u[wrap(i + 1), wrap(j + 1)]
+        u01 = u[i, wrap(j + 1)]
+        total += angle(dot(u00, u10) * dot(u10, u11) * dot(u11, u01) * dot(u01, u00))
+    end
+    # ⟨u_k|u_{k+δ}⟩ ≈ e^{-i A·δ} for the standard Berry connection
+    # A = i⟨u|∂u⟩, so the counterclockwise plaquette angle accumulates
+    # -Ω dk² with Ω = i(⟨∂₁u|∂₂u⟩ - ⟨∂₂u|∂₁u⟩) — the curvature for which
+    # TKNN reads σ_xy = +C e²/h. Hence the sign flip.
+    return -total / (2π)
+end
+
+"""
     ed_kubo_bastin(H, Jα, Jβ, area; Ef, eta, beta=Inf)
 
 σ_αβ(Ef) in units of e²/h, by direct eigenbasis evaluation of the
@@ -127,9 +186,11 @@ function ed_kubo_bastin_broadened(H, Jα, Jβ, area; Ef::Real, eta::Real,
     W = Va .* transpose(Vb)            # W_{mn} = vα_{mn} vβ_{nm}
     f(e) = isinf(beta) ? (e <= Ef ? 1.0 : 0.0) : 1 / (exp(beta * (e - Ef)) + 1)
 
-    # integration window: whole occupied region, padded by the broadening tails
+    # integration window: whole occupied region, padded by the broadening
+    # tails; the grid must resolve the Lorentzians (≥ ~20 points per eta)
     lo = minimum(ev) - 20 * eta
     hi = isinf(beta) ? Ef : maximum(ev) + 20 * eta
+    grid_N = max(grid_N, ceil(Int, 20 * (hi - lo) / eta))
     εs = range(lo, hi; length=grid_N)
     dε = step(εs)
 
