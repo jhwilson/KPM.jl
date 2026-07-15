@@ -8,14 +8,19 @@ include("dc_cond_long.jl")
 """
 $(METHODLIST)
 
-Calculate the integrand for conductivity of an energy grid spanning `E_range`
-with `N_tilde` total points.  If `E_range` is not set,  automatically set it to
-be sightly smaller than full size.  Otherwise an explicit array of `E_grid` can
-be passed in. Don't do both.
+Kubo–Bastin conductivity integrand at the energies `E` (physical units):
+dσ(E) = Re[Σ_nm Γnm(x) μ̃nm] / ((1-x²)² a²) with x = (E - b)/a. Pass `b` when
+the rescaling was centered. `dE_order ≥ 1` returns energy derivatives instead
+(via ForwardDiff).
 
-Either a) pass in a 2d array as moment and a normalization factor;
-or b) pass in a Hamiltonian that is rescaled with an optional keyword
-`rescale_factor` that default to 1, as well as two current operators Jα and Jβ
+Units: the physical conductivity is the Fermi-weighted integral of this
+quantity,
+
+    σ_αβ(Ef) = -(2 e²/h) · (D/(A a)) · ∫ dE f(E) dσ(E),
+
+with D the Hilbert-space dimension and A the sample area — this is what
+[`kubo_bastin_cond`](@ref) evaluates (with a Gauss–Chebyshev quadrature
+rather than a uniform E grid); prefer it for absolute values.
 
 - `H_rescale_factor` is the normalization of H. Needed when μ is passed.
 
