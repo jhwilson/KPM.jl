@@ -43,7 +43,7 @@ PRL 114, 116602):
 ```julia
 μ2Dxy = KPM.kpm_2d(H_norm, Jx, Jy, NC, NR, NH)
 σxy = KPM.kubo_bastin_cond(μ2Dxy, a, Ef; b=b, NH=NH, area=A)   # in e²/h
-dσxyE = KPM.d_dc_cond(μ2Dxy, a, Evals)                          # integrand only
+dσxyE = KPM.d_dc_cond(μ2Dxy, a, Evals; b=b)                     # integrand only
 ```
 where `Jx, Jy` are bond-current operators `(J_α)_ij = H_ij (r_i - r_j)_α`
 and `NH` is the dimension of `H_norm`. `kubo_bastin_cond` returns the
