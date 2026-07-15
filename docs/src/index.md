@@ -33,6 +33,27 @@ and provide your GitHub username/password if prompted.
 
 For more details see the project's README.
 
+## Conventions and rescaling
+
+All quantities are expanded in Chebyshev polynomials of the rescaled
+Hamiltonian `H_norm = (H - b I)/a`, whose spectrum must lie inside (-1, 1).
+`KPM.normalizeH(H)` returns `(a, H/a)` assuming a spectrum symmetric about
+zero; `KPM.normalizeH(H; center=true)` finds both spectral edges and returns
+`(a, b, H_norm)` — use this for spectra that are not particle-hole symmetric,
+and pass `b` on to `dos(mu, a; b=b)`.
+
+The DOS moments are `μ_n = Tr[T_n(H_norm)]/D`, estimated with `NR`
+unit-normalized random-phase vectors, so `μ_0 = 1` and the DOS integrates to
+one. `kpm_1d` uses the moment-doubling trick (`NC` moments from `NC/2`
+matrix-vector recurrence steps), so `NC` must be even. The reconstruction is
+
+```
+ρ(E) = Σ_n h_n g_n μ_n T_n(x) / (a π √(1-x²)),   x = (E - b)/a,
+```
+
+with `h_0 = 1`, `h_n = 2` for `n ≥ 1`, and `g_n` a damping kernel
+(Jackson by default).
+
 ## Quick examples
 
 ### 1) Density of States (DOS) — concise example
@@ -89,16 +110,15 @@ nE = 1000             # output energy grid points
 
 H = tb1dchain(N)
 # Rescale H -> (-1, 1)
-#Hsparse = sparse(H.*(1+0*1im)) # make the Hamiltonian sparse under complex number
-b, H_norm = KPM.normalizeH(H)
+a, H_norm = KPM.normalizeH(H)
 
 # Compute Chebyshev moments (DOS)
 mu = KPM.kpm_1d(H_norm, NC, NR)    # returns moments (array-like)
 
 # Reconstruct DOS on a grid and map energies back to physical scale
-E, rho1024 = KPM.dos(mu, b;kernel = KPM.JacksonKernel, N_tilde=nE)
-E, rho64 = KPM.dos(mu[1:64], b;kernel = KPM.JacksonKernel, N_tilde=nE)
-E, rho32 = KPM.dos(mu[1:32], b;kernel = KPM.JacksonKernel, N_tilde=nE)
+E, rho1024 = KPM.dos(mu, a; kernel = KPM.JacksonKernel, N_tilde=nE)
+E, rho64 = KPM.dos(mu[1:64], a; kernel = KPM.JacksonKernel, N_tilde=nE)
+E, rho32 = KPM.dos(mu[1:32], a; kernel = KPM.JacksonKernel, N_tilde=nE)
 
 # Analytical DOS 
 rho_exact = zeros(length(E))
