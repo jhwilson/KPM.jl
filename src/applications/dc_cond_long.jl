@@ -61,8 +61,8 @@ function dc_long(
         end
     end
 
-    H = Hermitian(maybe_to_device(H), :U)
-    Jα = Hermitian(maybe_to_device(Jα), :U)
+    H = Hermitian(maybe_to_device(H, dt_cplx), :U)
+    Jα = Hermitian(maybe_to_device(Jα, dt_cplx), :U)
 
 
     # generate all views

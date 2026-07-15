@@ -521,8 +521,8 @@ function kpm_1d_current!(
                  Jα_psi = maybe_on_device_zeros(dt_cplx, NH, NR),
                 )
     @assert size(mu_all) == (NR, NC)
-    H = maybe_to_device(H)
-    Jα = maybe_to_device(Jα)
+    H = maybe_to_device(H, dt_cplx)
+    Jα = maybe_to_device(Jα, dt_cplx)
 
     psi_in_size = size(psi_in)
     @assert (psi_in_size == (NH, NR)) "Invalid `psi_in` with size $(psi_in_size). Expecting $(NH), $(NR)"
@@ -668,9 +668,9 @@ function kpm_2d!(
     #    println("Jα and Jβ are identical. using m <-> n symmetry.")
     #end
 
-    H = maybe_to_device(H)
-    Jα = maybe_to_device(Jα)
-    Jβ = maybe_to_device(Jβ)
+    H = maybe_to_device(H, dt_cplx)
+    Jα = maybe_to_device(Jα, dt_cplx)
+    Jβ = maybe_to_device(Jβ, dt_cplx)
 
     # generate all views
     ψall_l_views = map(x -> view(ψall_l, :, :, x), 1:arr_size)
@@ -815,10 +815,10 @@ function kpm_3d!(
     ψ0r .= maybe_to_device(psi_in_r)
     ψ0l .= maybe_to_device(psi_in_l)
 
-    H = maybe_to_device(H)
-    Jα = maybe_to_device(Jα)
-    Jβ = maybe_to_device(Jβ)
-    Jγ = maybe_to_device(Jγ)
+    H = maybe_to_device(H, dt_cplx)
+    Jα = maybe_to_device(Jα, dt_cplx)
+    Jβ = maybe_to_device(Jβ, dt_cplx)
+    Jγ = maybe_to_device(Jγ, dt_cplx)
 
     # generate all views
     ψall_r_views = map(x -> view(ψall_r, :, :, x), 1:3)

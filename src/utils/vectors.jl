@@ -2,11 +2,16 @@ using Statistics, LinearAlgebra
 
 """
 Normalize (in place) a collection of vectors in an (NH, NR) array `psi_in`,
-where each column `psi_in[:, NRi]` is a separate vector. With `centering=true`
-the mean of each column is subtracted first, so that the random-phase vectors
-have zero average component on every site.
+where each column `psi_in[:, NRi]` is a separate vector.
+
+`centering=true` subtracts each column's mean first. Note this makes every
+vector exactly orthogonal to the uniform state, which biases the stochastic
+trace estimator by a rank-one projection (the uniform component of the
+spectrum is silently removed) — an O(1/D) effect in general, but exact and
+arbitrarily large for operators with weight on the uniform state. The
+default is therefore `centering=false`, which keeps E[ψψ†] ∝ I.
 """
-function normalize_by_col(psi_in, NR; centering=true)
+function normalize_by_col(psi_in, NR; centering=false)
     for NRi in 1:NR
         psi_in_NRi = @view psi_in[:, NRi]
         psi_in_NRi .-= (mean(psi_in_NRi) * centering)
