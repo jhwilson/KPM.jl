@@ -1,5 +1,6 @@
 using Logging
 using LinearAlgebra
+using SparseArrays
 ## Special algorithm for longitudinal DC conductivity
 
 
@@ -61,8 +62,12 @@ function dc_long(
         end
     end
 
-    H = Hermitian(maybe_to_device(H, dt_cplx), :U)
-    Jα = Hermitian(maybe_to_device(Jα, dt_cplx), :U)
+    # materialize the Hermitian operators on the host (keeps the documented
+    # upper-triangular-input semantics), then move plain matrices to the
+    # device: mul! through a Hermitian-wrapped CuSparseMatrixCSR multiplies
+    # by the stored triangle only and silently diverges (A100-verified)
+    H = maybe_to_device(sparse(Hermitian(H, :U)), dt_cplx)
+    Jα = maybe_to_device(sparse(Hermitian(Jα, :U)), dt_cplx)
 
 
     # generate all views
@@ -106,7 +111,8 @@ function dc_long(
     if avg_NR
         cond = on_host_zeros(dt_cplx, length(NC_all))
         for (NCi, NC_orig_i) in enumerate(NC_sort_i)
-            cond[NC_orig_i] = dot(ψr_views_1[NCi], Jα, ψr_views_2[NCi])
+            # mul-then-dot (the generic 3-arg dot scalar-indexes on the GPU)
+            cond[NC_orig_i] = dot(ψr_views_1[NCi], Jα * ψr_views_2[NCi])
         end
         cond ./= NR
     else
