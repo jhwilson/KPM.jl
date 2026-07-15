@@ -15,7 +15,7 @@ function cpge(Gamma, NC, ω; beta=Inf, E_f=0.0, kernel=JacksonKernel, δ=1e-5, �
     Gamma_tilde = mu3D_apply_kernel_and_h(Gamma, NC, kernel)
 
     # applying specified quad
-    nodes, weights = gausschebyshevt(NC * 8) #gausschebyshev(NC * 8)  #update function
+    nodes, weights = gausschebyshevt(NC * 8)
     quad(f) = (
                dot(weights, f.(nodes)),
                nothing # THIS SHOULD BE AN ESTIMATION OF ERROR
