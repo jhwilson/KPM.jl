@@ -9,6 +9,10 @@ end
     include("chebyshev_iteration_test.jl")
 end
 
+@testset "applications/dos.jl" begin
+    include("dos_test.jl")
+end
+
 @testset "KPM.jl" begin
     include("integration_test.jl")
 end
