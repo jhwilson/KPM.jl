@@ -110,15 +110,15 @@ Delta_exact = ComplexF64[-U_field[i] * sum(F.vectors[i, state] *
                                             conj(F.vectors[i + N, state]) * occupations[state]
                                             for state in eachindex(F.values))
                            for i in 1:N]
-n_exact = Float64[sum(abs2(F.vectors[i, state]) * occupations[state]
-                      for state in eachindex(F.values)) for i in 1:N]
+n_exact = Float64[2sum(abs2(F.vectors[i, state]) * occupations[state]
+                       for state in eachindex(F.values)) for i in 1:N]
 
 println("\nConverged-state KPM update versus dense exact update")
 println("  NC       max|Delta_KPM-Delta_ED|       max|n_KPM-n_ED|")
 update_errors = Dict{Int, NamedTuple}()
 for NC in (64, 256)
     rh = KPM.rescale(op; eps=0.2)
-    moments = KPM.bdg_local_moments(rh; NC=NC, g_rho=1.0)
+    moments = KPM.bdg_local_moments(rh; NC=NC)  # default g_rho=2: full site density
     n_kpm, Delta_kpm = KPM.bdg_update(moments; beta=beta, Np=2 * NC)
     errors = (Delta=maximum(abs.(Delta_kpm .- Delta_exact)),
               n=maximum(abs.(n_kpm .- n_exact)))
@@ -173,5 +173,6 @@ println("  deviations from ED:")
 println("\nConventions used")
 println("  reduced Nambu block [particle; hole], with hole index i+N")
 println("  Fermi level 0; Ds/pi = Re Pi_N - Re Pi_SC")
-println("  g_rho=1, g_J=1; volume=lattice-site count=area (unit lattice constant)")
+println("  g_rho=2 (n is the full spin-singlet site density, filling in [0,2]); g_J=1")
+println("  volume=lattice-site count=area (unit lattice constant)")
 println("  q is transverse to dir=1 and commensurate with the periodic torus")
