@@ -267,3 +267,69 @@ function dc_cond_single(m::ConductivityMoments, Ef::Real; kwargs...)
     haskey(kwargs, :b) && throw(ArgumentError("b is stored in the moments object; do not pass it separately"))
     return dc_cond_single(m.mu, m.a, Ef; b=m.b, kwargs...)
 end
+
+"""
+    LocalBdGMoments(mu_rho, mu_delta, a, b, sites, NH, g_rho, U)
+
+Local density and pairing moments for a reduced BdG Hamiltonian, together
+with the rescaling and field-update metadata used to compute them.
+"""
+struct LocalBdGMoments{MR<:AbstractMatrix{<:Real}, MC<:AbstractMatrix{<:Complex}} <: AbstractMoments
+    mu_rho::MR
+    mu_delta::MC
+    a::Float64
+    b::Float64
+    sites::Vector{Int}
+    NH::Int
+    g_rho::Float64
+    U::Vector{Float64}
+    function LocalBdGMoments(mu_rho::MR, mu_delta::MC, a, b, sites, NH, g_rho, U) where
+            {MR<:AbstractMatrix{<:Real}, MC<:AbstractMatrix{<:Complex}}
+        size(mu_rho) == size(mu_delta) ||
+            throw(ArgumentError("LocalBdGMoments: mu_rho and mu_delta must have the same size (got $(size(mu_rho)) and $(size(mu_delta)))"))
+        sites_vec = collect(Int, sites)
+        U_vec = collect(Float64, U)
+        ns = size(mu_rho, 2)
+        ns == length(sites_vec) == length(U_vec) ||
+            throw(ArgumentError("LocalBdGMoments: moment columns, sites, and U must have equal lengths (got $ns, $(length(sites_vec)), and $(length(U_vec)))"))
+        b == 0.0 || throw(ArgumentError("LocalBdGMoments: b must be 0.0 because reduced BdG is particle-hole symmetric (got $b)"))
+        NH > 0 || throw(ArgumentError("LocalBdGMoments: NH must be positive (got $NH)"))
+        af = Float64(a)
+        isfinite(af) && af > 0 || throw(ArgumentError("LocalBdGMoments: a must be finite and positive (got $a)"))
+        new{MR, MC}(mu_rho, mu_delta, af, Float64(b), sites_vec, Int(NH),
+                    Float64(g_rho), U_vec)
+    end
+end
+
+nc(m::LocalBdGMoments) = size(m.mu_rho, 1)
+
+Base.show(io::IO, m::LocalBdGMoments) = print(io, "LocalBdGMoments(NC=$(nc(m)), NS=$(length(m.sites)), NH=$(m.NH), a=$(m.a), b=$(m.b))")
+
+"""
+    bdg_local_moments(h; sites=nothing, NC=512, g_rho=1.0, batch_size=64)
+
+Compute typed local density and pairing moments for a rescaled reduced BdG
+Hamiltonian. By default, moments are computed at every physical site.
+"""
+function bdg_local_moments(h::RescaledHamiltonian{<:ScaledOperator{<:BdGOperator}};
+                           sites=nothing, NC::Integer=512, g_rho::Real=1.0,
+                           batch_size::Integer=64)
+    op = h.H.op
+    sites_vec = sites === nothing ? collect(1:op.N) : collect(Int, sites)
+    mu_rho, mu_delta = bdg_site_moments(h.H, op.N, sites_vec, Int(NC);
+                                         batch_size=batch_size)
+    return LocalBdGMoments(mu_rho, mu_delta, h.a, h.b, sites_vec, 2op.N,
+                           g_rho, op.U[sites_vec])
+end
+
+"""
+    bdg_update(m::LocalBdGMoments; beta, kernel=JacksonKernel, Np=2nc(m))
+
+Update local density and pairing fields using the rescaling, interaction, and
+density-degeneracy metadata stored in `m`.
+"""
+function bdg_update(m::LocalBdGMoments; beta::Real, kernel=JacksonKernel,
+                    Np::Integer=2 * nc(m))
+    return bdg_update(m.mu_rho, m.mu_delta, m.a; U=m.U, beta=beta,
+                      g_rho=m.g_rho, kernel=kernel, Np=Np)
+end
