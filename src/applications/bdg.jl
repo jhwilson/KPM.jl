@@ -123,3 +123,104 @@ end
 
 LinearAlgebra.mul!(Y::AbstractVecOrMat, B::BdGOperator, X::AbstractVecOrMat) =
     mul!(Y, B, X, true, false)
+
+"""
+    bdg_site_moments(Hs, N, sites, NC; batch_size=64, verbose=0)
+
+Compute the raw local BdG moments
+`mu_rho[m, c] = real(<i,p|T_{m-1}(Hs)|i,p>)` and
+`mu_delta[m, c] = conj(<i,h|T_{m-1}(Hs)|i,p>)` for `i = sites[c]`.
+Both moments are read from one recurrence seeded only with `|i,p>`; the
+particle and hole entries of each Chebyshev vector supply the two results.
+
+Sites are processed in batches, using a CPU-only workspace of
+`2N * batch_size * 2` complex numbers (or less when there are fewer sites).
+"""
+function bdg_site_moments(Hs, N::Integer, sites::AbstractVector{<:Integer}, NC::Integer;
+                          batch_size::Integer=64, verbose::Integer=0)
+    NC >= 2 || throw(ArgumentError("bdg_site_moments: NC must be at least 2 (got $NC)"))
+    batch_size > 0 || throw(ArgumentError("bdg_site_moments: batch_size must be positive (got $batch_size)"))
+    all(i -> 1 <= i <= N, sites) ||
+        throw(ArgumentError("bdg_site_moments: all sites must satisfy 1 <= site <= N=$N"))
+
+    ns = length(sites)
+    mu_rho = zeros(dt_real, NC, ns)
+    mu_delta = zeros(dt_cplx, NC, ns)
+    iszero(ns) && return mu_rho, mu_delta
+
+    batch_capacity = min(Int(batch_size), ns)
+    psi = zeros(dt_cplx, 2Int(N), batch_capacity, 2)
+    batch_starts = 1:batch_capacity:ns
+    verbose >= 1 && println("NC = $(NC), sites = $(ns), batch_size = $(batch_capacity)")
+
+    for first_site in batch_starts
+        last_site = min(first_site + batch_capacity - 1, ns)
+        B = last_site - first_site + 1
+        psi_active = view(psi, :, 1:B, :)
+        fill!(psi_active, zero(dt_cplx))
+        psi_views = map(i -> view(psi_active, :, :, i), 1:2)
+
+        for (c, cg) in enumerate(first_site:last_site)
+            psi_active[sites[cg], c, 1] = one(dt_cplx)
+        end
+
+        function extract_moment!(m, slot)
+            for (c, cg) in enumerate(first_site:last_site)
+                i = sites[cg]
+                mu_rho[m, cg] = real(slot[i, c])
+                mu_delta[m, cg] = conj(slot[i + N, c])
+            end
+            return nothing
+        end
+
+        extract_moment!(1, psi_views[1])
+        mul!(psi_views[2], Hs, psi_views[1])
+        extract_moment!(2, psi_views[2])
+
+        ip = 2
+        ipp = 1
+        for m in 3:NC
+            chebyshev_iter_single(Hs, psi_views[ipp], psi_views[ip])
+            extract_moment!(m, psi_views[ipp])
+            ip = 3 - ip
+            ipp = 3 - ipp
+        end
+    end
+
+    return mu_rho, mu_delta
+end
+
+"""
+    bdg_update(mu_rho, mu_delta, a; U, beta, g_rho=1.0,
+               kernel=JacksonKernel, Np=2size(mu_rho, 1))
+
+Update local BdG fields at Fermi level zero from the Jackson-dressed moments:
+
+    n_c = g_rho / Np * sum_k gamma_rho_c(x_k) f(a x_k)
+    Delta_c = -U_c / Np * sum_k gamma_delta_c(x_k) f(a x_k)
+
+where `gamma_c(x) = sum_m kernel(m-1, NC) hn(m-1) mu[m,c]
+T_{m-1}(x)` and `x_k` are Gauss-Chebyshev nodes. There is no extra
+`a`-Jacobian: the spectral `1/a` cancels the `dE = a dx` measure exactly.
+"""
+function bdg_update(mu_rho::AbstractMatrix{<:Real},
+                    mu_delta::AbstractMatrix{<:Complex}, a::Real;
+                    U::AbstractVector{<:Real}, beta::Real, g_rho::Real=1.0,
+                    kernel=JacksonKernel, Np::Integer=2 * size(mu_rho, 1))
+    size(mu_rho) == size(mu_delta) ||
+        throw(ArgumentError("bdg_update: mu_rho and mu_delta must have the same size (got $(size(mu_rho)) and $(size(mu_delta)))"))
+    NC, ns = size(mu_rho)
+    length(U) == ns || throw(ArgumentError("bdg_update: U has length $(length(U)); expected $ns"))
+    beta > 0 || throw(ArgumentError("bdg_update: beta must be positive (got $beta)"))
+    a > 0 || throw(ArgumentError("bdg_update: a must be positive (got $a)"))
+    Np > 0 || throw(ArgumentError("bdg_update: Np must be positive (got $Np)"))
+
+    gh = kernel.(0:NC-1, NC) .* hn.(0:NC-1)
+    nodes, _ = gausschebyshevt(Np)
+    C = cos.((0:NC-1) .* acos.(nodes'))
+    wf = fermiFunctions(0.0, Float64(beta)).(a .* nodes) ./ Np
+    integrated = C * wf
+    n_new = g_rho .* real.(transpose(gh .* mu_rho) * integrated)
+    Delta_new = -collect(Float64, U) .* (transpose(gh .* mu_delta) * integrated)
+    return collect(Float64, n_new), collect(ComplexF64, Delta_new)
+end
