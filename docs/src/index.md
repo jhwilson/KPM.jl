@@ -33,6 +33,41 @@ and provide your GitHub username/password if prompted.
 
 For more details see the project's README.
 
+## Design principle: models are user data
+
+KPM.jl computes spectral quantities from operators. It never infers model
+content. What an index means (site, orbital, spin, sublattice, cell), which
+bonds exist, where things sit in space, which degeneracies are implicit, and
+what the volume is are all **user-supplied data**, assembled with whatever
+model-building tools you prefer and passed in as plain arrays, callables, and
+numbers:
+
+  * operators: `H` (and, for BdG, the pairing structure) — duck-typed, only
+    `size` and `mul!` required;
+  * geometry: positions `pos` and bond displacements `disp(i, j)` — these
+    *define* the current operator `(J_dir)_ij = H_ij (r_i - r_j)_dir`, the
+    Peierls coupling, and the diamagnetic operator;
+  * normalization content: degeneracy factors (`g_rho`, `g_J`), `volume`,
+    interaction couplings.
+
+Why this matters — the SSH example: the same SSH Hamiltonian matrix can be
+modeled as `2N` lattice sites with split positions, or as `N` cells with two
+orbitals each (co-located or split). These embeddings have **different
+current operators** — an intra-cell hop carries current only if the user's
+positions say its displacement is nonzero — and therefore different f-sum
+rules and transport responses. All embeddings are legitimate physics; only
+the user knows which one describes their system, so the package takes the
+displacement data verbatim and never derives geometry from the matrix.
+The same applies to degeneracies: nothing multiplies your results by 2 for
+spin unless you ask for it (`g_rho`, `g_J` are explicit, with documented
+defaults).
+
+Practical consequence: if a function needs geometry, degeneracy, or volume,
+it takes them as explicit arguments. If you see a result that seems off by a
+geometric or combinatorial factor, check the model data you supplied before
+suspecting the algorithm — and see the conventions tables below for what
+each factor means.
+
 ## Conventions and rescaling
 
 All quantities are expanded in Chebyshev polynomials of the rescaled
@@ -81,6 +116,122 @@ normalizations have **not** been validated against exact diagonalization.
 ```@docs; canonical=false
 kubo_bastin_cond
 ```
+
+## Typed front end
+
+The recommended interface packages the rescaling and the moment metadata into
+small value types, so `(a, b, NH, NR)` never have to be threaded by hand:
+
+```julia
+using KPM, Random
+
+h = KPM.rescale(H; center=true)          # RescaledHamiltonian: fields H, a, b
+m = KPM.dos_moments(h; NC=1024, NR=12)   # DosMoments: records a, b, NH, NR
+E, rho = KPM.dos(m)                      # rescaling applied automatically
+rho0 = KPM.dos0(m)                       # DOS at E = h.b
+
+m2  = KPM.cond_moments(h, Jx, Jy; NC=256, NR=8)
+σxy = KPM.kubo_bastin_cond(m2, Ef; area=A)   # e²/h; NH, a, b come from m2
+dσE = KPM.d_dc_cond(m2, E_values)
+```
+
+Notes:
+
+- The current operators `Jx, Jy` must be built from the **original,
+  unrescaled** Hamiltonian with the bond convention
+  `(J_α)_ij = H_ij (r_i - r_j)_α` (building them from `h.H` divides
+  conductivities by `a²`).
+- Pass `rng=Xoshiro(seed)` to `dos_moments` / `cond_moments` for reproducible
+  random-phase probe vectors; pass `psi_in` to supply your own.
+- The typed methods are thin wrappers over the raw-array functions documented
+  below — same code paths, same conventions — and the raw interface remains
+  fully supported.
+- Kwargs stored in the objects (`b`, `NH`) cannot be overridden in the typed
+  calls; passing them raises an `ArgumentError` instead of silently
+  disagreeing with the stored provenance.
+- `optical_cond1/2` and `cpge` do not have typed wrappers yet and take
+  energies in rescaled units — see their docstrings.
+
+```@docs; canonical=false
+rescale
+RescaledHamiltonian
+dos_moments
+cond_moments
+DosMoments
+ConductivityMoments
+```
+
+## Bogoliubov–de Gennes and superfluid stiffness
+
+The BdG layer is a matrix-free, reduced spin-singlet Nambu wrapper around any
+duck-typed normal operator that supports `size` and `mul!`.  It solves local,
+self-consistent `Delta` and density fields from one-recurrence local moments:
+the particle and hole entries of each recurrence vector provide both channels
+without assembling the BdG matrix.
+
+`superfluid_stiffness` evaluates a transverse finite-wavevector response as a
+paired superconducting/normal two-point KPM calculation.  The normal reference
+keeps the assembled hopping, chemical potential, interaction, and converged
+Hartree density, changing only `Delta` to zero.  This paramagnetic-only
+subtraction is exact for strictly linear (continuum-Dirac-like) dispersions;
+for lattice models it omits the superconducting-vs-normal difference of the
+diamagnetic (kinetic) term — `O(Delta^2)`, zero at `Delta = 0` — which the
+lattice-complete stiffness would add as a separate single-operator trace
+(planned follow-up; see the `superfluid_stiffness` docstring).
+
+```julia
+using KPM
+
+op = KPM.BdGOperator(h; mu=-0.5, U=2.5, n=fill(0.5, size(h, 1)),
+                     Delta=fill(0.2 + 0im, size(h, 1)))
+scf = KPM.bdg_solve!(op; beta=8.0, NC=256, Np=512, mix=0.3,
+                     tol_delta=1e-7, tol_n=1e-7)
+q = [0.0, 2pi / Ly]
+stiffness = KPM.superfluid_stiffness(op, pos, q; beta=8.0, eta=0.3,
+                                     dir=1, disp=disp, NC=256, NR=8,
+                                     volume=Float64(Lx * Ly))
+```
+
+### Conventions (load-bearing)
+
+| Topic | Convention |
+| --- | --- |
+| Nambu layout | `[particle; hole]`, with hole index `i+N`. |
+| Hole-block convention | `hole_convention=:intervalley` (default): hole block `-xi` with the **same** `h`, presuming `h_{-K}^* = h_K` (exact for real-symmetric `h`; non-symmetric complex `h` requires `assume_intervalley=true`). `hole_convention=:singlet`: standard same-valley `-conj(xi)` hole block, with **exact** particle-hole symmetry `tau_y K` for any complex Hermitian `h` and any complex `Delta`. Both conventions coincide for real-symmetric `h`; the current and diamagnetic vertices are convention-aware. |
+| Interaction sign | `U > 0` is attractive: `H_int = -U sum n_up n_down` and `Delta_i = -U_i<c_down c_up>`. |
+| Hartree | `-(U/2) n_i`, with full site density; there is no double-counting correction, and the absorbed constant is **not** split from `mu`. |
+| Chemical potential | It is inside `H_BdG`, so all Fermi factors are at quasiparticle energy `0`. |
+| Degeneracies | The reduced block integrates one spin species, so the default `g_rho=2` reconstructs the full spin-singlet site density (filling in `[0,2]`, consistent with the `-(U/2)n` Hartree term); `g_rho=1` gives per-spin density. `g_J` multiplies the response. Neither is applied silently. |
+| Volume | The response is per caller-supplied `volume`, in the caller's units. |
+| Rescaling | `b=0` (radial bound); `a=2*radius/(2-eps)` from hardened multi-start power iteration with default `eps=0.2`. Runtime recurrence guards abort loudly if the spectrum escapes `(-1,1)`; `rescale(op; bound=:gershgorin)` gives a certified upper bound for assembled operators, and `radius=...` accepts a known bound. |
+| Stiffness definition | `Ds/pi = Re Pi_N - Re Pi_SC` (paramagnetic-only, exact for linear dispersion), with paired probes, `NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field; both states share a common Chebyshev scale `a_common = max(a_SC, a_N)` so the finite-`NC` broadening is identical in the subtraction. `include_diamagnetic=true` adds the lattice diamagnetic difference: `Ds_over_pi_complete = (Re Pi_N - Re Pi_SC) + (Dia_SC - Dia_N)`, anchored against the free-energy curvature `(2 g_J/V)(F''_SC - F''_N)` in the tests. |
+| `q` and `eta` guidance | Choose `q=2pi/L` transverse to `dir` and commensurate with the torus. Choose `eta` between the finite-size level spacing and the gap, with `eta >= 5 a pi / NC`. |
+
+```@docs; canonical=false
+BdGOperator
+ScaledOperator
+spectral_radius
+rescale(::BdGOperator)
+bdg_site_moments
+bdg_update
+bdg_solve!
+BdGSCFResult
+bdg_local_moments
+LocalBdGMoments
+bdg_checkpoint
+bdg_restore!
+nambu_current_q
+nambu_diamagnetic
+diamagnetic_term
+two_energy_response
+superfluid_stiffness
+```
+
+Convergence of the self-consistency loop can be accelerated with
+`bdg_solve!(...; mixing=:anderson)` (safeguarded Type-II Anderson; see the
+docstring — the accelerated step must be kept away from the unstable
+normal-state root of the gap equation, which the built-in delay and step cap
+handle).
 
 ## Quick examples
 
@@ -310,6 +461,13 @@ LorentzKernels
 ## API overview
 
 Below is a concise list of the main public APIs provided by the package.
+
+- Typed front end (recommended):
+  - `rescale` → `RescaledHamiltonian`
+  - `dos_moments` → `DosMoments`; `cond_moments` → `ConductivityMoments`
+  - reconstruction via the same names as the raw interface: `dos(m)`,
+    `dos0(m)`, `kubo_bastin_cond(m, Ef; area)`, `d_dc_cond(m, E)`,
+    `dc_cond0(m)`, `dc_cond_single(m, Ef)`
 
 - Moment / KPM core:
   - `kpm_1d`, `kpm_1d!`

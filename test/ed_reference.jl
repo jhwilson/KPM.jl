@@ -11,7 +11,9 @@ using LinearAlgebra
 using SparseArrays
 
 export haldane_model, haldane_bloch, chern_number_fhs,
-       ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0
+       ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0,
+       ring_model, flux_ring_model, bdg_matrix, bdg_matrix_singlet,
+       ed_two_energy_response, ed_diamagnetic, ed_bdg_free_energy
 
 """
     haldane_model(Lx, Ly; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
@@ -227,6 +229,231 @@ function ed_hall_conductivity_T0(H, Jα, Jβ, area; Ef::Real)
         acc += imag(Va[m, n] * Vb[n, m]) / (ev[m] - ev[n])^2
     end
     return 2π * (-2 / area) * acc
+end
+
+"""
+    ring_model(N; t=1.0) -> (h, pos, disp)
+
+N-site periodic one-dimensional nearest-neighbor ring reference model.
+"""
+function ring_model(N::Int; t::Real=1.0)
+    N > 0 || throw(ArgumentError("ring_model: N must be positive"))
+    h = spzeros(Float64, N, N)
+    for i in 1:N
+        h[i, mod1(i + 1, N)] = -Float64(t)
+        h[i, mod1(i - 1, N)] = -Float64(t)
+    end
+    pos = hcat(collect(0.0:N-1), zeros(N))
+    function disp(i, j)
+        dx = pos[i, 1] - pos[j, 1]
+        dx > N / 2 && (dx -= N)
+        dx < -N / 2 && (dx += N)
+        return [dx, 0.0]
+    end
+    return h, pos, disp
+end
+
+"""
+    flux_ring_model(N; t=1.0, phi=0.35) -> (h, pos, disp)
+
+N-site periodic ring with directed nearest-neighbor hopping
+`h[i, i+1] = -t * exp(im * phi)` and total flux `N * phi`.
+"""
+function flux_ring_model(N::Int; t::Real=1.0, phi::Real=0.35)
+    N > 0 || throw(ArgumentError("flux_ring_model: N must be positive"))
+    h = spzeros(ComplexF64, N, N)
+    hopping = -Float64(t) * cis(Float64(phi))
+    for i in 1:N
+        j = mod1(i + 1, N)
+        h[i, j] = hopping
+        h[j, i] = conj(hopping)
+    end
+    _, pos, disp = ring_model(N; t=t)
+    return h, pos, disp
+end
+
+"""
+    bdg_matrix(h, mu, U, n, Δ) -> Matrix{ComplexF64}
+
+Assemble the dense reduced spin-singlet Nambu BdG reference matrix.
+"""
+function bdg_matrix(h, mu, U, n, Δ)
+    ξ = Matrix(h) - mu * I - Diagonal(U .* n ./ 2)
+    D = Diagonal(Δ)
+    return ComplexF64[ξ D; Diagonal(conj.(Δ)) -ξ]
+end
+
+"""
+    bdg_matrix_singlet(h, mu, U, n, Δ) -> Matrix{ComplexF64}
+
+Assemble the standard same-valley spin-singlet Nambu matrix with hole block
+`-conj(xi)`.
+"""
+function bdg_matrix_singlet(h, mu, U, n, Δ)
+    ξ = Matrix(h) - mu * I - Diagonal(U .* n ./ 2)
+    D = Diagonal(Δ)
+    return ComplexF64[ξ D; Diagonal(conj.(Δ)) -conj(ξ)]
+end
+
+"""
+    ed_two_energy_response(H, Jl, Jr; beta, eta, omega=0.0, Ef=0.0)
+        -> ComplexF64
+
+Dense Lehmann-sum reference for the generic two-energy response.
+"""
+function ed_two_energy_response(H, Jl, Jr; beta, eta, omega=0.0, Ef=0.0)
+    eta == 0 && !(omega == 0 && isfinite(beta)) &&
+        throw(ArgumentError("eta=0 requires omega=0 and finite beta"))
+
+    F = eigen(Hermitian(Matrix(H)))
+    Jl_e = F.vectors' * Matrix(Jl) * F.vectors
+    Jr_e = F.vectors' * Matrix(Jr) * F.vectors
+    fermi(e) = isinf(beta) ? ((e < Ef) + (e <= Ef)) / 2 :
+                             1 / (exp(beta * (e - Ef)) + 1)
+    occupations = fermi.(F.values)
+    acc = zero(ComplexF64)
+    for p in eachindex(F.values), q in eachindex(F.values)
+        delta_E = F.values[p] - F.values[q]
+        divided_difference = if eta == 0
+            if abs(delta_E) < 1e-8
+                fm = fermi((F.values[p] + F.values[q]) / 2)
+                -beta * fm * (1 - fm)
+            else
+                (occupations[p] - occupations[q]) / delta_E
+            end
+        else
+            (occupations[p] - occupations[q]) /
+                (omega + delta_E + im * eta)
+        end
+        acc += Jl_e[p, q] * Jr_e[q, p] * divided_difference
+    end
+    return ComplexF64(acc)
+end
+
+"""
+    ed_diamagnetic(H_dense, Dhat; beta) -> Float64
+
+Evaluate the bare dense-eigenvalue trace
+`sum_n f(E_n) <n|Dhat|n>` at BdG Fermi level zero.
+"""
+function ed_diamagnetic(H_dense, Dhat; beta)
+    F = eigen(Hermitian(Matrix(H_dense)))
+    D_eigen = F.vectors' * Matrix(Dhat) * F.vectors
+    fermi(e) = 1 / (exp(beta * e) + 1)
+    return Float64(real(sum(fermi(F.values[n]) * D_eigen[n, n]
+                            for n in eachindex(F.values))))
+end
+
+export square_model, bdg_peierls_matrix
+
+"""
+    square_model(Lx, Ly; t=1.0) -> (h, pos, disp)
+
+Periodic square-lattice nearest-neighbor model with hopping `-t`, coordinates
+`(ix - 1, iy - 1)`, and column-major site index
+`i = ix + (iy - 1) * Lx`. The returned closure supplies minimum-image
+displacements in both periodic directions.
+"""
+function square_model(Lx::Int, Ly::Int; t::Real=1.0)
+    Lx > 0 || throw(ArgumentError("square_model: Lx must be positive"))
+    Ly > 0 || throw(ArgumentError("square_model: Ly must be positive"))
+    N = Lx * Ly
+    site(ix, iy) = mod1(ix, Lx) + (mod1(iy, Ly) - 1) * Lx
+    h = spzeros(Float64, N, N)
+    pos = zeros(Float64, N, 2)
+
+    for iy in 1:Ly, ix in 1:Lx
+        i = site(ix, iy)
+        pos[i, :] .= (ix - 1, iy - 1)
+        for (jx, jy) in ((ix + 1, iy), (ix - 1, iy),
+                         (ix, iy + 1), (ix, iy - 1))
+            h[i, site(jx, jy)] = -Float64(t)
+        end
+    end
+
+    function disp(i, j)
+        dx = pos[i, 1] - pos[j, 1]
+        dy = pos[i, 2] - pos[j, 2]
+        dx > Lx / 2 && (dx -= Lx)
+        dx < -Lx / 2 && (dx += Lx)
+        dy > Ly / 2 && (dy -= Ly)
+        dy < -Ly / 2 && (dy += Ly)
+        return [dx, dy]
+    end
+    return h, pos, disp
+end
+
+"""
+    bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1,
+                        hole_convention::Symbol=:singlet)
+        -> Matrix{ComplexF64}
+
+Build only the kinetic Nambu part of the Peierls-coupled BdG matrix. Local
+chemical-potential, Hartree, and pairing terms do not couple to the vector
+potential. A real modulation `u(m) = cos(q ⋅ m)` is used when `q` is given,
+so the result remains Hermitian. The singlet hole block is `-conj(h(A))`;
+the intervalley hole block uses the same `h` with the opposite Peierls phase.
+"""
+function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1,
+                            hole_convention::Symbol=:singlet)
+    N = size(h, 1)
+    size(h, 2) == N || throw(ArgumentError("bdg_peierls_matrix: h must be square"))
+    size(pos, 1) == N || throw(ArgumentError("bdg_peierls_matrix: incompatible pos"))
+    ndim = size(pos, 2)
+    1 <= dir <= ndim || throw(ArgumentError("bdg_peierls_matrix: invalid dir=$dir"))
+    q === nothing || length(q) == ndim ||
+        throw(ArgumentError("bdg_peierls_matrix: q has length $(length(q)); expected $ndim"))
+    hole_convention in (:intervalley, :singlet) ||
+        throw(ArgumentError("bdg_peierls_matrix: invalid hole_convention=$hole_convention"))
+
+    hp = zeros(ComplexF64, N, N)
+    hh = zeros(ComplexF64, N, N)
+    I, J, V = findnz(sparse(h))
+    for k in eachindex(V)
+        i = I[k]
+        j = J[k]
+        d = disp(i, j)
+        m = [pos[j, ν] + d[ν] / 2 for ν in 1:ndim]
+        u = q === nothing ? 1.0 : cos(dot(q, m))
+        hp[i, j] = V[k] * exp(im * A * d[dir] * u)
+        hole_hopping = hole_convention === :singlet ? conj(V[k]) : V[k]
+        hh[i, j] = -hole_hopping * exp(-im * A * d[dir] * u)
+    end
+    H = [hp zeros(ComplexF64, N, N);
+         zeros(ComplexF64, N, N) hh]
+    @assert ishermitian(H)
+    return Matrix{ComplexF64}(H)
+end
+
+"""
+    ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta, A;
+                       q=nothing, dir=1, beta,
+                       hole_convention=:singlet) -> Float64
+
+Compute the dense BdG free energy
+`F(A) = -(1 / beta) sum_n log(1 + exp(-beta E_n(A)))` from the
+Peierls-coupled kinetic matrix plus the local chemical-potential, Hartree, and
+pairing terms. The softplus evaluation is stable for either sign of
+`-beta E_n`.
+"""
+function ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta, A;
+                            q=nothing, dir=1, beta,
+                            hole_convention=:singlet)
+    N = size(h, 1)
+    h0 = spzeros(eltype(h), N, N)
+    local_part = if hole_convention === :singlet
+        bdg_matrix_singlet(h0, mu, U, n, Delta)
+    elseif hole_convention === :intervalley
+        bdg_matrix(h0, mu, U, n, Delta)
+    else
+        throw(ArgumentError("ed_bdg_free_energy: invalid hole_convention=$hole_convention"))
+    end
+    H = bdg_peierls_matrix(
+        h, pos, disp, A; q=q, dir=dir, hole_convention=hole_convention) +
+        local_part
+    E = eigvals(Hermitian(H))
+    softplus(x) = x > 0 ? x + log1p(exp(-x)) : log1p(exp(x))
+    return Float64(-sum(softplus(-beta * e) for e in E) / beta)
 end
 
 end # module

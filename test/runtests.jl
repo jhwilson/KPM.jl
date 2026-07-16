@@ -21,8 +21,20 @@ end
     include("kubo_bastin_test.jl")
 end
 
+@testset "BdG self-consistency (applications/bdg.jl)" begin
+    include("bdg_test.jl")
+end
+
+@testset "superfluid stiffness (applications/stiffness.jl)" begin
+    include("stiffness_test.jl")
+end
+
 @testset "KPM.jl" begin
     include("integration_test.jl")
+end
+
+@testset "typed front end (frontend.jl)" begin
+    include("frontend_test.jl")
 end
 
 @testset "optional CUDA extension migration" begin

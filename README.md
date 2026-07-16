@@ -10,6 +10,16 @@ optional CUDA GPU acceleration.
 
 ## Conventions
 
+**Models are user data.** KPM.jl computes spectral quantities from operators
+and never infers model content: what an index means (site, orbital, spin,
+cell), which bonds exist, positions/displacements (which *define* the current
+operator `(J_dir)_ij = H_ij (r_i - r_j)_dir`), degeneracy factors, and volume
+are supplied by you. The same Hamiltonian matrix under different embeddings
+(e.g. SSH as `2N` sites vs `N` cells × 2 orbitals) has different current
+operators and responses — only your position data decides. See the
+[documentation](docs/src/index.md#design-principle-models-are-user-data) for
+the full statement.
+
 All quantities are expanded in Chebyshev polynomials of the rescaled
 Hamiltonian `H_norm = (H - b I) / a`, whose spectrum must lie inside (-1, 1).
 `KPM.normalizeH` computes the rescaling: by default it assumes a spectrum
@@ -26,6 +36,30 @@ and the reconstructed DOS integrates to one:
 with h₀ = 1, hₙ = 2 (n ≥ 1) and gₙ a damping kernel (Jackson by default).
 `kpm_1d` computes `NC` moments from `NC/2` matrix-vector recurrence steps
 (moment doubling), so `NC` must be even.
+
+## Typed front end (recommended)
+
+`KPM.rescale` packages the rescaling `(a, b)` together with the rescaled
+Hamiltonian, and the moment constructors record everything the reconstruction
+step needs (`a`, `b`, `NH`, `NR`), so none of that bookkeeping is threaded by
+hand — forgetting `b` or `NH` becomes impossible rather than silently wrong:
+
+```julia
+h = KPM.rescale(H; center=true)           # RescaledHamiltonian: H_norm, a, b
+m = KPM.dos_moments(h; NC=1024, NR=12)    # DosMoments (records a, b, NH, NR)
+E, rho = KPM.dos(m)                       # a, b applied automatically
+
+m2  = KPM.cond_moments(h, Jx, Jy; NC=256, NR=8)   # J from the UNRESCALED H (bond convention)
+σxy = KPM.kubo_bastin_cond(m2, Ef; area=A)        # in e²/h
+dσE = KPM.d_dc_cond(m2, E_values)                 # Kubo–Bastin integrand
+```
+
+For reproducible random-phase probe vectors pass an explicit RNG:
+`KPM.dos_moments(h; NC, NR, rng=Xoshiro(42))` (`using Random`). The raw-array
+interface below remains fully supported; the typed methods are thin wrappers
+over the same code paths. Typed wrappers for the optical (`optical_cond1/2`)
+and nonlinear (`cpge`) responses are not yet available — those functions take
+energies in rescaled units (see their docstrings).
 
 ## Capability
 
@@ -60,6 +94,22 @@ dchi_xyz = KPM.d_cpge(mu_3d_xyz, NC, w1, w2, E)
 where `dchi_xyz` is the differential second-order conductivity
 (arXiv:2312.14244) and `w1, w2` are the two drive frequencies.
 
+### Self-consistent BdG + superfluid stiffness
+
+```julia
+op = KPM.BdGOperator(h; mu=-0.5, U=2.5, n=fill(0.5, N),
+                     Delta=fill(0.2 + 0im, N))
+KPM.bdg_solve!(op; beta=8.0, NC=256, Np=512, mix=0.3,
+               tol_delta=1e-7, tol_n=1e-7)
+q = [0.0, 2pi / Ly]
+r = KPM.superfluid_stiffness(op, pos, q; beta=8.0, eta=0.3, dir=1,
+                              disp=disp, NC=256, NR=8, volume=Float64(Lx * Ly))
+println(r.Ds_over_pi)  # Re Pi_N - Re Pi_SC
+```
+
+The reduced-Nambu, Hartree, degeneracy, volume, rescaling, and finite-`q`
+conventions are load-bearing; see the [BdG and stiffness documentation](docs/src/index.md#bogoliubovde-gennes-and-superfluid-stiffness).
+
 ## Installation
 
 This is an [unregistered package](https://pkgdocs.julialang.org/v1/managing-packages/#Adding-unregistered-packages); install it from the GitHub URL:
@@ -85,7 +135,19 @@ call computes everything in one step:
 E, rhoE = KPM.dos(H)
 ```
 
-For more control, rescale once, compute moments, then reconstruct:
+For more control, rescale once, compute moments, then reconstruct — the
+moments object remembers the rescaling, so reconstruction needs no extra
+arguments:
+
+```julia
+h = KPM.rescale(H)                          # use center=true for asymmetric spectra
+m = KPM.dos_moments(h; NC=1024, NR=13)
+rho_0 = KPM.dos0(m)                         # DOS at E = h.b (the rescaling center)
+d2rho_0 = KPM.dos0(m; dE_order=2)           # and its second derivative
+E_grid, rho_E = KPM.dos(m; N_tilde=2048)
+```
+
+The same computation through the explicit `(a, b)` interface:
 
 ```julia
 NC = 1024; NR = 13

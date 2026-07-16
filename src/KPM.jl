@@ -1,5 +1,7 @@
 module KPM
 
+using Serialization
+
 const dt_real = Float64
 const dt_cplx = ComplexF64
 const dt_num = Union{Float64, ComplexF64}
@@ -17,5 +19,8 @@ include("applications/ldos_mu.jl")
 include("applications/conductivity.jl")
 include("applications/cpge.jl")
 include("applications/optical_cond.jl")
+include("applications/bdg.jl")
+include("applications/stiffness.jl")
+include("frontend.jl")
 
 end # module
