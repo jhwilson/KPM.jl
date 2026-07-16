@@ -137,8 +137,12 @@ without assembling the BdG matrix.
 `superfluid_stiffness` evaluates a transverse finite-wavevector response as a
 paired superconducting/normal two-point KPM calculation.  The normal reference
 keeps the assembled hopping, chemical potential, interaction, and converged
-Hartree density, changing only `Delta` to zero; its subtraction removes the
-ultraviolet/diamagnetic contribution.
+Hartree density, changing only `Delta` to zero.  This paramagnetic-only
+subtraction is exact for strictly linear (continuum-Dirac-like) dispersions;
+for lattice models it omits the superconducting-vs-normal difference of the
+diamagnetic (kinetic) term — `O(Delta^2)`, zero at `Delta = 0` — which the
+lattice-complete stiffness would add as a separate single-operator trace
+(planned follow-up; see the `superfluid_stiffness` docstring).
 
 ```julia
 using KPM
