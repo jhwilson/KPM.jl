@@ -35,6 +35,10 @@ struct DosMoments{V<:AbstractVector{<:Real}} <: AbstractMoments
     b::Float64
     NH::Int
     NR::Int
+    function DosMoments(mu::V, a, b, NH, NR) where {V<:AbstractVector{<:Real}}
+        NH > 0 && NR > 0 || throw(ArgumentError("DosMoments: NH and NR must be positive (got NH=$NH, NR=$NR)"))
+        new{V}(mu, a, b, NH, NR)
+    end
 end
 
 """
@@ -50,6 +54,11 @@ struct ConductivityMoments{M<:AbstractMatrix{<:Complex}} <: AbstractMoments
     b::Float64
     NH::Int
     NR::Int
+    function ConductivityMoments(mu::M, a, b, NH, NR) where {M<:AbstractMatrix{<:Complex}}
+        size(mu, 1) == size(mu, 2) || throw(ArgumentError("ConductivityMoments: the moment matrix must be square (got $(size(mu)))"))
+        NH > 0 && NR > 0 || throw(ArgumentError("ConductivityMoments: NH and NR must be positive (got NH=$NH, NR=$NR)"))
+        new{M}(mu, a, b, NH, NR)
+    end
 end
 
 # number of Chebyshev moments (NC is derived from the stored moments, not stored)
@@ -76,7 +85,10 @@ function rescale(H; center::Bool=false, eps::Float64=0.1, fixed_a::Number=0.0)
         a, H_norm = normalizeH(H; eps=eps, fixed_a=fixed_a)
         b = 0.0
     end
-    return RescaledHamiltonian(H_norm, Float64(a), Float64(b))
+    af = Float64(a)
+    bf = Float64(b)
+    (isfinite(af) && isfinite(bf)) || throw(ArgumentError("rescale: a and b must be finite as Float64 (got a=$a, b=$b)"))
+    return RescaledHamiltonian(H_norm, af, bf)
 end
 
 """

@@ -34,6 +34,8 @@ end
     mu_ref = KPM.kpm_1d(h.H, 64, NR; psi_in=copy(psi))
     @test m.mu == mu_ref
     @test KPM.dos(m) == KPM.dos(mu_ref, h.a; b=h.b)
+    @test KPM.dos0(m) == KPM.dos0(mu_ref, h.a)
+    @test KPM.dos0(m; dE_order=2) == KPM.dos0(mu_ref, h.a; dE_order=2)
 
     grid = collect(range(-1.5, 1.5, length=101))
     E, rho = KPM.dos(m; E_grid=grid)
@@ -62,8 +64,32 @@ end
     @test KPM.d_dc_cond(m2, [0.0, 0.1]) == KPM.d_dc_cond(mu2_ref, h.a, [0.0, 0.1]; b=h.b)
     @test KPM.d_dc_cond(m2, 0.0:0.05:0.2) == KPM.d_dc_cond(m2, collect(0.0:0.05:0.2))
     @test KPM.d_dc_cond(m2, 0.1) isa Real
+    @test KPM.d_dc_cond(m2, 0.1) == only(KPM.d_dc_cond(mu2_ref, h.a, [0.1]; b=h.b))
 
     @test_throws ArgumentError KPM.kubo_bastin_cond(m2, 0.1; area=1.0, NH=10)
+    @test_throws ArgumentError KPM.ConductivityMoments(zeros(ComplexF64, 3, 2), 1.0, 0.0, NH, 1)
+end
+
+@testset "centered rescaling parity (b != 0)" begin
+    # every energy-dependent delegation must forward the stored b: these
+    # comparisons are run away from E = b so a dropped shift changes the numbers
+    H_shifted = H + 0.7 * I
+    hc = KPM.rescale(H_shifted; center=true)
+    @test hc.b != 0.0
+    psi = KPM.random_phase_vectors(Xoshiro(21), NH, NR)
+
+    mc = KPM.dos_moments(hc; NC=64, psi_in=copy(psi))
+    mu_ref = KPM.kpm_1d(hc.H, 64, NR; psi_in=copy(psi))
+    @test mc.mu == mu_ref
+    @test KPM.dos(mc) == KPM.dos(mu_ref, hc.a; b=hc.b)
+    grid = collect(range(hc.b - 0.5, hc.b + 0.5, length=21))
+    @test KPM.dos(mc; E_grid=grid)[2] == KPM.dos(mu_ref, hc.a; b=hc.b, E_grid=grid)[2]
+
+    m2c = KPM.cond_moments(hc, Jx, Jy; NC=32, psi_in=copy(psi))
+    mu2_ref = KPM.kpm_2d(hc.H, Jx, Jy, 32, NR, NH; psi_in=copy(psi))
+    @test KPM.kubo_bastin_cond(m2c, 0.3; area=1.0) == KPM.kubo_bastin_cond(mu2_ref, hc.a, 0.3; b=hc.b, NH=NH, area=1.0)
+    @test KPM.dc_cond_single(m2c, 0.3) == KPM.dc_cond_single(mu2_ref, hc.a, 0.3; b=hc.b)
+    @test KPM.d_dc_cond(m2c, [0.3, 0.9]) == KPM.d_dc_cond(mu2_ref, hc.a, [0.3, 0.9]; b=hc.b)
 end
 
 @testset "typed front-end validation and reproducibility" begin
@@ -72,6 +98,15 @@ end
     m3 = KPM.dos_moments(h; NC=64, NR=4, rng=Xoshiro(43))
     @test m1.mu == m2.mu
     @test m1.mu != m3.mu
+    # unit-norm probes give mu_0 = 1 exactly as in the default random path
+    @test m1.mu[1] ≈ 1.0
+
+    # rng path reproduces the package's probe recipe exactly (random phase,
+    # column-normalized, no mean centering)
+    rng_manual = Xoshiro(5)
+    psi_manual = exp.(rand(rng_manual, Float64, NH, NR) .* (2im * pi))
+    KPM.normalize_by_col(psi_manual, NR)
+    @test KPM.random_phase_vectors(Xoshiro(5), NH, NR) == psi_manual
 
     psi = KPM.random_phase_vectors(Xoshiro(9), NH, NR)
     moments = KPM.dos_moments(h; NC=64, psi_in=copy(psi))
