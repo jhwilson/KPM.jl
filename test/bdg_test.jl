@@ -457,3 +457,42 @@ end
         hf_matrix_free; mu=mu, U=U, n=n, Delta=Delta,
         hole_convention=:singlet)
 end
+
+@testset "Anderson mixing: same fixed point, fewer iterations" begin
+    N = 4
+    h, _, _ = ring_model(N; t=1.0)
+    mu = -1.0
+    U = fill(3.0, N)
+    beta = 10.0
+    n_initial = fill(0.5, N)
+    Delta_initial = fill(0.1 + 0.0im, N)
+
+    op_lin = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
+    res_lin = KPM.bdg_solve!(op_lin; beta=beta, NC=512, mix=0.3,
+                             tol_delta=1e-9, tol_n=1e-9, maxiter=400)
+    @test res_lin.converged
+
+    op_and = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
+    res_and = KPM.bdg_solve!(op_and; beta=beta, NC=512, mix=0.3,
+                             mixing=:anderson, anderson_history=6,
+                             tol_delta=1e-9, tol_n=1e-9, maxiter=400)
+    println("mixing iterations: linear=$(res_lin.iterations), anderson=$(res_and.iterations)")
+    @test res_and.converged
+    @test abs.(op_and.Δ) ≈ abs.(op_lin.Δ) atol=1e-6 rtol=0
+    @test op_and.n ≈ op_lin.n atol=1e-6 rtol=0
+    @test res_and.iterations < res_lin.iterations
+
+    # frozen-density path
+    op_and_nd = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
+    res_and_nd = KPM.bdg_solve!(op_and_nd; beta=beta, NC=512, mix=0.3,
+                                mixing=:anderson, update_density=false,
+                                tol_delta=1e-9, maxiter=400)
+    @test res_and_nd.converged
+
+    @test_throws ArgumentError KPM.bdg_solve!(
+        KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial);
+        beta=beta, mixing=:bogus)
+    @test_throws ArgumentError KPM.bdg_solve!(
+        KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial);
+        beta=beta, mixing=:anderson, anderson_history=0)
+end
