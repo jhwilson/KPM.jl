@@ -425,6 +425,30 @@ function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1,
     return Matrix{ComplexF64}(H)
 end
 
+function ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta::AbstractMatrix, A;
+                            q=nothing, dir=1, beta,
+                            hole_convention=:singlet)
+    N = size(h, 1)
+    size(Delta) == (N, N) ||
+        throw(ArgumentError("ed_bdg_free_energy: Delta has size $(size(Delta)); expected ($N, $N)"))
+    D = Matrix{ComplexF64}(Delta)
+    xi0 = -mu * I - Diagonal(U .* n ./ 2)
+    hole0 = if hole_convention === :singlet
+        -conj(xi0)
+    elseif hole_convention === :intervalley
+        -xi0
+    else
+        throw(ArgumentError("ed_bdg_free_energy: invalid hole_convention=$hole_convention"))
+    end
+    local_part = ComplexF64[xi0 D; adjoint(D) hole0]
+    H = bdg_peierls_matrix(
+        h, pos, disp, A; q=q, dir=dir, hole_convention=hole_convention) +
+        local_part
+    E = eigvals(Hermitian(H))
+    softplus(x) = x > 0 ? x + log1p(exp(-x)) : log1p(exp(x))
+    return Float64(-sum(softplus(-beta * e) for e in E) / beta)
+end
+
 """
     ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta, A;
                        q=nothing, dir=1, beta,
@@ -433,8 +457,10 @@ end
 Compute the dense BdG free energy
 `F(A) = -(1 / beta) sum_n log(1 + exp(-beta E_n(A)))` from the
 Peierls-coupled kinetic matrix plus the local chemical-potential, Hartree, and
-pairing terms. The softplus evaluation is stable for either sign of
-`-beta E_n`.
+pairing terms. `Delta` may be an onsite vector or a full pairing matrix. For
+a matrix pairing block, the rigid-`Delta` convention holds it fixed: Peierls
+phases are applied only to kinetic bonds and never to pairing entries. The
+softplus evaluation is stable for either sign of `-beta E_n`.
 """
 function ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta, A;
                             q=nothing, dir=1, beta,

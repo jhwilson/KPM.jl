@@ -45,6 +45,10 @@ end
     include("ssh_invariance_test.jl")
 end
 
+@testset "bond pairing stiffness (applications/stiffness.jl)" begin
+    include("bond_stiffness_test.jl")
+end
+
 @testset "superfluid stiffness (applications/stiffness.jl)" begin
     include("stiffness_test.jl")
 end
