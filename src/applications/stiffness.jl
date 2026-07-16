@@ -125,6 +125,9 @@ midpoints of a wrapped bond differ by a lattice vector `L`, so
 `J(q)' == -J(-q)` — and the single-valuedness of `A(r) = exp(-im q ⋅ r)`
 itself — require `exp(im q ⋅ L) = 1`. Incommensurate `q` silently breaks
 the adjoint identity.
+
+This operator is kinetic-only by construction: it is built from `h`, and
+pairing never enters, realizing the rigid-Δ convention.
 """
 function nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
                          q::AbstractVector{<:Real}; dir::Integer=1, disp=nothing,
@@ -181,6 +184,9 @@ skipped. For Hermitian `h` and consistent bond displacements the construction
 is Hermitian in both hole conventions. `disp(i, j)` should return the
 minimum-image displacement on periodic geometries; raw coordinate differences
 are used when `disp=nothing`.
+
+This operator is kinetic-only by construction: it is built from `h`, and
+pairing never enters, realizing the rigid-Δ convention.
 """
 function nambu_diamagnetic(h::SparseMatrixCSC,
                            pos::AbstractMatrix{<:Real};
@@ -342,6 +348,14 @@ The added diamagnetic difference vanishes as `Delta -> 0` (so the zero-gap
 cancellation is exact) but is generically `O(Delta^2)`. The normal reference
 retains the superconducting state's assembled hopping, chemical potential,
 interaction, and converged Hartree density, changing only `Delta` to zero.
+
+Rigid-Δ (Scalapino–White–Zhang) convention: for every pairing channel,
+onsite or bond, the pairing block contributes no current or diamagnetic
+vertex. The normal reference zeroes the entire pairing block while retaining
+hopping, chemical potential, interaction, and Hartree density. The
+free-energy-curvature anchor in the test suite defines `H(A)` with Peierls
+phases on kinetic bonds only, matching this convention. The self-consistently
+gauge-coupled (charge-2e) pairing response is out of scope.
 
 Both responses use `Jalpha = J(q)` and `Jbeta = J(-q)`, the same probes,
 `NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field. Candidate
