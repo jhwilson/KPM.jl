@@ -25,6 +25,10 @@ end
     include("integration_test.jl")
 end
 
+@testset "typed front end (frontend.jl)" begin
+    include("frontend_test.jl")
+end
+
 @testset "optional CUDA extension migration" begin
     include("optional_cuda_test.jl")
 end

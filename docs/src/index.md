@@ -82,6 +82,50 @@ normalizations have **not** been validated against exact diagonalization.
 kubo_bastin_cond
 ```
 
+## Typed front end
+
+The recommended interface packages the rescaling and the moment metadata into
+small value types, so `(a, b, NH, NR)` never have to be threaded by hand:
+
+```julia
+using KPM, Random
+
+h = KPM.rescale(H; center=true)          # RescaledHamiltonian: fields H, a, b
+m = KPM.dos_moments(h; NC=1024, NR=12)   # DosMoments: records a, b, NH, NR
+E, rho = KPM.dos(m)                      # rescaling applied automatically
+rho0 = KPM.dos0(m)                       # DOS at E = h.b
+
+m2  = KPM.cond_moments(h, Jx, Jy; NC=256, NR=8)
+σxy = KPM.kubo_bastin_cond(m2, Ef; area=A)   # e²/h; NH, a, b come from m2
+dσE = KPM.d_dc_cond(m2, E_values)
+```
+
+Notes:
+
+- The current operators `Jx, Jy` must be built from the **original,
+  unrescaled** Hamiltonian with the bond convention
+  `(J_α)_ij = H_ij (r_i - r_j)_α` (building them from `h.H` divides
+  conductivities by `a²`).
+- Pass `rng=Xoshiro(seed)` to `dos_moments` / `cond_moments` for reproducible
+  random-phase probe vectors; pass `psi_in` to supply your own.
+- The typed methods are thin wrappers over the raw-array functions documented
+  below — same code paths, same conventions — and the raw interface remains
+  fully supported.
+- Kwargs stored in the objects (`b`, `NH`) cannot be overridden in the typed
+  calls; passing them raises an `ArgumentError` instead of silently
+  disagreeing with the stored provenance.
+- `optical_cond1/2` and `cpge` do not have typed wrappers yet and take
+  energies in rescaled units — see their docstrings.
+
+```@docs; canonical=false
+rescale
+RescaledHamiltonian
+dos_moments
+cond_moments
+DosMoments
+ConductivityMoments
+```
+
 ## Quick examples
 
 ### 1) Density of States (DOS) — concise example
@@ -310,6 +354,13 @@ LorentzKernels
 ## API overview
 
 Below is a concise list of the main public APIs provided by the package.
+
+- Typed front end (recommended):
+  - `rescale` → `RescaledHamiltonian`
+  - `dos_moments` → `DosMoments`; `cond_moments` → `ConductivityMoments`
+  - reconstruction via the same names as the raw interface: `dos(m)`,
+    `dos0(m)`, `kubo_bastin_cond(m, Ef; area)`, `d_dc_cond(m, E)`,
+    `dc_cond0(m)`, `dc_cond_single(m, Ef)`
 
 - Moment / KPM core:
   - `kpm_1d`, `kpm_1d!`
