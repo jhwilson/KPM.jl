@@ -92,6 +92,19 @@ function rescale(H; center::Bool=false, eps::Float64=0.1, fixed_a::Number=0.0)
 end
 
 """
+    rescale(op::BdGOperator; eps=0.2, kwargs...)
+
+Matrix-free BdG rescaling with particle-hole-symmetric center `b = 0` and
+`a = 2 * radius / (2 - eps)`. The default `eps=0.2` is looser than
+`normalizeH`'s `0.1` because power iteration lower-bounds the radius.
+"""
+function rescale(op::BdGOperator; eps::Float64=0.2, kwargs...)
+    rad, _ = spectral_radius(op; kwargs...)
+    a = 2 * rad / (2 - eps)
+    return RescaledHamiltonian(ScaledOperator(op, a, 0.0), a, 0.0)
+end
+
+"""
     random_phase_vectors(rng, NH, NR)
 
 Create `NR` unit-norm random-phase probes of length `NH` using `rng`. This is

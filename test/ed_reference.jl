@@ -11,7 +11,8 @@ using LinearAlgebra
 using SparseArrays
 
 export haldane_model, haldane_bloch, chern_number_fhs,
-       ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0
+       ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0,
+       ring_model, bdg_matrix
 
 """
     haldane_model(Lx, Ly; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
@@ -227,6 +228,39 @@ function ed_hall_conductivity_T0(H, Jα, Jβ, area; Ef::Real)
         acc += imag(Va[m, n] * Vb[n, m]) / (ev[m] - ev[n])^2
     end
     return 2π * (-2 / area) * acc
+end
+
+"""
+    ring_model(N; t=1.0) -> (h, pos, disp)
+
+N-site periodic one-dimensional nearest-neighbor ring reference model.
+"""
+function ring_model(N::Int; t::Real=1.0)
+    N > 0 || throw(ArgumentError("ring_model: N must be positive"))
+    h = spzeros(Float64, N, N)
+    for i in 1:N
+        h[i, mod1(i + 1, N)] = -Float64(t)
+        h[i, mod1(i - 1, N)] = -Float64(t)
+    end
+    pos = hcat(collect(0.0:N-1), zeros(N))
+    function disp(i, j)
+        dx = pos[i, 1] - pos[j, 1]
+        dx > N / 2 && (dx -= N)
+        dx < -N / 2 && (dx += N)
+        return [dx, 0.0]
+    end
+    return h, pos, disp
+end
+
+"""
+    bdg_matrix(h, mu, U, n, Δ) -> Matrix{ComplexF64}
+
+Assemble the dense reduced spin-singlet Nambu BdG reference matrix.
+"""
+function bdg_matrix(h, mu, U, n, Δ)
+    ξ = Matrix(h) - mu * I - Diagonal(U .* n ./ 2)
+    D = Diagonal(Δ)
+    return ComplexF64[ξ D; Diagonal(conj.(Δ)) -ξ]
 end
 
 end # module

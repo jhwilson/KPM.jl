@@ -21,6 +21,10 @@ end
     include("kubo_bastin_test.jl")
 end
 
+@testset "BdG self-consistency (applications/bdg.jl)" begin
+    include("bdg_test.jl")
+end
+
 @testset "KPM.jl" begin
     include("integration_test.jl")
 end
