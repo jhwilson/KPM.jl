@@ -137,7 +137,9 @@ common_stiffness = (; beta=beta, eta=eta, dir=1, disp=disp, NC=256,
 stochastic = KPM.superfluid_stiffness(op, pos, q; NR=8, common_stiffness...)
 psi_identity = Matrix{ComplexF64}(I, 2N, 2N)
 deterministic = KPM.superfluid_stiffness(op, pos, q;
-                                         psi_in=psi_identity, common_stiffness...)
+                                         psi_in=psi_identity,
+                                         include_diamagnetic=true,
+                                         common_stiffness...)
 
 Jq = KPM.nambu_current_q(h, pos, q; dir=1, disp=disp)
 Jmq = KPM.nambu_current_q(h, pos, -q; dir=1, disp=disp)
@@ -170,8 +172,28 @@ println("  deviations from ED:")
         abs(deterministic.Pi_SC - Pi_SC_ed), abs(deterministic.Pi_N - Pi_N_ed),
         abs(deterministic.Ds_over_pi - Ds_ed))
 
+# Lattice-complete stiffness: add the SC-vs-normal diamagnetic difference
+# (paramagnetic-only subtraction is exact only for linear dispersion).
+Dhat = Matrix(KPM.nambu_diamagnetic(h, pos; dir=1, disp=disp))
+fermi_w(E) = 1 / (exp(beta * E) + 1)
+function dia_ed(Hdense)
+    F = eigen(Hermitian(Hdense))
+    return real(sum(fermi_w(F.values[k]) * dot(view(F.vectors, :, k),
+                    Dhat, view(F.vectors, :, k))
+                    for k in eachindex(F.values))) / volume
+end
+Dia_SC_ed = dia_ed(Hsc)
+Dia_N_ed = dia_ed(Hnormal)
+Ds_complete_ed = Ds_ed + Dia_SC_ed - Dia_N_ed
+println("\nLattice-complete stiffness (include_diamagnetic=true, deterministic trace):")
+@printf("  Dia_SC: KPM=% .10e  ED=% .10e\n", deterministic.Dia_SC, Dia_SC_ed)
+@printf("  Dia_N:  KPM=% .10e  ED=% .10e\n", deterministic.Dia_N, Dia_N_ed)
+@printf("  Ds_complete/pi: KPM=% .10e  ED=% .10e  (paramagnetic-only KPM=% .10e)\n",
+        deterministic.Ds_over_pi_complete, Ds_complete_ed, deterministic.Ds_over_pi)
+
 println("\nConventions used")
-println("  reduced Nambu block [particle; hole], with hole index i+N")
+println("  reduced Nambu block [particle; hole], with hole index i+N; hole_convention=:intervalley (== :singlet for this real h)")
+println("  Ds/pi is the paramagnetic-only pair; Ds_complete/pi adds the lattice diamagnetic difference")
 println("  Fermi level 0; Ds/pi = Re Pi_N - Re Pi_SC")
 println("  g_rho=2 (n is the full spin-singlet site density, filling in [0,2]); g_J=1")
 println("  volume=lattice-site count=area (unit lattice constant)")
