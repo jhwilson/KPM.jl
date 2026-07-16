@@ -96,10 +96,10 @@ and hole index `i + N`:
 with `ξ = h - μ I - Diagonal(U n / 2)`.
 
 Here `U > 0` is attractive, with `H_int = -U Σ n↑n↓`, Hartree shift
-`-(U/2)n`. `D` may be any pairing operator accepted by `mul!`; the `Delta`
-keyword remains as an onsite compatibility shorthand and constructs
-`Diagonal(Delta)`. This CPU-only reduced convention supports two hole-block
-conventions:
+`-(U/2)n`. A matrix-free `D` must support `size` and five-argument `mul!` for
+both `D` and `adjoint(D)`; the `Delta` keyword remains as an onsite
+compatibility shorthand and constructs `Diagonal(Delta)`. This CPU-only
+reduced convention supports two hole-block conventions:
 
   * `hole_convention=:intervalley` (the default) uses `hole = -ξ`, hence the
     same `h` in both blocks, and presumes `h_{-K}^* = h_K`. For matrix inputs a
@@ -198,6 +198,11 @@ function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)),
     else
         assume_intervalley &&
             throw(ArgumentError("BdGOperator: assume_intervalley is meaningless for hole_convention=:conjugate; leave it false"))
+        if h_is_matrix && h_hole !== nothing &&
+                (!(h_hole isa AbstractMatrix) || size(h_hole) != size(h) ||
+                 !iszero(h_hole - conj(h)))
+            throw(ArgumentError("BdGOperator: for an assembled h the conjugate hole block is conj(h); a different h_hole would silently invalidate gershgorin_bound and the Hermitian BdG action"))
+        end
         if h_hole === nothing
             h_is_matrix ||
                 throw(ArgumentError("BdGOperator: matrix-free h with hole_convention=:conjugate requires h_hole, the conjugated normal-state operator"))
@@ -244,10 +249,13 @@ LinearAlgebra.mul!(Y::AbstractVecOrMat, B::BdGOperator, X::AbstractVecOrMat) =
 """
     PairingChannel(bonds, weights, V, parity)
 
-Plain-data description of a pairing channel. `bonds` contains each undirected
-bond once, `weights` is the seed pattern and projection form factor, `V` is
-the per-bond attractive coupling, and `parity` is `:even` or `:odd`. Scalar
-`weights` and `V` values are broadcast over all bonds.
+Plain-data description of a pairing channel. `bonds` contains oriented
+representatives of undirected bonds: the stored `(i, j)` order defines the
+positive orientation, so reversing a representative changes the sign of odd
+channel weights and amplitudes while leaving even-channel values unchanged.
+`weights` is the seed pattern and projection form factor, `V` is the per-bond
+attractive coupling, and `parity` is `:even` or `:odd`. Scalar `weights` and
+`V` values are broadcast over all bonds.
 """
 struct PairingChannel
     bonds::Vector{Tuple{Int, Int}}
@@ -304,7 +312,9 @@ end
 Assemble the sparse pairing block declared by `channels`. Supply either
 per-channel, per-bond `amplitudes`, or a scalar `amplitude` that seeds each
 bond as `amplitude * channel.weights[b]`. Explicit zero structural entries
-are retained. Each undirected bond may belong to only one channel.
+are retained. Bonds are oriented representatives of undirected bonds: under
+reversal, odd-channel weights and amplitudes change sign while even-channel
+values are unchanged. Each undirected bond may belong to only one channel.
 """
 function pairing_matrix(N::Integer, channels::Vector{PairingChannel};
                         amplitudes=nothing, amplitude=nothing)
@@ -815,10 +825,13 @@ end
 function bdg_checkpoint(path::AbstractString, op::BdGOperator,
                         channels::Vector{PairingChannel}, amplitudes,
                         history, v_power, params)
+    I_D, J_D, V_D = findnz(op.D)
     state = (version=3,
              delta=nothing,
              channels=_checkpoint_channel_data(channels),
              amplitudes=[copy(values) for values in amplitudes],
+             D_triplets=(I=copy(I_D), J=copy(J_D), V=copy(V_D)),
+             hole_convention=op.hole_convention,
              n=copy(op.n),
              mu=op.μ,
              U=copy(op.U),
@@ -861,8 +874,7 @@ end
     bdg_restore!(op, channels, path) -> (history, v_power, params)
 
 Restore a version-3 channel checkpoint, validating its site count, Hartree
-interaction, and channel bonds, couplings, and parity. Pairing entries outside
-the declared channels are left unchanged.
+interaction, hole convention, channels, and fixed pairing entries.
 """
 function bdg_restore!(op::BdGOperator, channels::Vector{PairingChannel},
                       path::AbstractString)
@@ -873,6 +885,8 @@ function bdg_restore!(op::BdGOperator, channels::Vector{PairingChannel},
         throw(ArgumentError("bdg_restore!: unsupported checkpoint version $(state.version)"))
     state.N == op.N || throw(ArgumentError("bdg_restore!: checkpoint has N=$(state.N); expected N=$(op.N)"))
     state.U ≈ op.U || throw(ArgumentError("bdg_restore!: checkpoint interaction U does not match the operator"))
+    state.hole_convention === op.hole_convention ||
+        throw(ArgumentError("bdg_restore!: checkpoint hole convention does not match the operator"))
     length(state.n) == op.N || throw(ArgumentError("bdg_restore!: checkpoint n has invalid length"))
     length(state.channels) == length(channels) ||
         throw(ArgumentError("bdg_restore!: checkpoint channel count does not match"))
@@ -881,6 +895,8 @@ function bdg_restore!(op::BdGOperator, channels::Vector{PairingChannel},
         current = channels[c]
         saved.bonds == current.bonds ||
             throw(ArgumentError("bdg_restore!: checkpoint channel $c bonds do not match"))
+        saved.weights ≈ current.weights ||
+            throw(ArgumentError("bdg_restore!: checkpoint channel $c weights do not match"))
         saved.V ≈ current.V ||
             throw(ArgumentError("bdg_restore!: checkpoint channel $c coupling V does not match"))
         saved.parity === current.parity ||
@@ -888,6 +904,21 @@ function bdg_restore!(op::BdGOperator, channels::Vector{PairingChannel},
     end
     structure = _channel_structure(op, channels, "bdg_restore!")
     _write_channel_amplitudes!(op, channels, structure, state.amplitudes)
+    triplets = state.D_triplets
+    saved_D = sparse(triplets.I, triplets.J, triplets.V, op.N, op.N)
+    channel_slots = Set{Tuple{Int, Int}}()
+    for channel in channels, (i, j) in channel.bonds
+        push!(channel_slots, (i, j))
+        i == j || push!(channel_slots, (j, i))
+    end
+    current_I, current_J, _ = findnz(op.D)
+    fixed_slots = Set(zip(triplets.I, triplets.J))
+    union!(fixed_slots, zip(current_I, current_J))
+    for (i, j) in sort!(collect(fixed_slots))
+        if !((i, j) in channel_slots) && !isequal(op.D[i, j], saved_D[i, j])
+            throw(ArgumentError("bdg_restore!: pairing entry outside declared channels at ($i, $j) does not match the checkpoint"))
+        end
+    end
     op.n .= state.n
     op.μ = state.mu
     return copy(state.history), state.v_power === nothing ? nothing : copy(state.v_power), state.params
@@ -905,6 +936,9 @@ function _bdg_scf_driver!(op::BdGOperator;
                           mixing::Symbol, anderson_history::Integer,
                           anderson_delay::Integer, anderson_max_step::Real,
                           verbose::Integer)
+    target_filling !== nothing && !update_density &&
+        throw(ArgumentError("bdg_solve!: target_filling cannot be combined with update_density=false: the filling estimator requires density updates"))
+
     function inner_solve!()
         consecutive = false
         converged = false
@@ -1032,7 +1066,7 @@ function _bdg_scf_driver!(op::BdGOperator;
             mu_hi, err_hi = mu_mid, err_mid
         end
     end
-    return result
+    error("bdg_solve!: target-filling bisection did not converge after $(mu_maxiter) iterations; raise mu_maxiter or mu_tol")
 end
 
 """
@@ -1113,7 +1147,10 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
     end
     params = (beta=beta, NC=NC, Np=Np, g_rho=g_rho, mix=mix,
               tol_delta=tol_delta, tol_n=tol_n, kernel=kernel_name,
-              update_density=update_density, mixing=string(mixing))
+              update_density=update_density, rescale_eps=rescale_eps,
+              mixing=string(mixing), anderson_history=anderson_history,
+              anderson_delay=anderson_delay,
+              anderson_max_step=anderson_max_step)
     history, v_power, saved_params = restart === nothing ?
         (NamedTuple[], nothing, nothing) : bdg_restore!(op, restart)
     if saved_params !== nothing
@@ -1231,6 +1268,8 @@ function bdg_solve!(op::BdGOperator, channels::Vector{PairingChannel};
                     anderson_delay::Integer=5,
                     anderson_max_step::Real=50.0,
                     verbose::Integer=0)
+    op.hole_convention === :conjugate ||
+        throw(ArgumentError("bdg_solve!: pairing-channel self-consistency requires hole_convention=:conjugate because transpose-parity symmetrization presumes same-block fermionic exchange; an intervalley partner-valley pairing map is not implemented"))
     beta > 0 || throw(ArgumentError("bdg_solve!: beta must be positive (got $beta)"))
     NC >= 2 || throw(ArgumentError("bdg_solve!: NC must be at least 2 (got $NC)"))
     Np > 0 || throw(ArgumentError("bdg_solve!: Np must be positive (got $Np)"))
@@ -1263,7 +1302,10 @@ function bdg_solve!(op::BdGOperator, channels::Vector{PairingChannel};
     end
     params = (beta=beta, NC=NC, Np=Np, g_rho=g_rho, mix=mix,
               tol_delta=tol_delta, tol_n=tol_n, kernel=kernel_name,
-              update_density=update_density, mixing=string(mixing))
+              update_density=update_density, rescale_eps=rescale_eps,
+              mixing=string(mixing), anderson_history=anderson_history,
+              anderson_delay=anderson_delay,
+              anderson_max_step=anderson_max_step)
     history, v_power, saved_params = restart === nothing ?
         (NamedTuple[], nothing, nothing) : bdg_restore!(op, channels, restart)
     if saved_params !== nothing

@@ -349,13 +349,14 @@ cancellation is exact) but is generically `O(Delta^2)`. The normal reference
 retains the superconducting state's assembled hopping, chemical potential,
 interaction, and converged Hartree density, changing only `Delta` to zero.
 
-Rigid-Δ (Scalapino–White–Zhang) convention: for every pairing channel,
-onsite or bond, the pairing block contributes no current or diamagnetic
-vertex. The normal reference zeroes the entire pairing block while retaining
-hopping, chemical potential, interaction, and Hartree density. The
-free-energy-curvature anchor in the test suite defines `H(A)` with Peierls
-phases on kinetic bonds only, matching this convention. The self-consistently
-gauge-coupled (charge-2e) pairing response is out of scope.
+This is the package's fixed-gauge, rigid-`D` functional: Peierls phases enter
+kinetic bonds only, and the pairing block contributes no current or
+diamagnetic vertex. It reduces to the standard mean-field Kubo
+(Scalapino–White–Zhang) treatment for onsite pairing. The normal reference
+zeroes the entire pairing block while retaining hopping, chemical potential,
+interaction, and Hartree density, and the free-energy-curvature anchor tests
+exactly this functional. Local gauge covariance of a nonlocal pair field and
+the charge-2e pairing response are out of scope.
 
 Both responses use `Jalpha = J(q)` and `Jbeta = J(-q)`, the same probes,
 `NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field. Candidate
