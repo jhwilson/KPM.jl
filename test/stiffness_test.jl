@@ -327,3 +327,89 @@ end
     println("flux-ring singlet Pi_SC: ED=$(Pi_SC_ed), KPM=$(response.Pi_SC), relerr=$(stiffness_relerr)")
     @test isapprox(response.Pi_SC, Pi_SC_ed; rtol=0.05)
 end
+
+@testset "diamagnetic term vs ED" begin
+    delta_field = fill(0.45 + 0.2im, 9)
+    opd = KPM.BdGOperator(hsq; mu=-0.7, U=2.0, n=fill(0.4, 9),
+                          Delta=delta_field)
+    psi_id = Matrix{ComplexF64}(I, 18, 18)
+    Dia_kpm = KPM.diamagnetic_term(
+        opd, possq; disp=dispsq, beta=10.0, NC=256, psi_in=psi_id,
+        volume=1.0)
+    Dhat = KPM.nambu_diamagnetic(hsq, possq; disp=dispsq)
+    Hd = bdg_matrix(
+        hsq, -0.7, fill(2.0, 9), fill(0.4, 9), delta_field)
+    Dia_ed = ed_diamagnetic(Hd, Matrix(Dhat); beta=10.0)
+    Dia_relerr = abs(Dia_kpm - Dia_ed) / abs(Dia_ed)
+    println("diamagnetic term: ED=$(Dia_ed), KPM=$(Dia_kpm), relerr=$(Dia_relerr)")
+    TOL_DIAMAGNETIC = 5e-3
+    @test isapprox(Dia_kpm, Dia_ed; rtol=TOL_DIAMAGNETIC)
+
+    @test Matrix(Dhat) ≈ Matrix(Dhat)' atol=1e-13
+    Dhat_intervalley = KPM.nambu_diamagnetic(
+        hsq, possq; disp=dispsq, hole_convention=:intervalley)
+    @test Dhat == Dhat_intervalley
+
+    hf, posf, dispf = flux_ring_model(4; phi=0.35)
+    Dhat_singlet = KPM.nambu_diamagnetic(
+        hf, posf; disp=dispf, hole_convention=:singlet)
+    Dhat_intervalley_flux = KPM.nambu_diamagnetic(
+        hf, posf; disp=dispf, hole_convention=:intervalley)
+    diamagnetic_convention_mismatch = maximum(
+        abs, Matrix(Dhat_singlet - Dhat_intervalley_flux))
+    println("flux-ring diamagnetic cross-convention mismatch=$(diamagnetic_convention_mismatch)")
+    @test diamagnetic_convention_mismatch > 1e-3
+end
+
+@testset "normal-state Meissner consistency and complete stiffness vs free-energy curvature" begin
+    beta = 10.0
+    volume = 9.0
+    g_J = 1.0
+    delta_field = fill(0.45 + 0.2im, 9)
+    zero_delta = zeros(ComplexF64, 9)
+    density = fill(0.4, 9)
+    interaction = fill(2.0, 9)
+    opd = KPM.BdGOperator(
+        hsq; mu=-0.7, U=interaction, n=density, Delta=delta_field)
+    op0 = KPM.BdGOperator(
+        hsq; mu=-0.7, U=interaction, n=density, Delta=zero_delta)
+    psi_id = Matrix{ComplexF64}(I, 18, 18)
+    r = KPM.superfluid_stiffness(
+        opd, possq, qy; beta=beta, eta=0.0, NC=256, psi_in=psi_id,
+        volume=volume, g_J=g_J, disp=dispsq,
+        include_diamagnetic=true)
+
+    free_energy(Delta, A) = ed_bdg_free_energy(
+        hsq, possq, dispsq, -0.7, interaction, density, Delta, A;
+        q=qy, dir=1, beta=beta)
+    function curvature(Delta, delta)
+        return (free_energy(Delta, delta) - 2free_energy(Delta, 0.0) +
+                free_energy(Delta, -delta)) / delta^2
+    end
+    Fpp_SC = curvature(delta_field, 1e-3)
+    Fpp_N = curvature(zero_delta, 1e-3)
+    Fpp_SC_halfstep = curvature(delta_field, 5e-4)
+    Fpp_N_halfstep = curvature(zero_delta, 5e-4)
+    anchor = (2g_J / volume) * (Fpp_SC - Fpp_N)
+    anchor_halfstep = (2g_J / volume) *
+                      (Fpp_SC_halfstep - Fpp_N_halfstep)
+    stiffness_relerr = abs(r.Ds_over_pi_complete - anchor) / abs(anchor)
+
+    println("free-energy curvatures delta=1e-3: SC=$(Fpp_SC), N=$(Fpp_N), anchor=$(anchor)")
+    println("free-energy curvatures delta=5e-4: SC=$(Fpp_SC_halfstep), N=$(Fpp_N_halfstep), anchor=$(anchor_halfstep)")
+    println("complete stiffness: curvature anchor=$(anchor), KPM=$(r.Ds_over_pi_complete), relerr=$(stiffness_relerr)")
+    println("paramagnetic-only stiffness=$(r.Ds_over_pi), diamagnetic correction=$(r.Dia_SC - r.Dia_N)")
+    TOL_CURVATURE = 2e-2
+    @test isapprox(r.Ds_over_pi_complete, anchor; rtol=TOL_CURVATURE)
+    @test abs(r.Ds_over_pi_complete - r.Ds_over_pi) > 1e-4
+
+    normal_kernel = r.Dia_N - real(r.Pi_N)
+    println("normal-state Meissner check: Dia_N=$(r.Dia_N), Re(Pi_N)=$(real(r.Pi_N)), K_N=$(normal_kernel)")
+
+    r0 = KPM.superfluid_stiffness(
+        op0, possq, qy; beta=beta, eta=0.0, NC=256, psi_in=psi_id,
+        volume=volume, g_J=g_J, disp=dispsq,
+        include_diamagnetic=true)
+    println("zero-gap complete stiffness=$(r0.Ds_over_pi_complete), paramagnetic=$(r0.Ds_over_pi), diamagnetic correction=$(r0.Dia_SC - r0.Dia_N)")
+    @test abs(r0.Ds_over_pi_complete) < 1e-10
+end
