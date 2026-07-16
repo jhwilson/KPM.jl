@@ -183,11 +183,16 @@ Compute the paired finite-`q` superfluid stiffness
 
     D_s / pi = Re Pi_N - Re Pi_SC.
 
-This is an Eq.-24-style paired subtraction with no separate diamagnetic term:
-the normal-state reference removes the ultraviolet/diamagnetic contribution.
-The reference retains the superconducting state's assembled hopping, chemical
-potential, interaction, and converged Hartree density, changing only `Delta`
-to zero.
+This is a paired paramagnetic subtraction with no separate diamagnetic term.
+It is exact for strictly linear (continuum-Dirac-like) dispersions, where the
+diamagnetic operator vanishes and the subtraction removes the ultraviolet
+cutoff dependence. For a lattice model it omits the superconducting-vs-normal
+difference of the diamagnetic (kinetic) expectation value, which vanishes as
+`Delta -> 0` (so the zero-gap cancellation is exact) but is generically
+`O(Delta^2)`; callers needing the lattice-complete stiffness must add
+`<T_dia>_SC - <T_dia>_N` separately (planned follow-up). The reference
+retains the superconducting state's assembled hopping, chemical potential,
+interaction, and converged Hartree density, changing only `Delta` to zero.
 
 Both responses use `Jalpha = J(q)` and `Jbeta = J(-q)`, the same probes,
 `NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field. Each state is
