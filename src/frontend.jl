@@ -367,3 +367,107 @@ function bdg_update(m::LocalBdGMoments; beta::Real, kernel=JacksonKernel,
     return bdg_update(m.mu_rho, m.mu_delta, m.a; U=m.U, beta=beta,
                       g_rho=m.g_rho, kernel=kernel, Np=Np)
 end
+
+"""
+    ChannelBdGMoments(mu_rho, mu_F, a, b, sites, directed_bonds,
+                      channels, NH, g_rho)
+
+Density and directed anomalous moments for user-defined pairing channels,
+together with their BdG rescaling and reconstruction metadata.
+"""
+struct ChannelBdGMoments{MR<:AbstractMatrix{<:Real},
+                         MC<:AbstractMatrix{<:Complex}} <: AbstractMoments
+    mu_rho::MR
+    mu_F::MC
+    a::Float64
+    b::Float64
+    sites::Vector{Int}
+    directed_bonds::Vector{Tuple{Int, Int}}
+    channels::Vector{PairingChannel}
+    NH::Int
+    g_rho::Float64
+    function ChannelBdGMoments(mu_rho::MR, mu_F::MC, a, b, sites,
+                               directed_bonds, channels, NH, g_rho) where
+            {MR<:AbstractMatrix{<:Real}, MC<:AbstractMatrix{<:Complex}}
+        size(mu_rho, 1) == size(mu_F, 1) ||
+            throw(ArgumentError("ChannelBdGMoments: mu_rho and mu_F must have the same number of rows (got $(size(mu_rho, 1)) and $(size(mu_F, 1)))"))
+        sites_vec = collect(Int, sites)
+        bonds_vec = collect(Tuple{Int, Int}, directed_bonds)
+        channels_vec = collect(PairingChannel, channels)
+        size(mu_rho, 2) == length(sites_vec) ||
+            throw(ArgumentError("ChannelBdGMoments: mu_rho columns and sites must have equal lengths (got $(size(mu_rho, 2)) and $(length(sites_vec)))"))
+        size(mu_F, 2) == length(bonds_vec) ||
+            throw(ArgumentError("ChannelBdGMoments: mu_F columns and directed_bonds must have equal lengths (got $(size(mu_F, 2)) and $(length(bonds_vec)))"))
+        b == 0.0 ||
+            throw(ArgumentError("ChannelBdGMoments: b must be 0.0 for reduced BdG radial rescaling (got $b)"))
+        NH > 0 || throw(ArgumentError("ChannelBdGMoments: NH must be positive (got $NH)"))
+        iseven(NH) ||
+            throw(ArgumentError("ChannelBdGMoments: NH must be even for a BdG Hamiltonian (got $NH)"))
+        af = Float64(a)
+        isfinite(af) && af > 0 ||
+            throw(ArgumentError("ChannelBdGMoments: a must be finite and positive (got $a)"))
+        N = Int(NH) ÷ 2
+        all(i -> 1 <= i <= N, sites_vec) ||
+            throw(ArgumentError("ChannelBdGMoments: all sites must satisfy 1 <= site <= $N"))
+        site_set = Set(sites_vec)
+        all(bond -> 1 <= bond[1] <= N && 1 <= bond[2] <= N,
+            bonds_vec) ||
+            throw(ArgumentError("ChannelBdGMoments: all directed bond indices must satisfy 1 <= index <= $N"))
+        all(bond -> bond[1] in site_set, bonds_vec) ||
+            throw(ArgumentError("ChannelBdGMoments: every directed bond source must occur in sites"))
+        _validate_channel_ownership(channels_vec, "ChannelBdGMoments")
+        directed_set = Set(bonds_vec)
+        length(directed_set) == length(bonds_vec) ||
+            throw(ArgumentError("ChannelBdGMoments: directed_bonds must not contain duplicates"))
+        for channel in channels_vec, (i, j) in channel.bonds
+            i <= N && j <= N ||
+                throw(ArgumentError("ChannelBdGMoments: channel bond ($i, $j) exceeds physical size $N"))
+            (i, j) in directed_set ||
+                throw(ArgumentError("ChannelBdGMoments: missing directed bond ($i, $j)"))
+            i == j || (j, i) in directed_set ||
+                throw(ArgumentError("ChannelBdGMoments: missing directed bond ($j, $i)"))
+        end
+        new{MR, MC}(mu_rho, mu_F, af, Float64(b), sites_vec, bonds_vec,
+                    channels_vec, Int(NH), Float64(g_rho))
+    end
+end
+
+nc(m::ChannelBdGMoments) = size(m.mu_rho, 1)
+
+Base.show(io::IO, m::ChannelBdGMoments) = print(
+    io, "ChannelBdGMoments(NC=$(nc(m)), NS=$(length(m.sites)), NB=$(length(m.directed_bonds)), NH=$(m.NH), a=$(m.a), b=$(m.b))")
+
+"""
+    bdg_channel_moments(h, channels; sites=nothing, NC=512, g_rho=2.0,
+                        batch_size=64)
+
+Compute typed density and directed anomalous moments for all bonds required
+by `channels`. By default every physical site is seeded.
+"""
+function bdg_channel_moments(
+        h::RescaledHamiltonian{<:ScaledOperator{<:BdGOperator}},
+        channels::Vector{PairingChannel}; sites=nothing, NC::Integer=512,
+        g_rho::Real=2.0, batch_size::Integer=64)
+    op = h.H.op
+    sites_vec = sites === nothing ? collect(1:op.N) : collect(Int, sites)
+    directed_bonds = _channel_directed_bonds(channels)
+    mu_rho, mu_F = bdg_channel_moments(
+        h.H, op.N, sites_vec, directed_bonds, Int(NC);
+        batch_size=batch_size)
+    return ChannelBdGMoments(mu_rho, mu_F, h.a, h.b, sites_vec,
+                             directed_bonds, channels, 2op.N, g_rho)
+end
+
+"""
+    bdg_update(m::ChannelBdGMoments; beta, kernel=JacksonKernel, Np=2nc(m))
+
+Update density and all per-bond pairing amplitudes using the channel and
+rescaling metadata stored in `m`.
+"""
+function bdg_update(m::ChannelBdGMoments; beta::Real, kernel=JacksonKernel,
+                    Np::Integer=2 * nc(m))
+    return bdg_channel_update(m.mu_rho, m.mu_F, m.a;
+                              channels=m.channels,
+                              directed_bonds=m.directed_bonds, beta=beta,
+                              g_rho=m.g_rho, kernel=kernel, Np=Np)
+end

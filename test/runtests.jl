@@ -25,6 +25,30 @@ end
     include("bdg_test.jl")
 end
 
+@testset "Kitaev pairing operators (applications/bdg.jl)" begin
+    include("kitaev_test.jl")
+end
+
+@testset "pairing channels (applications/bdg.jl)" begin
+    include("pairing_channel_test.jl")
+end
+
+@testset "d-wave pairing channels (applications/bdg.jl)" begin
+    include("dwave_test.jl")
+end
+
+@testset "Rashba pairing channels (applications/bdg.jl)" begin
+    include("rashba_test.jl")
+end
+
+@testset "SSH embedding invariance (applications/stiffness.jl)" begin
+    include("ssh_invariance_test.jl")
+end
+
+@testset "bond pairing stiffness (applications/stiffness.jl)" begin
+    include("bond_stiffness_test.jl")
+end
+
 @testset "superfluid stiffness (applications/stiffness.jl)" begin
     include("stiffness_test.jl")
 end
