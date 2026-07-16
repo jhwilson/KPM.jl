@@ -47,6 +47,101 @@ const BdG_Hd = bdg_matrix(BdG_h, BdG_mu, BdG_U, BdG_n, BdG_Delta)
     @test BdG_Hd ≈ BdG_Hd'
 end
 
+@testset "self-consistency: fixed point, seeds, U=0, phase, restart" begin
+    N = 4
+    h, _, _ = ring_model(N; t=1.0)
+    mu = -1.0
+    U = fill(3.0, N)
+    beta = 10.0
+    n_initial = fill(0.5, N)
+    Delta_initial = fill(0.1 + 0.0im, N)
+
+    # Dense ED reference for the same linearly mixed fixed-point map.
+    n_ed = copy(n_initial)
+    Delta_ed = copy(Delta_initial)
+    f = KPM.fermiFunctions(0.0, beta)
+    res_delta = Inf
+    res_n = Inf
+    for _ in 1:10_000
+        F = eigen(Hermitian(Matrix(bdg_matrix(h, mu, U, n_ed, Delta_ed))))
+        occupations = f.(F.values)
+        Delta_new = ComplexF64[-U[i] * sum(F.vectors[i, j] * conj(F.vectors[i + N, j]) * occupations[j]
+                                           for j in eachindex(F.values)) for i in 1:N]
+        n_new = Float64[sum(abs2(F.vectors[i, j]) * occupations[j]
+                             for j in eachindex(F.values)) for i in 1:N]
+        res_delta = norm(Delta_new .- Delta_ed, Inf)
+        res_n = norm(n_new .- n_ed, Inf)
+        @. Delta_ed = 0.7 * Delta_ed + 0.3 * Delta_new
+        @. n_ed = 0.7 * n_ed + 0.3 * n_new
+        max(res_delta, res_n) < 1e-12 && break
+    end
+    @test max(res_delta, res_n) < 1e-12
+
+    op_b = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
+    res_b = KPM.bdg_solve!(op_b; beta=beta, NC=512, mix=0.3,
+                            tol_delta=1e-9, tol_n=1e-9, maxiter=400)
+    @test res_b.converged
+    @test maximum(abs.(op_b.Δ .- sum(op_b.Δ) / N)) < 1e-8
+    @test maximum(abs.(op_b.n .- sum(op_b.n) / N)) < 1e-8
+    err_delta = maximum(abs.(abs.(op_b.Δ) .- abs.(Delta_ed)))
+    err_n = abs(sum(op_b.n) / N - sum(n_ed) / N)
+    println("SCF calibration: Delta=$(err_delta), n=$(err_n)")
+    TOL_SCF_DELTA = 2e-3
+    TOL_SCF_N = 2e-3
+    @test abs.(op_b.Δ) ≈ abs.(Delta_ed) rtol=TOL_SCF_DELTA
+    @test sum(op_b.n) / N ≈ sum(n_ed) / N rtol=TOL_SCF_N
+    @test abs(op_b.Δ[1]) > 0.1
+
+    op_seed = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial,
+                              Delta=fill(0.4 - 0.2im, N))
+    res_seed = KPM.bdg_solve!(op_seed; beta=beta, NC=512, mix=0.15,
+                               tol_delta=1e-9, tol_n=1e-9, maxiter=400)
+    @test res_seed.converged
+    @test abs.(op_seed.Δ) ≈ abs.(op_b.Δ) atol=1e-6 rtol=0
+    @test op_seed.n ≈ op_b.n atol=1e-6 rtol=0
+
+    phi = 0.9
+    op_phase = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial,
+                               Delta=exp(im * phi) .* Delta_initial)
+    res_phase = KPM.bdg_solve!(op_phase; beta=beta, NC=512, mix=0.3,
+                                tol_delta=1e-9, tol_n=1e-9, maxiter=400)
+    @test res_phase.converged
+    @test abs.(op_phase.Δ) ≈ abs.(op_b.Δ) atol=1e-6 rtol=0
+    @test op_phase.n ≈ op_b.n atol=1e-6 rtol=0
+    phase_error = angle(exp(im * (angle(op_phase.Δ[1]) - angle(op_b.Δ[1]) - phi)))
+    @test phase_error ≈ 0.0 atol=1e-3
+
+    op_u0 = KPM.BdGOperator(h; mu=mu, U=0.0, n=n_initial,
+                            Delta=fill(0.3 + 0.4im, N))
+    res_u0 = KPM.bdg_solve!(op_u0; beta=beta, NC=512, mix=0.3,
+                             tol_delta=1e-10, tol_n=1e-9, maxiter=400)
+    @test res_u0.converged
+    @test norm(op_u0.Δ, Inf) < 1e-8
+
+    mktempdir() do dir
+        checkpoint = joinpath(dir, "bdg-checkpoint.bin")
+        op_a = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
+        KPM.bdg_solve!(op_a; beta=beta, NC=512, mix=0.3,
+                       tol_delta=1e-14, tol_n=1e-14, maxiter=7,
+                       checkpoint_path=checkpoint, checkpoint_every=7)
+        op_b_restart = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
+        KPM.bdg_solve!(op_b_restart; beta=beta, NC=512, mix=0.3,
+                       tol_delta=1e-14, tol_n=1e-14, maxiter=7, restart=checkpoint)
+        op_c = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
+        KPM.bdg_solve!(op_c; beta=beta, NC=512, mix=0.3,
+                       tol_delta=1e-14, tol_n=1e-14, maxiter=14)
+        @test op_b_restart.Δ == op_c.Δ
+        @test op_b_restart.n == op_c.n
+    end
+
+    op_filling = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
+    res_filling = KPM.bdg_solve!(op_filling; beta=beta, NC=512, mix=0.3,
+                                  target_filling=0.6, mu_bracket=(-4.0, 4.0),
+                                  mu_tol=1e-3)
+    @test res_filling.converged
+    @test abs(sum(op_filling.n) / N - 0.6) <= 1e-3
+end
+
 @testset "particle-hole symmetry (complex Δ)" begin
     ev = eigvals(Hermitian(BdG_Hd))
     @test sort(ev) ≈ -reverse(sort(ev)) atol=1e-10
