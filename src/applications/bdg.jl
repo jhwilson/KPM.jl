@@ -473,7 +473,18 @@ end
                rescale_eps=0.2, callback=nothing, checkpoint_path=nothing,
                checkpoint_every=10, restart=nothing, verbose=0) -> BdGSCFResult
 
-Solve the local reduced BdG fixed-point equations by linear mixing. A field
+Solve the local reduced BdG fixed-point equations by damped fixed-point
+iteration. `mixing=:linear` (default) is plain linear mixing with weight
+`mix`; `mixing=:anderson` is Type-II Anderson acceleration over the packed
+state `(Re Δ, Im Δ[, n])` with window `anderson_history` and damping `mix`.
+Because the accelerated step is Newton-like it can converge to ANY root of
+the gap equation — including the unstable normal state `Δ = 0` — so it is
+safeguarded: the first `anderson_delay` iterations use plain damped steps
+(entering the physical basin), extrapolations larger than
+`anderson_max_step` times the damped step are rejected, and an unusable
+least-squares system falls back to the damped step. Anderson memory is not
+checkpointed: a restart (or each target-filling evaluation) begins with an
+empty acceleration window. A field
 update must meet both channel tolerances on two consecutive iterations before
 the solve is reported converged. With `target_filling`, a bisection over
 `op.μ` performs a full inner solve at every chemical-potential evaluation;
@@ -497,6 +508,8 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
                     checkpoint_path::Union{Nothing, AbstractString}=nothing,
                     checkpoint_every::Integer=10,
                     restart::Union{Nothing, AbstractString}=nothing,
+                    mixing::Symbol=:linear, anderson_history::Integer=6,
+                    anderson_delay::Integer=5, anderson_max_step::Real=50.0,
                     verbose::Integer=0)
     beta > 0 || throw(ArgumentError("bdg_solve!: beta must be positive (got $beta)"))
     NC >= 2 || throw(ArgumentError("bdg_solve!: NC must be at least 2 (got $NC)"))
@@ -512,6 +525,14 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
     checkpoint_every > 0 || throw(ArgumentError("bdg_solve!: checkpoint_every must be positive (got $checkpoint_every)"))
     restart !== nothing && target_filling !== nothing &&
         throw(ArgumentError("bdg_solve!: restart cannot be combined with target_filling because the bisection state is not checkpointed"))
+    mixing in (:linear, :anderson) ||
+        throw(ArgumentError("bdg_solve!: mixing must be :linear or :anderson (got $mixing)"))
+    anderson_history >= 1 ||
+        throw(ArgumentError("bdg_solve!: anderson_history must be positive (got $anderson_history)"))
+    anderson_delay >= 0 ||
+        throw(ArgumentError("bdg_solve!: anderson_delay must be nonnegative (got $anderson_delay)"))
+    anderson_max_step > 0 ||
+        throw(ArgumentError("bdg_solve!: anderson_max_step must be positive (got $anderson_max_step)"))
 
     kernel_name = try
         string(nameof(kernel))
@@ -520,13 +541,15 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
     end
     params = (beta=beta, NC=NC, Np=Np, g_rho=g_rho, mix=mix,
               tol_delta=tol_delta, tol_n=tol_n, kernel=kernel_name,
-              update_density=update_density)
+              update_density=update_density, mixing=string(mixing))
     history, v_power, saved_params = restart === nothing ?
         (NamedTuple[], nothing, nothing) : bdg_restore!(op, restart)
     if saved_params !== nothing
         differences = String[]
         for name in propertynames(params)
-            saved = getproperty(saved_params, name)
+            # older checkpoints may predate newly added parameters
+            saved = hasproperty(saved_params, name) ?
+                getproperty(saved_params, name) : missing
             current = getproperty(params, name)
             isequal(saved, current) || push!(differences, "$(name): saved=$(repr(saved)), current=$(repr(current))")
         end
@@ -536,6 +559,19 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
         end
     end
 
+    Nsites = op.N
+    pack_state() = update_density ?
+        vcat(real.(op.Δ), imag.(op.Δ), copy(op.n)) :
+        vcat(real.(op.Δ), imag.(op.Δ))
+    pack_out(Delta_out, n_out) = update_density ?
+        vcat(real.(Delta_out), imag.(Delta_out), n_out) :
+        vcat(real.(Delta_out), imag.(Delta_out))
+    function set_state!(x)
+        @views op.Δ .= complex.(x[1:Nsites], x[Nsites+1:2Nsites])
+        update_density && (@views op.n .= x[2Nsites+1:3Nsites])
+        return nothing
+    end
+
     function inner_solve!()
         consecutive = false
         converged = false
@@ -543,6 +579,11 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
         res_n_abs = update_density ? Inf : 0.0
         a = NaN
         iter_offset = isempty(history) ? 0 : last(history).iter
+        # Anderson memory is per inner solve (and empty after a restart or
+        # between target-filling evaluations): the first accelerated step
+        # only happens once two (X, F) pairs exist.
+        X_hist = Vector{Vector{Float64}}()
+        F_hist = Vector{Vector{Float64}}()
 
         for local_iter in 1:Int(maxiter)
             iter = iter_offset + local_iter
@@ -580,9 +621,46 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
             converged = consecutive && passes
             consecutive = passes
 
-            @. op.Δ = (1 - mix) * op.Δ + mix * Delta_new
-            if update_density
-                @. op.n = (1 - mix) * op.n + mix * n_new
+            if mixing === :anderson
+                X_k = pack_state()
+                F_k = pack_out(Delta_new, n_new) .- X_k
+                push!(X_hist, X_k)
+                push!(F_hist, F_k)
+                while length(X_hist) > anderson_history + 1
+                    popfirst!(X_hist)
+                    popfirst!(F_hist)
+                end
+                p = length(X_hist)
+                X_next = nothing
+                # Warm-up delay: the accelerated (Newton-like) step converges
+                # to ANY root of F, including the unstable normal-state
+                # solution Delta = 0; a few damped steps first move the
+                # iterate into the physical basin. The step cap rejects wild
+                # extrapolations for the same reason.
+                if p >= 2 && local_iter > anderson_delay
+                    dX = reduce(hcat, (X_hist[j+1] .- X_hist[j] for j in 1:p-1))
+                    dF = reduce(hcat, (F_hist[j+1] .- F_hist[j] for j in 1:p-1))
+                    gamma = try
+                        dF \ F_k
+                    catch
+                        nothing
+                    end
+                    if gamma !== nothing && all(isfinite, gamma)
+                        # Type-II Anderson step with damping `mix`
+                        candidate = X_k .+ mix .* F_k .- (dX .+ mix .* dF) * gamma
+                        damped_step = mix * norm(F_k)
+                        if norm(candidate .- X_k) <= anderson_max_step * max(damped_step, eps())
+                            X_next = candidate
+                        end
+                    end
+                end
+                X_next === nothing && (X_next = X_k .+ mix .* F_k)
+                set_state!(X_next)
+            else
+                @. op.Δ = (1 - mix) * op.Δ + mix * Delta_new
+                if update_density
+                    @. op.n = (1 - mix) * op.n + mix * n_new
+                end
             end
 
             entry = (iter=iter, res_delta=Float64(res_d_abs), res_n=Float64(res_n_abs),
