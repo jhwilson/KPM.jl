@@ -44,14 +44,24 @@ function chebyshev_iter_single(H, V_all::Union{Array, SubArray}, i_pp_in::Int64,
     return nothing
 end
 
+# Below this many elements per block, per-step task spawning costs more than
+# the matvecs themselves (tiny test systems, local BdG seeds), so run serially.
+const _CHEB_SERIAL_CUTOFF = 1 << 14
+
 # The core step: V_pp <- 2 H V_p - V_pp, one fused 5-arg mul! per column,
-# multithreaded over the NR random-vector columns.
+# multithreaded over the NR random-vector columns (serial for tiny blocks).
 function chebyshev_iter_single(H,
                                V_pp_in::SubArray,
                                V_p_in::SubArray)
     T = eltype(V_pp_in)
-    Threads.@threads for i = 1:size(V_pp_in, 2)
-        mul!(view(V_pp_in, :, i), H, view(V_p_in, :, i), T(2), T(-1))
+    if Threads.nthreads() == 1 || length(V_pp_in) <= _CHEB_SERIAL_CUTOFF
+        for i = 1:size(V_pp_in, 2)
+            mul!(view(V_pp_in, :, i), H, view(V_p_in, :, i), T(2), T(-1))
+        end
+    else
+        Threads.@threads for i = 1:size(V_pp_in, 2)
+            mul!(view(V_pp_in, :, i), H, view(V_p_in, :, i), T(2), T(-1))
+        end
     end
     return nothing
 end
@@ -61,8 +71,14 @@ function chebyshev_iter_single(H,
                                V_pp_in::ASA,
                                V_p_in::ASA)
     T = eltype(first(V_pp_in))
-    Threads.@threads for i in eachindex(V_pp_in)
-        mul!(V_pp_in[i], H, V_p_in[i], T(2), T(-1))
+    if Threads.nthreads() == 1 || length(V_pp_in) * length(first(V_pp_in)) <= _CHEB_SERIAL_CUTOFF
+        for i in eachindex(V_pp_in)
+            mul!(V_pp_in[i], H, V_p_in[i], T(2), T(-1))
+        end
+    else
+        Threads.@threads for i in eachindex(V_pp_in)
+            mul!(V_pp_in[i], H, V_p_in[i], T(2), T(-1))
+        end
     end
     return nothing
 end

@@ -224,3 +224,206 @@ function bdg_update(mu_rho::AbstractMatrix{<:Real},
     Delta_new = -collect(Float64, U) .* (transpose(gh .* mu_delta) * integrated)
     return collect(Float64, n_new), collect(ComplexF64, Delta_new)
 end
+
+"""
+    BdGSCFResult
+
+Summary of a BdG self-consistency solve. `history` stores one entry per
+fixed-point iteration, including entries restored from a checkpoint.
+"""
+struct BdGSCFResult
+    converged::Bool
+    iterations::Int
+    residual_delta::Float64
+    residual_n::Float64
+    a::Float64
+    history::Vector{NamedTuple}
+end
+
+Base.show(io::IO, r::BdGSCFResult) = print(io,
+    "BdGSCFResult(converged=$(r.converged), iterations=$(r.iterations), " *
+    "residual_delta=$(r.residual_delta), residual_n=$(r.residual_n), a=$(r.a))")
+
+"""
+    bdg_checkpoint(path, op, history, v_power) -> nothing
+
+Atomically write the plain-data state needed to restart a BdG
+self-consistency solve. The operator and callback are never serialized.
+"""
+function bdg_checkpoint(path::AbstractString, op::BdGOperator, history, v_power)
+    state = (version=1,
+             delta=copy(op.Δ),
+             n=copy(op.n),
+             mu=op.μ,
+             U=copy(op.U),
+             N=op.N,
+             history=copy(history),
+             v_power=v_power === nothing ? nothing : copy(v_power))
+    tmp_path = "$(path).tmp"
+    open(tmp_path, "w") do io
+        serialize(io, state)
+    end
+    mv(tmp_path, path; force=true)
+    return nothing
+end
+
+"""
+    bdg_restore!(op, path) -> (history, v_power)
+
+Restore a checkpointed BdG field state into `op`. The checkpoint must have
+the same number of sites as `op`.
+"""
+function bdg_restore!(op::BdGOperator, path::AbstractString)
+    state = open(deserialize, path)
+    state.version == 1 || throw(ArgumentError("bdg_restore!: unsupported checkpoint version $(state.version)"))
+    state.N == op.N || throw(ArgumentError("bdg_restore!: checkpoint has N=$(state.N); expected N=$(op.N)"))
+    length(state.delta) == op.N || throw(ArgumentError("bdg_restore!: checkpoint delta has invalid length"))
+    length(state.n) == op.N || throw(ArgumentError("bdg_restore!: checkpoint n has invalid length"))
+    op.Δ .= state.delta
+    op.n .= state.n
+    op.μ = state.mu
+    return copy(state.history), state.v_power === nothing ? nothing : copy(state.v_power)
+end
+
+"""
+    bdg_solve!(op; beta, NC=512, g_rho=1.0, mix=0.1, tol_delta=1e-6,
+               tol_n=1e-6, maxiter=500, kernel=JacksonKernel, Np=2NC,
+               batch_size=64, update_density=true, target_filling=nothing,
+               mu_bracket=(-Inf, Inf), mu_tol=1e-4, mu_maxiter=60,
+               rescale_eps=0.2, callback=nothing, checkpoint_path=nothing,
+               checkpoint_every=10, restart=nothing, verbose=0) -> BdGSCFResult
+
+Solve the local reduced BdG fixed-point equations by linear mixing. A field
+update must meet both channel tolerances on two consecutive iterations before
+the solve is reported converged. With `target_filling`, a bisection over
+`op.μ` performs a full inner solve at every chemical-potential evaluation;
+the fields carry over between evaluations as a warm start.
+"""
+function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
+                    g_rho::Real=1.0, mix::Real=0.1,
+                    tol_delta::Real=1e-6, tol_n::Real=1e-6,
+                    maxiter::Integer=500, kernel=JacksonKernel,
+                    Np::Integer=2 * NC, batch_size::Integer=64,
+                    update_density::Bool=true,
+                    target_filling::Union{Nothing, Real}=nothing,
+                    mu_bracket::Tuple{Real, Real}=(-Inf, Inf), mu_tol::Real=1e-4,
+                    mu_maxiter::Integer=60, rescale_eps::Real=0.2,
+                    callback=nothing,
+                    checkpoint_path::Union{Nothing, AbstractString}=nothing,
+                    checkpoint_every::Integer=10,
+                    restart::Union{Nothing, AbstractString}=nothing,
+                    verbose::Integer=0)
+    beta > 0 || throw(ArgumentError("bdg_solve!: beta must be positive (got $beta)"))
+    NC >= 2 || throw(ArgumentError("bdg_solve!: NC must be at least 2 (got $NC)"))
+    Np > 0 || throw(ArgumentError("bdg_solve!: Np must be positive (got $Np)"))
+    0 < mix <= 1 || throw(ArgumentError("bdg_solve!: mix must satisfy 0 < mix <= 1 (got $mix)"))
+    tol_delta >= 0 || throw(ArgumentError("bdg_solve!: tol_delta must be nonnegative (got $tol_delta)"))
+    tol_n >= 0 || throw(ArgumentError("bdg_solve!: tol_n must be nonnegative (got $tol_n)"))
+    maxiter > 0 || throw(ArgumentError("bdg_solve!: maxiter must be positive (got $maxiter)"))
+    batch_size > 0 || throw(ArgumentError("bdg_solve!: batch_size must be positive (got $batch_size)"))
+    0 < rescale_eps < 2 || throw(ArgumentError("bdg_solve!: rescale_eps must satisfy 0 < rescale_eps < 2 (got $rescale_eps)"))
+    mu_tol >= 0 || throw(ArgumentError("bdg_solve!: mu_tol must be nonnegative (got $mu_tol)"))
+    mu_maxiter > 0 || throw(ArgumentError("bdg_solve!: mu_maxiter must be positive (got $mu_maxiter)"))
+    checkpoint_every > 0 || throw(ArgumentError("bdg_solve!: checkpoint_every must be positive (got $checkpoint_every)"))
+
+    history, v_power = restart === nothing ? (NamedTuple[], nothing) : bdg_restore!(op, restart)
+
+    function inner_solve!()
+        consecutive = false
+        converged = false
+        res_d_abs = Inf
+        res_n_abs = update_density ? Inf : 0.0
+        a = NaN
+        iter_offset = isempty(history) ? 0 : last(history).iter
+
+        for local_iter in 1:Int(maxiter)
+            iter = iter_offset + local_iter
+            # In translation-invariant problems an exact prior power vector
+            # can remain a nonextremal eigenvector as the fields change.
+            # A deterministic perturbation retains the warm start while
+            # restoring overlap with every eigenspace; using `iter` preserves
+            # checkpoint/restart bitwise reproducibility.
+            if v_power !== nothing
+                v_power .+= 0.1 .* randn(Xoshiro(iter), ComplexF64, length(v_power))
+            end
+            rad, v_power_new = spectral_radius(op; v0=v_power)
+            rad > 0 || throw(ArgumentError("bdg_solve!: BdG operator has zero spectral radius"))
+            v_power = v_power_new
+            a = 2rad / (2 - rescale_eps)
+            Hs = ScaledOperator(op, a, 0.0)
+            mu_rho, mu_delta = bdg_site_moments(Hs, op.N, 1:op.N, Int(NC);
+                                                 batch_size=Int(batch_size))
+            n_new, Delta_new = bdg_update(mu_rho, mu_delta, a;
+                                           U=op.U, beta=beta, g_rho=g_rho,
+                                           kernel=kernel, Np=Int(Np))
+
+            res_d_abs = norm(Delta_new .- op.Δ, Inf)
+            res_d_rel = res_d_abs / max(norm(Delta_new, Inf), eps())
+            delta_pass = res_d_abs <= tol_delta || res_d_rel <= tol_delta
+            if update_density
+                res_n_abs = norm(n_new .- op.n, Inf)
+                res_n_rel = res_n_abs / max(norm(n_new, Inf), eps())
+                n_pass = res_n_abs <= tol_n || res_n_rel <= tol_n
+            else
+                res_n_abs = 0.0
+                n_pass = true
+            end
+            passes = delta_pass && n_pass
+            converged = consecutive && passes
+            consecutive = passes
+
+            @. op.Δ = (1 - mix) * op.Δ + mix * Delta_new
+            if update_density
+                @. op.n = (1 - mix) * op.n + mix * n_new
+            end
+
+            entry = (iter=iter, res_delta=Float64(res_d_abs), res_n=Float64(res_n_abs),
+                     max_delta=Float64(maximum(abs, op.Δ)),
+                     mean_n=Float64(sum(op.n) / op.N), mu=op.μ, a=Float64(a))
+            push!(history, entry)
+            callback === nothing || callback(op, iter, entry)
+            if checkpoint_path !== nothing &&
+                    (iter % checkpoint_every == 0 || converged || local_iter == maxiter)
+                bdg_checkpoint(checkpoint_path, op, history, v_power)
+            end
+            verbose >= 1 && println("BdG iter $(iter): res_delta=$(res_d_abs), res_n=$(res_n_abs), mu=$(op.μ), a=$(a)")
+            converged && break
+        end
+
+        iterations = isempty(history) ? 0 : last(history).iter
+        return BdGSCFResult(converged, iterations, Float64(res_d_abs),
+                            Float64(res_n_abs), Float64(a), history)
+    end
+
+    target_filling === nothing && return inner_solve!()
+
+    mu_lo, mu_hi = mu_bracket
+    isfinite(mu_lo) && isfinite(mu_hi) ||
+        throw(ArgumentError("bdg_solve!: target_filling requires finite mu_bracket endpoints"))
+    mu_lo < mu_hi || throw(ArgumentError("bdg_solve!: mu_bracket must satisfy lo < hi"))
+
+    function filling_error!(mu)
+        op.μ = Float64(mu)
+        result = inner_solve!()
+        return sum(op.n) / op.N - target_filling, result
+    end
+
+    err_lo, result = filling_error!(mu_lo)
+    abs(err_lo) <= mu_tol && return result
+    err_hi, result = filling_error!(mu_hi)
+    abs(err_hi) <= mu_tol && return result
+    signbit(err_lo) == signbit(err_hi) &&
+        throw(ArgumentError("bdg_solve!: target_filling is not bracketed by mu_bracket"))
+
+    for _ in 1:Int(mu_maxiter)
+        mu_mid = (mu_lo + mu_hi) / 2
+        err_mid, result = filling_error!(mu_mid)
+        abs(err_mid) <= mu_tol && return result
+        if signbit(err_mid) == signbit(err_lo)
+            mu_lo, err_lo = mu_mid, err_mid
+        else
+            mu_hi, err_hi = mu_mid, err_mid
+        end
+    end
+    return result
+end
