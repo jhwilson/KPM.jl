@@ -29,6 +29,10 @@ end
     include("kitaev_test.jl")
 end
 
+@testset "pairing channels (applications/bdg.jl)" begin
+    include("pairing_channel_test.jl")
+end
+
 @testset "superfluid stiffness (applications/stiffness.jl)" begin
     include("stiffness_test.jl")
 end
