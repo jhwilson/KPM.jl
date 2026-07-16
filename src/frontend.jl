@@ -92,15 +92,32 @@ function rescale(H; center::Bool=false, eps::Float64=0.1, fixed_a::Number=0.0)
 end
 
 """
-    rescale(op::BdGOperator; eps=0.2, kwargs...)
+    rescale(op::BdGOperator; eps=0.2, bound=:power, radius=nothing, kwargs...)
 
-Matrix-free BdG rescaling with particle-hole-symmetric center `b = 0` and
-`a = 2 * radius / (2 - eps)`. The default `eps=0.2` is looser than
-`normalizeH`'s `0.1` because power iteration lower-bounds the radius.
+BdG radial rescaling with center `b = 0` and
+`a = 2 * radius / (2 - eps)`. `bound=:power` uses the hardened multi-start
+[`spectral_radius`](@ref), which remains a lower estimate protected by
+recurrence guards. `bound=:gershgorin` uses the certified
+[`gershgorin_bound`](@ref) for assembled operators; its potentially larger
+scale reduces physical resolution at fixed `NC`. A caller-supplied `radius`
+overrides either estimator, for example when a bandwidth bound is known.
 """
-function rescale(op::BdGOperator; eps::Float64=0.2, kwargs...)
-    rad, _ = spectral_radius(op; kwargs...)
+function rescale(op::BdGOperator; eps::Real=0.2, bound::Symbol=:power,
+                 radius::Union{Nothing, Real}=nothing, kwargs...)
+    0 < eps < 2 || throw(ArgumentError("rescale: eps must satisfy 0 < eps < 2 (got $eps)"))
+    bound in (:power, :gershgorin) ||
+        throw(ArgumentError("rescale: bound must be :power or :gershgorin (got $bound)"))
+    rad = if radius !== nothing
+        Float64(radius)
+    elseif bound == :power
+        first(spectral_radius(op; kwargs...))
+    else
+        isempty(kwargs) || throw(ArgumentError("rescale: power-iteration keyword arguments are not used with bound=:gershgorin"))
+        gershgorin_bound(op)
+    end
     a = 2 * rad / (2 - eps)
+    isfinite(a) && a > 0 ||
+        throw(ArgumentError("rescale: BdG scale a must be finite and positive (got $a); the zero operator cannot be rescaled"))
     return RescaledHamiltonian(ScaledOperator(op, a, 0.0), a, 0.0)
 end
 
@@ -306,7 +323,7 @@ struct LocalBdGMoments{MR<:AbstractMatrix{<:Real}, MC<:AbstractMatrix{<:Complex}
         ns = size(mu_rho, 2)
         ns == length(sites_vec) == length(U_vec) ||
             throw(ArgumentError("LocalBdGMoments: moment columns, sites, and U must have equal lengths (got $ns, $(length(sites_vec)), and $(length(U_vec)))"))
-        b == 0.0 || throw(ArgumentError("LocalBdGMoments: b must be 0.0 because reduced BdG is particle-hole symmetric (got $b)"))
+        b == 0.0 || throw(ArgumentError("LocalBdGMoments: b must be 0.0 for reduced BdG radial rescaling (got $b)"))
         NH > 0 || throw(ArgumentError("LocalBdGMoments: NH must be positive (got $NH)"))
         af = Float64(a)
         isfinite(af) && af > 0 || throw(ArgumentError("LocalBdGMoments: a must be finite and positive (got $a)"))
@@ -320,13 +337,16 @@ nc(m::LocalBdGMoments) = size(m.mu_rho, 1)
 Base.show(io::IO, m::LocalBdGMoments) = print(io, "LocalBdGMoments(NC=$(nc(m)), NS=$(length(m.sites)), NH=$(m.NH), a=$(m.a), b=$(m.b))")
 
 """
-    bdg_local_moments(h; sites=nothing, NC=512, g_rho=1.0, batch_size=64)
+    bdg_local_moments(h; sites=nothing, NC=512, g_rho=2.0, batch_size=64)
 
 Compute typed local density and pairing moments for a rescaled reduced BdG
-Hamiltonian. By default, moments are computed at every physical site.
+Hamiltonian. By default, moments are computed at every physical site. The
+reduced block integrates one spin species, so `g_rho=2` reconstructs the full
+spin-singlet site density; `g_rho=1` stores per-spin density and leaves the
+Hartree interpretation to the caller.
 """
 function bdg_local_moments(h::RescaledHamiltonian{<:ScaledOperator{<:BdGOperator}};
-                           sites=nothing, NC::Integer=512, g_rho::Real=1.0,
+                           sites=nothing, NC::Integer=512, g_rho::Real=2.0,
                            batch_size::Integer=64)
     op = h.H.op
     sites_vec = sites === nothing ? collect(1:op.N) : collect(Int, sites)

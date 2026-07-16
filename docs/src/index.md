@@ -166,10 +166,10 @@ stiffness = KPM.superfluid_stiffness(op, pos, q; beta=8.0, eta=0.3,
 | Interaction sign | `U > 0` is attractive: `H_int = -U sum n_up n_down` and `Delta_i = -U_i<c_down c_up>`. |
 | Hartree | `-(U/2) n_i`, with full site density; there is no double-counting correction, and the absorbed constant is **not** split from `mu`. |
 | Chemical potential | It is inside `H_BdG`, so all Fermi factors are at quasiparticle energy `0`. |
-| Degeneracies | `g_rho` multiplies the density channel and `g_J` the response; neither is applied silently. |
+| Degeneracies | The reduced block integrates one spin species, so the default `g_rho=2` reconstructs the full spin-singlet site density (filling in `[0,2]`, consistent with the `-(U/2)n` Hartree term); `g_rho=1` gives per-spin density. `g_J` multiplies the response. Neither is applied silently. |
 | Volume | The response is per caller-supplied `volume`, in the caller's units. |
-| Rescaling | `b=0` by particle-hole symmetry; `a=2*radius/(2-eps)` from power iteration, with default `eps=0.2`. |
-| Stiffness definition | `Ds/pi = Re Pi_N - Re Pi_SC`, with paired probes, `NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field; each state has its own `a`. |
+| Rescaling | `b=0` (radial bound); `a=2*radius/(2-eps)` from hardened multi-start power iteration with default `eps=0.2`. Runtime recurrence guards abort loudly if the spectrum escapes `(-1,1)`; `rescale(op; bound=:gershgorin)` gives a certified upper bound for assembled operators, and `radius=...` accepts a known bound. |
+| Stiffness definition | `Ds/pi = Re Pi_N - Re Pi_SC`, with paired probes, `NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field; both states share a common Chebyshev scale `a_common = max(a_SC, a_N)` so the finite-`NC` broadening is identical in the subtraction. |
 | `q` and `eta` guidance | Choose `q=2pi/L` transverse to `dir` and commensurate with the torus. Choose `eta` between the finite-size level spacing and the gap, with `eta >= 5 a pi / NC`. |
 
 ```@docs; canonical=false

@@ -26,41 +26,64 @@ LinearAlgebra.mul!(Y::AbstractVecOrMat, S::ScaledOperator, X::AbstractVecOrMat) 
     mul!(Y, S, X, true, false)
 
 """
-    spectral_radius(op; tol=1e-4, maxiter=300, rng=Xoshiro(0), v0=nothing) -> (radius, v)
+    spectral_radius(op; tol=1e-4, maxiter=300, miniter=32, restarts=2,
+                    rng=Xoshiro(0), v0=nothing) -> (radius, v)
 
 Estimate the spectral radius of a Hermitian matrix-free operator with norm-ratio
 power iteration. The norm ratio converges to the spectral radius even when the
 extremal eigenvalues occur as a `±Emax` pair, as in BdG systems. The default
-deterministic RNG makes restarts reproducible, and `v0` enables warm starts.
+deterministic RNG makes restarts reproducible, and `v0` enables a warm-started
+primary run. No run exits for convergence before `miniter`, and `restarts`
+additional runs use fresh random vectors. The maximum estimate and its vector
+are returned. This remains a lower estimate; see [`rescale(::BdGOperator)`](@ref)
+for certified bounds and runtime guards.
 """
-function spectral_radius(op; tol=1e-4, maxiter=300, rng=Xoshiro(0), v0=nothing)
+function spectral_radius(op; tol=1e-4, maxiter=300, miniter::Integer=32,
+                         restarts::Integer=2, rng=Xoshiro(0), v0=nothing)
     N = size(op, 1)
-    v = v0 === nothing ? randn(rng, ComplexF64, N) : collect(ComplexF64, v0)
-    length(v) == N || throw(ArgumentError("spectral_radius: v0 has length $(length(v)); expected $N"))
-    nv = norm(v)
-    iszero(nv) && throw(ArgumentError("spectral_radius: v0 must be nonzero"))
-    v ./= nv
-    w = similar(v)
-    λ_prev = Inf
+    maxiter > 0 || throw(ArgumentError("spectral_radius: maxiter must be positive (got $maxiter)"))
+    1 <= miniter <= maxiter ||
+        throw(ArgumentError("spectral_radius: miniter must satisfy 1 <= miniter <= maxiter (got miniter=$miniter, maxiter=$maxiter)"))
+    restarts >= 0 || throw(ArgumentError("spectral_radius: restarts must be nonnegative (got $restarts)"))
 
-    for iter in 1:maxiter
-        mul!(w, op, v)
-        λ = norm(w)
-        iszero(λ) && return 0.0, v
-        if abs(λ - λ_prev) <= tol * max(λ, eps())
+    function power_run(v_start)
+        v = collect(ComplexF64, v_start)
+        length(v) == N || throw(ArgumentError("spectral_radius: v0 has length $(length(v)); expected $N"))
+        nv = norm(v)
+        iszero(nv) && throw(ArgumentError("spectral_radius: v0 must be nonzero"))
+        v ./= nv
+        w = similar(v)
+        λ_prev = Inf
+
+        for iter in 1:maxiter
+            mul!(w, op, v)
+            λ = norm(w)
+            iszero(λ) && return 0.0, v
             v .= w ./ λ
-            return Float64(λ), v
+            if iter >= miniter && abs(λ - λ_prev) <= tol * max(λ, eps())
+                return Float64(λ), v
+            end
+            λ_prev = λ
         end
-        v .= w ./ λ
-        λ_prev = λ
+
+        @debug "spectral_radius run reached maxiter without convergence" maxiter miniter tol λ=λ_prev
+        return Float64(λ_prev), v
     end
 
-    @debug "spectral_radius reached maxiter without convergence" maxiter tol λ=λ_prev
-    return Float64(λ_prev), v
+    primary = v0 === nothing ? randn(rng, ComplexF64, N) : v0
+    radius_best, v_best = power_run(primary)
+    for _ in 1:restarts
+        radius, v = power_run(randn(rng, ComplexF64, N))
+        if radius > radius_best
+            radius_best, v_best = radius, v
+        end
+    end
+    return radius_best, v_best
 end
 
 """
-    BdGOperator(h; mu, U, n=zeros(size(h, 1)), Delta=zeros(ComplexF64, size(h, 1)))
+    BdGOperator(h; mu, U, n=zeros(size(h, 1)),
+                Delta=zeros(ComplexF64, size(h, 1)), assume_intervalley=false)
 
 Matrix-free reduced spin-singlet Nambu BdG operator with particle-hole layout
 `[particle; hole]` and hole index `i + N`:
@@ -73,8 +96,13 @@ with `ξ = h - μ I - Diagonal(U n / 2)`.
 Here `U > 0` is attractive, with `H_int = -U Σ n↑n↓`, Hartree shift
 `-(U/2)n`, and `Δ_i = -U_i⟨c_{i↓}c_{i↑}⟩`. This CPU-only reduced convention
 uses the same `h` in the hole block and presumes `h_{-K}^* = h_K`; for matrix
-inputs this is exact when `h` is real-symmetric. Matrix-free `h` is the
-caller's responsibility.
+inputs this is exact when `h` is real-symmetric. A complex Hermitian matrix is
+rejected unless `assume_intervalley=true` explicitly asserts that it is the
+intervalley-identified operator. Matrix-free `h` is the caller's responsibility.
+
+For complex `h` with a nonuniform gap phase the spectrum need not be
+particle-hole symmetric. The package's `b=0` rescaling is then a safe radial
+bound, not a symmetry statement.
 """
 mutable struct BdGOperator{TH}
     const h::TH
@@ -85,7 +113,9 @@ mutable struct BdGOperator{TH}
     const N::Int
 end
 
-function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)), Delta=zeros(ComplexF64, size(h, 1)))
+function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)),
+                     Delta=zeros(ComplexF64, size(h, 1)),
+                     assume_intervalley::Bool=false)
     N = size(h, 1)
     size(h, 2) == N || throw(ArgumentError("BdGOperator: h must be square (got $(size(h)))"))
     U_vec = U isa Number ? fill(Float64(U), N) : collect(Float64, U)
@@ -97,7 +127,15 @@ function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)), Delta=zeros(ComplexF64
 
     if h isa AbstractMatrix
         ishermitian(h) || throw(ArgumentError("BdGOperator: matrix h must be Hermitian"))
-        h ≈ transpose(h) || @warn "BdGOperator reduced convention presumes h_{-K}^* = h_K (i.e. symmetric h); the spectrum need not be particle-hole symmetric."
+        if eltype(h) <: Complex
+            values = h isa SparseMatrixCSC ? nonzeros(h) : h
+            max_imag = maximum(x -> abs(imag(x)), values; init=0.0)
+            max_abs = maximum(abs, values; init=0.0)
+            symmetric = max_imag <= sqrt(eps()) * max(max_abs, 1e-300)
+            if !symmetric && !assume_intervalley
+                throw(ArgumentError("BdGOperator: for complex Hermitian h the reduced same-h hole block is only the correct physics if h is the intervalley-identified operator (h_{-K}^* = h_K); pass assume_intervalley=true to assert that, or use a real-symmetric h."))
+            end
+        end
     end
     return BdGOperator(h, Float64(mu), U_vec, n_vec, Δ_vec, N)
 end
@@ -123,6 +161,69 @@ end
 
 LinearAlgebra.mul!(Y::AbstractVecOrMat, B::BdGOperator, X::AbstractVecOrMat) =
     mul!(Y, B, X, true, false)
+
+"""
+    gershgorin_bound(op::BdGOperator) -> Float64
+
+Certified Gershgorin upper bound on the spectral radius of an assembled BdG
+operator. Off-diagonal hopping row sums are accumulated from the stored matrix
+entries, while the diagonal is replaced explicitly by
+`abs(h[i,i] - mu - U[i]*n[i]/2)` and the pairing contribution `abs(Delta[i])`
+is added. Both Nambu blocks have the same bound by symmetry of this
+construction. Matrix-free normal operators are not supported.
+"""
+function gershgorin_bound(op::BdGOperator)
+    op.h isa AbstractMatrix ||
+        throw(ArgumentError("gershgorin_bound: BdGOperator must have an assembled matrix h"))
+    N = op.N
+    iszero(N) && return 0.0
+    rowsums = zeros(Float64, N)
+    diagonal = zeros(ComplexF64, N)
+
+    if op.h isa SparseMatrixCSC
+        rows = rowvals(op.h)
+        values = nonzeros(op.h)
+        for j in axes(op.h, 2)
+            for k in nzrange(op.h, j)
+                i = rows[k]
+                if i == j
+                    diagonal[i] = values[k]
+                else
+                    rowsums[i] += abs(values[k])
+                end
+            end
+        end
+    else
+        for j in axes(op.h, 2), i in axes(op.h, 1)
+            if i == j
+                diagonal[i] = op.h[i, j]
+            else
+                rowsums[i] += abs(op.h[i, j])
+            end
+        end
+    end
+
+    @inbounds for i in 1:N
+        rowsums[i] += abs(diagonal[i] - op.μ - op.U[i] * op.n[i] / 2) + abs(op.Δ[i])
+    end
+    return maximum(rowsums)
+end
+
+function _check_chebyshev_columns(slot::AbstractMatrix, iteration::Integer)
+    max_norm2 = 0.0
+    @inbounds for c in axes(slot, 2)
+        norm2 = 0.0
+        for i in axes(slot, 1)
+            norm2 += abs2(slot[i, c])
+        end
+        max_norm2 = max(max_norm2, norm2)
+    end
+    max_norm = sqrt(max_norm2)
+    if !(max_norm <= 1.5)
+        error("Chebyshev recurrence is unstable at iteration $iteration (maximum column norm $max_norm > 1.5); use rescale(...; bound=:gershgorin) or a larger eps.")
+    end
+    return nothing
+end
 
 """
     bdg_site_moments(Hs, N, sites, NC; batch_size=64, verbose=0)
@@ -176,12 +277,16 @@ function bdg_site_moments(Hs, N::Integer, sites::AbstractVector{<:Integer}, NC::
         extract_moment!(1, psi_views[1])
         mul!(psi_views[2], Hs, psi_views[1])
         extract_moment!(2, psi_views[2])
+        NC == 2 && _check_chebyshev_columns(psi_views[2], 1)
 
         ip = 2
         ipp = 1
         for m in 3:NC
             chebyshev_iter_single(Hs, psi_views[ipp], psi_views[ip])
             extract_moment!(m, psi_views[ipp])
+            iteration = m - 1
+            (iteration % 16 == 0 || m == NC) &&
+                _check_chebyshev_columns(psi_views[ipp], iteration)
             ip = 3 - ip
             ipp = 3 - ipp
         end
@@ -191,7 +296,38 @@ function bdg_site_moments(Hs, N::Integer, sites::AbstractVector{<:Integer}, NC::
 end
 
 """
-    bdg_update(mu_rho, mu_delta, a; U, beta, g_rho=1.0,
+    chebyshev_stability_probe(Hs, NH::Integer, NC::Integer; rng=Xoshiro(1)) -> Float64
+
+Run the plain two-slot Chebyshev recurrence from one random unit vector for
+`NC` moments and return the maximum vector norm encountered. Values above
+`1.5` indicate that the rescaled spectrum has escaped the stable interval.
+"""
+function chebyshev_stability_probe(Hs, NH::Integer, NC::Integer; rng=Xoshiro(1))
+    NH > 0 || throw(ArgumentError("chebyshev_stability_probe: NH must be positive (got $NH)"))
+    size(Hs) == (NH, NH) ||
+        throw(ArgumentError("chebyshev_stability_probe: Hs has size $(size(Hs)); expected ($NH, $NH)"))
+    NC > 0 || throw(ArgumentError("chebyshev_stability_probe: NC must be positive (got $NC)"))
+
+    previous = randn(rng, ComplexF64, NH)
+    previous ./= norm(previous)
+    max_norm = 1.0
+    NC == 1 && return max_norm
+
+    current = similar(previous)
+    mul!(current, Hs, previous)
+    max_norm = max(max_norm, norm(current))
+    T = ComplexF64
+    for _ in 3:NC
+        # two-address Chebyshev step: previous <- 2 Hs current - previous
+        mul!(previous, Hs, current, T(2), T(-1))
+        max_norm = max(max_norm, norm(previous))
+        previous, current = current, previous
+    end
+    return Float64(max_norm)
+end
+
+"""
+    bdg_update(mu_rho, mu_delta, a; U, beta, g_rho=2.0,
                kernel=JacksonKernel, Np=2size(mu_rho, 1))
 
 Update local BdG fields at Fermi level zero from the Jackson-dressed moments:
@@ -202,10 +338,13 @@ Update local BdG fields at Fermi level zero from the Jackson-dressed moments:
 where `gamma_c(x) = sum_m kernel(m-1, NC) hn(m-1) mu[m,c]
 T_{m-1}(x)` and `x_k` are Gauss-Chebyshev nodes. There is no extra
 `a`-Jacobian: the spectral `1/a` cancels the `dE = a dx` measure exactly.
+The reduced block integrates one spin species, so the default `g_rho=2`
+reconstructs the full spin-singlet site density. Set `g_rho=1` for per-spin
+density; the caller then owns the corresponding Hartree interpretation.
 """
 function bdg_update(mu_rho::AbstractMatrix{<:Real},
                     mu_delta::AbstractMatrix{<:Complex}, a::Real;
-                    U::AbstractVector{<:Real}, beta::Real, g_rho::Real=1.0,
+                    U::AbstractVector{<:Real}, beta::Real, g_rho::Real=2.0,
                     kernel=JacksonKernel, Np::Integer=2 * size(mu_rho, 1))
     size(mu_rho) == size(mu_delta) ||
         throw(ArgumentError("bdg_update: mu_rho and mu_delta must have the same size (got $(size(mu_rho)) and $(size(mu_delta)))"))
@@ -245,20 +384,21 @@ Base.show(io::IO, r::BdGSCFResult) = print(io,
     "residual_delta=$(r.residual_delta), residual_n=$(r.residual_n), a=$(r.a))")
 
 """
-    bdg_checkpoint(path, op, history, v_power) -> nothing
+    bdg_checkpoint(path, op, history, v_power, params) -> nothing
 
 Atomically write the plain-data state needed to restart a BdG
 self-consistency solve. The operator and callback are never serialized.
 """
-function bdg_checkpoint(path::AbstractString, op::BdGOperator, history, v_power)
-    state = (version=1,
+function bdg_checkpoint(path::AbstractString, op::BdGOperator, history, v_power, params)
+    state = (version=2,
              delta=copy(op.Δ),
              n=copy(op.n),
              mu=op.μ,
              U=copy(op.U),
              N=op.N,
              history=copy(history),
-             v_power=v_power === nothing ? nothing : copy(v_power))
+             v_power=v_power === nothing ? nothing : copy(v_power),
+             params=params)
     tmp_path = "$(path).tmp"
     open(tmp_path, "w") do io
         serialize(io, state)
@@ -268,25 +408,28 @@ function bdg_checkpoint(path::AbstractString, op::BdGOperator, history, v_power)
 end
 
 """
-    bdg_restore!(op, path) -> (history, v_power)
+    bdg_restore!(op, path) -> (history, v_power, params)
 
 Restore a checkpointed BdG field state into `op`. The checkpoint must have
-the same number of sites as `op`.
+the same number of sites and interaction field as `op`. Version-1 checkpoints
+are accepted and return `nothing` for their missing solver parameters.
 """
 function bdg_restore!(op::BdGOperator, path::AbstractString)
     state = open(deserialize, path)
-    state.version == 1 || throw(ArgumentError("bdg_restore!: unsupported checkpoint version $(state.version)"))
+    state.version in (1, 2) || throw(ArgumentError("bdg_restore!: unsupported checkpoint version $(state.version)"))
     state.N == op.N || throw(ArgumentError("bdg_restore!: checkpoint has N=$(state.N); expected N=$(op.N)"))
+    state.U ≈ op.U || throw(ArgumentError("bdg_restore!: checkpoint interaction U does not match the operator"))
     length(state.delta) == op.N || throw(ArgumentError("bdg_restore!: checkpoint delta has invalid length"))
     length(state.n) == op.N || throw(ArgumentError("bdg_restore!: checkpoint n has invalid length"))
     op.Δ .= state.delta
     op.n .= state.n
     op.μ = state.mu
-    return copy(state.history), state.v_power === nothing ? nothing : copy(state.v_power)
+    params = state.version == 1 ? nothing : state.params
+    return copy(state.history), state.v_power === nothing ? nothing : copy(state.v_power), params
 end
 
 """
-    bdg_solve!(op; beta, NC=512, g_rho=1.0, mix=0.1, tol_delta=1e-6,
+    bdg_solve!(op; beta, NC=512, g_rho=2.0, mix=0.1, tol_delta=1e-6,
                tol_n=1e-6, maxiter=500, kernel=JacksonKernel, Np=2NC,
                batch_size=64, update_density=true, target_filling=nothing,
                mu_bracket=(-Inf, Inf), mu_tol=1e-4, mu_maxiter=60,
@@ -298,9 +441,14 @@ update must meet both channel tolerances on two consecutive iterations before
 the solve is reported converged. With `target_filling`, a bisection over
 `op.μ` performs a full inner solve at every chemical-potential evaluation;
 the fields carry over between evaluations as a warm start.
+The reduced block integrates one spin species; default `g_rho=2` reconstructs
+the full spin-singlet site density used by the Hartree term. On restart,
+solver-parameter differences are warned about but allowed. Restart cannot be
+combined with `target_filling` because the outer bisection state is not
+checkpointed.
 """
 function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
-                    g_rho::Real=1.0, mix::Real=0.1,
+                    g_rho::Real=2.0, mix::Real=0.1,
                     tol_delta::Real=1e-6, tol_n::Real=1e-6,
                     maxiter::Integer=500, kernel=JacksonKernel,
                     Np::Integer=2 * NC, batch_size::Integer=64,
@@ -325,8 +473,31 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
     mu_tol >= 0 || throw(ArgumentError("bdg_solve!: mu_tol must be nonnegative (got $mu_tol)"))
     mu_maxiter > 0 || throw(ArgumentError("bdg_solve!: mu_maxiter must be positive (got $mu_maxiter)"))
     checkpoint_every > 0 || throw(ArgumentError("bdg_solve!: checkpoint_every must be positive (got $checkpoint_every)"))
+    restart !== nothing && target_filling !== nothing &&
+        throw(ArgumentError("bdg_solve!: restart cannot be combined with target_filling because the bisection state is not checkpointed"))
 
-    history, v_power = restart === nothing ? (NamedTuple[], nothing) : bdg_restore!(op, restart)
+    kernel_name = try
+        string(nameof(kernel))
+    catch
+        string(nameof(typeof(kernel)))
+    end
+    params = (beta=beta, NC=NC, Np=Np, g_rho=g_rho, mix=mix,
+              tol_delta=tol_delta, tol_n=tol_n, kernel=kernel_name,
+              update_density=update_density)
+    history, v_power, saved_params = restart === nothing ?
+        (NamedTuple[], nothing, nothing) : bdg_restore!(op, restart)
+    if saved_params !== nothing
+        differences = String[]
+        for name in propertynames(params)
+            saved = getproperty(saved_params, name)
+            current = getproperty(params, name)
+            isequal(saved, current) || push!(differences, "$(name): saved=$(repr(saved)), current=$(repr(current))")
+        end
+        if !isempty(differences)
+            diff_text = join(differences, "; ")
+            @warn "bdg_solve!: restart parameters differ from checkpoint: $diff_text"
+        end
+    end
 
     function inner_solve!()
         consecutive = false
@@ -384,7 +555,7 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
             callback === nothing || callback(op, iter, entry)
             if checkpoint_path !== nothing &&
                     (iter % checkpoint_every == 0 || converged || local_iter == maxiter)
-                bdg_checkpoint(checkpoint_path, op, history, v_power)
+                bdg_checkpoint(checkpoint_path, op, history, v_power, params)
             end
             verbose >= 1 && println("BdG iter $(iter): res_delta=$(res_d_abs), res_n=$(res_n_abs), mu=$(op.μ), a=$(a)")
             converged && break
@@ -405,6 +576,8 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
     function filling_error!(mu)
         op.μ = Float64(mu)
         result = inner_solve!()
+        result.converged ||
+            error("bdg_solve!: target-filling inner solve did not converge at mu=$(op.μ); raise maxiter before continuing the bisection")
         return sum(op.n) / op.N - target_filling, result
     end
 

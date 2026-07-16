@@ -654,6 +654,7 @@ function kpm_2d!(
     else
         throw(ArgumentError("moment_parity=$(moment_parity) not understood."))
     end
+    moment_parity == :NONE || fill!(μ, 0)
     NC0(m1, n) = mod(m1 + n + _NC_offset, NCstep) + 1
 
     # do not enforce normalization

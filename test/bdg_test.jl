@@ -3,6 +3,7 @@ using Test
 using LinearAlgebra
 using SparseArrays
 using Random
+using Serialization
 using KPM
 
 isdefined(@__MODULE__, :EDReference) || include("ed_reference.jl")
@@ -47,6 +48,34 @@ const BdG_Hd = bdg_matrix(BdG_h, BdG_mu, BdG_U, BdG_n, BdG_Delta)
     @test BdG_Hd ≈ BdG_Hd'
 end
 
+@testset "complex hopping intervalley opt-in and sparse constructor scaling" begin
+    h_complex = ComplexF64[0 im; -im 0]
+    n = zeros(2)
+    Delta = ComplexF64[0.3 + 0.1im, 0.2 - 0.4im]
+    @test_throws ArgumentError KPM.BdGOperator(
+        h_complex; mu=0.2, U=0.0, n=n, Delta=Delta)
+
+    op_complex = KPM.BdGOperator(
+        h_complex; mu=0.2, U=0.0, n=n, Delta=Delta,
+        assume_intervalley=true)
+    Hmf = zeros(ComplexF64, 4, 4)
+    for j in axes(Hmf, 2)
+        e_j = zeros(ComplexF64, 4)
+        e_j[j] = 1
+        mul!(view(Hmf, :, j), op_complex, e_j)
+    end
+    @test Hmf ≈ bdg_matrix(h_complex, 0.2, zeros(2), n, Delta) atol=1e-12
+
+    # Sanity only (no CI timing assertion): this exercises the O(nnz)
+    # complex-real-valued sparse symmetry check at production-like size.
+    Nlarge = 50_000
+    h_large = spdiagm(0 => ones(ComplexF64, Nlarge))
+    op_large = KPM.BdGOperator(
+        h_large; mu=0.0, U=0.0, n=zeros(Nlarge),
+        Delta=zeros(ComplexF64, Nlarge))
+    @test op_large.N == Nlarge
+end
+
 @testset "self-consistency: fixed point, seeds, U=0, phase, restart" begin
     N = 4
     h, _, _ = ring_model(N; t=1.0)
@@ -67,8 +96,8 @@ end
         occupations = f.(F.values)
         Delta_new = ComplexF64[-U[i] * sum(F.vectors[i, j] * conj(F.vectors[i + N, j]) * occupations[j]
                                            for j in eachindex(F.values)) for i in 1:N]
-        n_new = Float64[sum(abs2(F.vectors[i, j]) * occupations[j]
-                             for j in eachindex(F.values)) for i in 1:N]
+        n_new = Float64[2sum(abs2(F.vectors[i, j]) * occupations[j]
+                              for j in eachindex(F.values)) for i in 1:N]
         res_delta = norm(Delta_new .- Delta_ed, Inf)
         res_n = norm(n_new .- n_ed, Inf)
         @. Delta_ed = 0.7 * Delta_ed + 0.3 * Delta_new
@@ -95,7 +124,7 @@ end
     op_seed = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial,
                               Delta=fill(0.4 - 0.2im, N))
     res_seed = KPM.bdg_solve!(op_seed; beta=beta, NC=512, mix=0.15,
-                               tol_delta=1e-9, tol_n=1e-9, maxiter=400)
+                               tol_delta=1e-9, tol_n=1e-9, maxiter=1200)
     @test res_seed.converged
     @test abs.(op_seed.Δ) ≈ abs.(op_b.Δ) atol=1e-6 rtol=0
     @test op_seed.n ≈ op_b.n atol=1e-6 rtol=0
@@ -124,6 +153,26 @@ end
         KPM.bdg_solve!(op_a; beta=beta, NC=512, mix=0.3,
                        tol_delta=1e-14, tol_n=1e-14, maxiter=7,
                        checkpoint_path=checkpoint, checkpoint_every=7)
+        state = open(deserialize, checkpoint)
+        @test state.version == 2
+        @test state.params.g_rho == 2.0
+
+        op_bad_u = KPM.BdGOperator(h; mu=mu, U=U .+ 1, n=n_initial,
+                                   Delta=Delta_initial)
+        @test_throws ArgumentError KPM.bdg_restore!(op_bad_u, checkpoint)
+
+        op_bad_target = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial,
+                                        Delta=Delta_initial)
+        @test_throws ArgumentError KPM.bdg_solve!(
+            op_bad_target; beta=beta, NC=512, mix=0.3,
+            target_filling=0.6, mu_bracket=(-4.0, 4.0), restart=checkpoint)
+
+        op_warn = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial,
+                                  Delta=Delta_initial)
+        @test_logs (:warn, r"restart parameters differ.*NC") KPM.bdg_solve!(
+            op_warn; beta=beta, NC=256, mix=0.3,
+            tol_delta=1e-14, tol_n=1e-14, maxiter=1, restart=checkpoint)
+
         op_b_restart = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
         KPM.bdg_solve!(op_b_restart; beta=beta, NC=512, mix=0.3,
                        tol_delta=1e-14, tol_n=1e-14, maxiter=7, restart=checkpoint)
@@ -179,6 +228,31 @@ end
     m = KPM.dos_moments(rh; NC=32, NR=2, rng=Xoshiro(1))
     @test all(isfinite, m.mu)
     @test m.mu[1] ≈ 1 atol=1e-10
+
+    @test KPM.gershgorin_bound(BdG_op) >= exact
+
+    Nedge = 20_000
+    true_radius = 2.0
+    h_edge = spdiagm(0 => vcat(true_radius, ones(Nedge - 1)))
+    op_edge = KPM.BdGOperator(
+        h_edge; mu=0.0, U=0.0, n=zeros(Nedge),
+        Delta=zeros(ComplexF64, Nedge))
+    rh_edge = KPM.rescale(op_edge)
+    rh_edge_certified = KPM.rescale(op_edge; bound=:gershgorin)
+    required_scale = true_radius / (1 - 0.2 / 2)
+    println("isolated-edge scaling: power a=$(rh_edge.a), Gershgorin a=$(rh_edge_certified.a), required=$(required_scale)")
+    @test rh_edge.a >= required_scale || rh_edge_certified.a >= required_scale
+
+    Hs_too_small = KPM.ScaledOperator(op_edge, 0.5true_radius, 0.0)
+    @test_throws ErrorException KPM.bdg_site_moments(
+        Hs_too_small, Nedge, [1], 2; batch_size=1)
+
+    op_zero = KPM.BdGOperator(
+        spzeros(Float64, 2, 2); mu=0.0, U=0.0, n=zeros(2),
+        Delta=zeros(ComplexF64, 2))
+    @test_throws ArgumentError KPM.rescale(op_zero)
+    @test_throws ArgumentError KPM.rescale(BdG_op; eps=0.0)
+    @test_throws ArgumentError KPM.rescale(BdG_op; eps=2.0)
 end
 
 @testset "one-site analytic update (Eqs 26-27)" begin
@@ -188,17 +262,15 @@ end
     n = [0.0]
     Delta = [0.3 + 0.4im]
     beta = 5.0
-    g_rho = 1.0
-
     xi = -mu
     E = sqrt(xi^2 + abs2(only(Delta)))
     Delta_exact = U * only(Delta) * tanh(beta * E / 2) / (2E)
-    n_exact = 1 / 2 - xi * tanh(beta * E / 2) / (2E)
+    n_exact = 1 - xi * tanh(beta * E / 2) / E
 
     op = KPM.BdGOperator(h1; mu=mu, U=U, n=n, Delta=Delta)
     rh = KPM.rescale(op)
-    m128 = KPM.bdg_local_moments(rh; NC=128, g_rho=g_rho)
-    m512 = KPM.bdg_local_moments(rh; NC=512, g_rho=g_rho)
+    m128 = KPM.bdg_local_moments(rh; NC=128)
+    m512 = KPM.bdg_local_moments(rh; NC=512)
     n128, Delta128 = KPM.bdg_update(m128; beta=beta)
     n512, Delta512 = KPM.bdg_update(m512; beta=beta)
 
@@ -217,10 +289,10 @@ end
     @test TOL_Delta <= 1e-3
     @test TOL_n <= 1e-3
 
-    m512_g2 = KPM.bdg_local_moments(rh; NC=512, g_rho=2)
-    n512_g2, Delta512_g2 = KPM.bdg_update(m512_g2; beta=beta)
-    @test n512_g2 ≈ 2 .* n512 atol=1e-12 rtol=0
-    @test Delta512_g2 ≈ Delta512 atol=1e-12 rtol=0
+    m512_g1 = KPM.bdg_local_moments(rh; NC=512, g_rho=1)
+    n512_g1, Delta512_g1 = KPM.bdg_update(m512_g1; beta=beta)
+    @test n512_g1 ≈ 0.5 .* n512 atol=1e-12 rtol=0
+    @test Delta512_g1 ≈ Delta512 atol=1e-12 rtol=0
     @test angle(only(Delta512)) ≈ angle(Delta_exact) atol=1e-3
 end
 
@@ -232,21 +304,19 @@ end
     n = fill(0.4, N)
     Delta = fill(0.25 + 0.35im, N)
     beta = 10.0
-    g_rho = 1.0
-
     H = bdg_matrix(h, mu, U, n, Delta)
     F = eigen(Hermitian(Matrix(H)))
     f = KPM.fermiFunctions(0.0, beta)
     occupations = f.(F.values)
     Delta_exact = ComplexF64[-U[i] * sum(F.vectors[i, j] * conj(F.vectors[i + N, j]) * occupations[j]
                                         for j in eachindex(F.values)) for i in 1:N]
-    n_exact = Float64[sum(abs2(F.vectors[i, j]) * occupations[j]
-                          for j in eachindex(F.values)) for i in 1:N]
+    n_exact = Float64[2sum(abs2(F.vectors[i, j]) * occupations[j]
+                           for j in eachindex(F.values)) for i in 1:N]
 
     op = KPM.BdGOperator(h; mu=mu, U=U, n=n, Delta=Delta)
     rh = KPM.rescale(op)
-    m64 = KPM.bdg_local_moments(rh; NC=64, g_rho=g_rho, batch_size=3)
-    m256 = KPM.bdg_local_moments(rh; NC=256, g_rho=g_rho, batch_size=3)
+    m64 = KPM.bdg_local_moments(rh; NC=64, batch_size=3)
+    m256 = KPM.bdg_local_moments(rh; NC=256, batch_size=3)
     n64, Delta64 = KPM.bdg_update(m64; beta=beta)
     n256, Delta256 = KPM.bdg_update(m256; beta=beta)
 
@@ -268,7 +338,7 @@ end
     mu_rho, mu_delta = KPM.bdg_site_moments(rh.H, op.N, collect(1:op.N), 256;
                                              batch_size=3)
     n_raw, Delta_raw = KPM.bdg_update(mu_rho, mu_delta, rh.a;
-                                      U=op.U, beta=beta, g_rho=g_rho)
+                                      U=op.U, beta=beta)
     @test n_raw == n256
     @test Delta_raw == Delta256
     @test maximum(abs.(n256 .- first(n256))) < 1e-10

@@ -234,3 +234,35 @@ end
     @test isapprox(r_even.Pi_N, r_none.Pi_N; rtol=1e-10)
     @test isapprox(r_even.Ds_over_pi, r_none.Ds_over_pi; rtol=1e-10)
 end
+
+@testset "volume and g_J prefactor routing" begin
+    opd = KPM.BdGOperator(hsq; mu=-0.7, U=2.0, n=fill(0.4, 9),
+                          Delta=fill(0.45 + 0.2im, 9))
+    psi_id = Matrix{ComplexF64}(I, 18, 18)
+    common = (; beta=10.0, eta=0.3, NC=64, psi_in=psi_id, disp=dispsq)
+    r1 = KPM.superfluid_stiffness(opd, possq, qy; common..., volume=1.0)
+    r4 = KPM.superfluid_stiffness(opd, possq, qy; common..., volume=4.0)
+    rg = KPM.superfluid_stiffness(opd, possq, qy; common..., volume=1.0, g_J=2.0)
+    @test r4.Pi_SC ≈ r1.Pi_SC / 4 atol=1e-14
+    @test r4.Pi_N ≈ r1.Pi_N / 4 atol=1e-14
+    @test r4.Ds_over_pi ≈ r1.Ds_over_pi / 4 atol=1e-14
+    @test rg.Pi_SC ≈ 2 * r1.Pi_SC atol=1e-14
+    @test rg.Ds_over_pi ≈ 2 * r1.Ds_over_pi atol=1e-14
+end
+
+@testset "kpm_2d! parity zeroes skipped entries (overwrite contract)" begin
+    opr = KPM.BdGOperator(hsq; mu=-0.7, U=2.0, n=fill(0.4, 9),
+                          Delta=fill(0.5 + 0.0im, 9))
+    psi_id = Matrix{ComplexF64}(I, 18, 18)
+    Jq = KPM.nambu_current_q(hsq, possq, qy; dir=1, disp=dispsq)
+    Jmq = KPM.nambu_current_q(hsq, possq, -qy; dir=1, disp=dispsq)
+    rh = KPM.rescale(opr; eps=0.2)
+    NCp = 8
+    mu_pre = fill(one(ComplexF64), NCp, NCp)
+    KPM.kpm_2d!(rh.H, Jq, Jmq, NCp, 18, 18, mu_pre, psi_id; moment_parity=:EVEN)
+    for n in axes(mu_pre, 1), m in axes(mu_pre, 2)
+        if isodd(m - n)
+            @test mu_pre[n, m] == 0
+        end
+    end
+end

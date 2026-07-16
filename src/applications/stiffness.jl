@@ -179,7 +179,7 @@ end
                          q::AbstractVector{<:Real}; beta, eta, ...)
         -> NamedTuple
 
-Compute the paired finite-`q` superfluid stiffness
+Compute the finite-`q` paired paramagnetic response
 
     D_s / pi = Re Pi_N - Re Pi_SC.
 
@@ -195,14 +195,19 @@ retains the superconducting state's assembled hopping, chemical potential,
 interaction, and converged Hartree density, changing only `Delta` to zero.
 
 Both responses use `Jalpha = J(q)` and `Jbeta = J(-q)`, the same probes,
-`NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field. Each state is
-rescaled independently; this is valid because `two_energy_response` restores
-physical energies before the subtraction, so `a_SC` and `a_N` may differ.
+`NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field. Candidate
+SC and normal scales are estimated separately, then both calculations use
+`a_common = max(a_SC, a_N)`. This gives the subtraction equal physical
+regularization because finite-`NC` Jackson broadening scales as `a/NC`.
 
-For a transverse stiffness choose `q` perpendicular to `dir`, typically
-`q_y = 2pi/L_y` for an `x` current. Choose `eta` between the finite-size level
-spacing and the gap, and as a resolution rule use `eta >= 5*a*pi/NC`.
-Vertices are always built from the unrescaled assembled hopping.
+The returned quantity is the finite-`q` paired paramagnetic response.
+`Ds_over_pi` is its transverse `q -> 0` limit only under the documented
+continuum/paramagnetic-only definition. Choose `q` perpendicular to `dir`,
+typically `q_y = 2pi/L_y` for an `x` current, and scan several commensurate
+wavevectors for extrapolation. Choose `eta` between the finite-size level
+spacing and the gap, and as a resolution rule use
+`eta >= 5*a_common*pi/NC`. Vertices are always built from the unrescaled
+assembled hopping.
 """
 function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
                               q::AbstractVector{<:Real};
@@ -216,15 +221,24 @@ function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
     op.h isa AbstractMatrix ||
         throw(ArgumentError("superfluid_stiffness needs an assembled sparse h to build vertices; matrix-free users can call nambu_current_q-equivalent vertices + kpm_2d + two_energy_response directly"))
     size(pos, 1) == op.N || throw(ArgumentError("superfluid_stiffness: pos has $(size(pos, 1)) rows; expected $(op.N)"))
+    0 < rescale_eps < 2 ||
+        throw(ArgumentError("superfluid_stiffness: rescale_eps must satisfy 0 < rescale_eps < 2 (got $rescale_eps)"))
 
     op_n = BdGOperator(op.h; mu=op.μ, U=copy(op.U), n=copy(op.n),
-                       Delta=zeros(ComplexF64, op.N))
+                       Delta=zeros(ComplexF64, op.N), assume_intervalley=true)
     h_sparse = op.h isa SparseMatrixCSC ? op.h : sparse(op.h)
     Jq = nambu_current_q(h_sparse, pos, q; dir=dir, disp=disp)
     Jmq = nambu_current_q(h_sparse, pos, -q; dir=dir, disp=disp)
+    q_norm = norm(q)
+    if q_norm > 0 && abs(q[dir]) > 1e-12 * q_norm
+        @warn "superfluid_stiffness: q has a longitudinal component; transverse stiffness requires q perpendicular to dir"
+    end
 
     rh_sc = rescale(op; eps=Float64(rescale_eps))
     rh_n = rescale(op_n; eps=Float64(rescale_eps))
+    a_common = max(rh_sc.a, rh_n.a)
+    Hs_sc = ScaledOperator(op, a_common, 0.0)
+    Hs_n = ScaledOperator(op_n, a_common, 0.0)
 
     NH = 2 * op.N
     NR_int = Int(NR)
@@ -237,29 +251,36 @@ function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
         throw(ArgumentError("superfluid_stiffness: psi_in has size $(size(psi_in)); expected ($NH, $NR_int)"))
 
     NC_int = Int(NC)
+    stability_sc = chebyshev_stability_probe(Hs_sc, NH, NC_int)
+    stability_n = chebyshev_stability_probe(Hs_n, NH, NC_int)
+    max_stability = max(stability_sc, stability_n)
+    if !(max_stability <= 1.5)
+        error("Chebyshev recurrence is unstable (maximum probe norm $max_stability > 1.5); use rescale(...; bound=:gershgorin) or a larger eps.")
+    end
     arr_size_int = Int(arr_size)
     ws = _kpm2d_workspace(NH, NR_int; arr_size=arr_size_int)
     mu_sc = zeros(dt_cplx, NC_int, NC_int)
     mu_n = zeros(dt_cplx, NC_int, NC_int)
-    kpm_2d!(rh_sc.H, Jq, Jmq, NC_int, NR_int, NH, mu_sc, psi_in;
+    kpm_2d!(Hs_sc, Jq, Jmq, NC_int, NR_int, NH, mu_sc, psi_in;
             ws..., moment_parity=moment_parity, arr_size=arr_size_int,
             verbose=verbose)
-    kpm_2d!(rh_n.H, Jq, Jmq, NC_int, NR_int, NH, mu_n, psi_in;
+    kpm_2d!(Hs_n, Jq, Jmq, NC_int, NR_int, NH, mu_n, psi_in;
             ws..., moment_parity=moment_parity, arr_size=arr_size_int,
             verbose=verbose)
 
     Np_int = Int(Np)
-    Pi_SC = two_energy_response(mu_sc, rh_sc.a; b=0.0, beta=beta,
+    Pi_SC = two_energy_response(mu_sc, a_common; b=0.0, beta=beta,
                                 eta=eta, omega=omega, Ef=0.0, NH=NH,
                                 volume=volume, g_J=g_J, kernel=kernel,
                                 Np=Np_int)
-    Pi_N = two_energy_response(mu_n, rh_n.a; b=0.0, beta=beta,
+    Pi_N = two_energy_response(mu_n, a_common; b=0.0, beta=beta,
                                eta=eta, omega=omega, Ef=0.0, NH=NH,
                                volume=volume, g_J=g_J, kernel=kernel,
                                Np=Np_int)
 
     return (Ds_over_pi=real(Pi_N) - real(Pi_SC),
             Pi_SC=Pi_SC, Pi_N=Pi_N, a_SC=rh_sc.a, a_N=rh_n.a,
+            a_common=a_common,
             q=collect(Float64, q), dir=Int(dir), eta=Float64(eta),
             beta=Float64(beta), omega=Float64(omega), NC=NC_int,
             NR=NR_int, Np=Np_int)
