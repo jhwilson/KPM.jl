@@ -85,7 +85,8 @@ end
 
 """
     nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
-                    q::AbstractVector{<:Real}; dir::Integer=1, disp=nothing)
+                    q::AbstractVector{<:Real}; dir::Integer=1, disp=nothing,
+                    hole_convention::Symbol=:singlet)
         -> SparseMatrixCSC{ComplexF64, Int}
 
 Build the finite-wavevector current vertex in the reduced Nambu convention.
@@ -98,16 +99,18 @@ where `d = r_i - r_j` is the bond displacement and the unwrapped midpoint is
 `m_ij = r_j + d / 2`. Thus `J_BdG(q) = (1/im) dH_BdG/dA` has entries
 
     J(q)_ij         = h_ij d_dir exp(-im q ⋅ m_ij),
-    J(q)_(i+N,j+N) = conj(h_ij d_dir) exp(-im q ⋅ m_ij),
+    J(q)_(i+N,j+N) = j_hole exp(-im q ⋅ m_ij),
 
-and zero off-diagonal Nambu blocks. The conjugation in the hole block acts on
-the bond factor, not on the phase. Zero-displacement entries are skipped.
+and zero off-diagonal Nambu blocks. For `hole_convention=:singlet`,
+differentiating `-conj(h(A))` gives `j_hole = conj(h_ij d_dir)`. For
+`hole_convention=:intervalley`, differentiating the same-`h`, opposite-Peierls-
+phase hole block gives `j_hole = h_ij d_dir`. The conjugation in the singlet
+branch acts on the bond factor, not on the phase. Both branches coincide for
+real `h`. Zero-displacement entries are skipped.
 
 The input `h` must be the unrescaled hopping matrix; using a rescaled hopping
-would spuriously divide a response by the square of its energy scale. The
-reduced kinetic convention is `[h(A) 0; 0 -h(A)^T]` and assumes `h^T = h`,
-which is exact for the real-symmetric models targeted here. With the package's
-anti-Hermitian bond-current convention the vertices obey
+would spuriously divide a response by the square of its energy scale. With the
+package's anti-Hermitian bond-current convention both vertices obey
 `J(q)' == -J(-q)`; at `q = 0` and real `h`, both Nambu blocks equal the bond
 current `(J_dir)_ij = h_ij d_dir`.
 
@@ -123,13 +126,16 @@ itself — require `exp(im q ⋅ L) = 1`. Incommensurate `q` silently breaks
 the adjoint identity.
 """
 function nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
-                         q::AbstractVector{<:Real}; dir::Integer=1, disp=nothing)
+                         q::AbstractVector{<:Real}; dir::Integer=1, disp=nothing,
+                         hole_convention::Symbol=:singlet)
     N = size(h, 1)
     size(h, 2) == N || throw(ArgumentError("nambu_current_q: h must be square (got $(size(h)))"))
     size(pos, 1) == N || throw(ArgumentError("nambu_current_q: pos has $(size(pos, 1)) rows; expected $N"))
     ndim = size(pos, 2)
     length(q) == ndim || throw(ArgumentError("nambu_current_q: q has length $(length(q)); expected $ndim"))
     1 <= dir <= ndim || throw(ArgumentError("nambu_current_q: dir must satisfy 1 <= dir <= $ndim (got $dir)"))
+    hole_convention in (:intervalley, :singlet) ||
+        throw(ArgumentError("nambu_current_q: hole_convention must be :intervalley or :singlet (got $hole_convention)"))
 
     rows = Int[]
     cols = Int[]
@@ -147,8 +153,9 @@ function nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
         all(iszero, d) && continue
         phase = exp(-im * sum(q[ν] * (pos[j, ν] + d[ν] / 2) for ν in 1:ndim))
         bond = V[k] * d[dir]
+        hole_bond = hole_convention === :singlet ? conj(bond) : bond
         push!(rows, i);     push!(cols, j);     push!(vals, ComplexF64(bond * phase))
-        push!(rows, i + N); push!(cols, j + N); push!(vals, ComplexF64(conj(bond) * phase))
+        push!(rows, i + N); push!(cols, j + N); push!(vals, ComplexF64(hole_bond * phase))
     end
 
     return sparse(rows, cols, vals, 2N, 2N)
@@ -224,11 +231,16 @@ function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
     0 < rescale_eps < 2 ||
         throw(ArgumentError("superfluid_stiffness: rescale_eps must satisfy 0 < rescale_eps < 2 (got $rescale_eps)"))
 
-    op_n = BdGOperator(op.h; mu=op.μ, U=copy(op.U), n=copy(op.n),
-                       Delta=zeros(ComplexF64, op.N), assume_intervalley=true)
+    op_n = BdGOperator(
+        op.h; mu=op.μ, U=copy(op.U), n=copy(op.n),
+        Delta=zeros(ComplexF64, op.N), hole_convention=op.hole_convention,
+        h_hole=op.hole_convention === :singlet ? op.h_hole : nothing,
+        assume_intervalley=op.hole_convention === :intervalley)
     h_sparse = op.h isa SparseMatrixCSC ? op.h : sparse(op.h)
-    Jq = nambu_current_q(h_sparse, pos, q; dir=dir, disp=disp)
-    Jmq = nambu_current_q(h_sparse, pos, -q; dir=dir, disp=disp)
+    Jq = nambu_current_q(h_sparse, pos, q; dir=dir, disp=disp,
+                         hole_convention=op.hole_convention)
+    Jmq = nambu_current_q(h_sparse, pos, -q; dir=dir, disp=disp,
+                          hole_convention=op.hole_convention)
     q_norm = norm(q)
     if q_norm > 0 && abs(q[dir]) > 1e-12 * q_norm
         @warn "superfluid_stiffness: q has a longitudinal component; transverse stiffness requires q perpendicular to dir"

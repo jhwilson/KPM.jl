@@ -266,3 +266,64 @@ end
         end
     end
 end
+
+@testset "convention-aware vertices (complex flux ring)" begin
+    N = 4
+    hf, posf, dispf = flux_ring_model(N; phi=0.35)
+    q0 = [0.0, 0.0]
+    delta = 1e-6
+
+    FD_singlet = (
+        bdg_peierls_matrix(
+            hf, posf, dispf, +delta; hole_convention=:singlet) -
+        bdg_peierls_matrix(
+            hf, posf, dispf, -delta; hole_convention=:singlet)) / (2delta * im)
+    J_singlet = KPM.nambu_current_q(
+        hf, posf, q0; dir=1, disp=dispf, hole_convention=:singlet)
+    @test FD_singlet ≈ Matrix(J_singlet) atol=1e-7
+
+    FD_intervalley = (
+        bdg_peierls_matrix(
+            hf, posf, dispf, +delta; hole_convention=:intervalley) -
+        bdg_peierls_matrix(
+            hf, posf, dispf, -delta; hole_convention=:intervalley)) / (2delta * im)
+    J_intervalley = KPM.nambu_current_q(
+        hf, posf, q0; dir=1, disp=dispf, hole_convention=:intervalley)
+    @test FD_intervalley ≈ Matrix(J_intervalley) atol=1e-7
+    cross_convention_mismatch = maximum(abs.(FD_singlet .- Matrix(J_intervalley)))
+    println("flux-ring vertex cross-convention mismatch=$(cross_convention_mismatch)")
+    @test cross_convention_mismatch > 1e-3
+
+    qx = [2pi / 4, 0.0]
+    for convention in (:singlet, :intervalley)
+        Jq = KPM.nambu_current_q(
+            hf, posf, qx; dir=1, disp=dispf, hole_convention=convention)
+        Jmq = KPM.nambu_current_q(
+            hf, posf, -qx; dir=1, disp=dispf, hole_convention=convention)
+        @test Matrix(Jq') ≈ -Matrix(Jmq) atol=1e-13
+    end
+
+    mu = -0.4
+    U = fill(2.0, N)
+    n = fill(0.9, N)
+    Delta = fill(0.45 + 0.2im, N)
+    op_s = KPM.BdGOperator(
+        hf; mu=mu, U=U, n=n, Delta=Delta, hole_convention=:singlet)
+    psi_id = Matrix{ComplexF64}(I, 2N, 2N)
+    # This longitudinal ring calculation checks only vertex/convention
+    # consistency; it is not a physical transverse-stiffness claim.
+    response = @test_logs (:warn, r"q has a longitudinal component") KPM.superfluid_stiffness(
+        op_s, posf, qx; beta=10.0, eta=0.3, dir=1, disp=dispf,
+        NC=256, psi_in=psi_id, volume=1.0)
+    Jq_s = KPM.nambu_current_q(
+        hf, posf, qx; dir=1, disp=dispf, hole_convention=:singlet)
+    Jmq_s = KPM.nambu_current_q(
+        hf, posf, -qx; dir=1, disp=dispf, hole_convention=:singlet)
+    Hd_s = bdg_matrix_singlet(hf, mu, U, n, Delta)
+    Pi_SC_ed = ed_two_energy_response(
+        Hd_s, Matrix(Jq_s), Matrix(Jmq_s);
+        beta=10.0, eta=0.3, omega=0.0, Ef=0.0)
+    stiffness_relerr = abs(response.Pi_SC - Pi_SC_ed) / abs(Pi_SC_ed)
+    println("flux-ring singlet Pi_SC: ED=$(Pi_SC_ed), KPM=$(response.Pi_SC), relerr=$(stiffness_relerr)")
+    @test isapprox(response.Pi_SC, Pi_SC_ed; rtol=0.05)
+end
