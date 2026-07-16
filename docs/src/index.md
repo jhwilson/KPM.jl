@@ -165,10 +165,11 @@ ConductivityMoments
 
 The BdG layer is a matrix-free Nambu wrapper around any duck-typed normal
 operator that supports `size` and `mul!`.  The pairing block is a general
-operator `D` (onsite `Diagonal`, sparse bond matrix, or any `mul!`-capable
-operator); self-consistent pairing and density fields are solved from
-one-recurrence local moments: the particle and hole entries of each recurrence
-vector provide both channels without assembling the BdG matrix.
+operator `D` (onsite `Diagonal`, sparse bond matrix, or a matrix-free operator
+with `size` and five-argument `mul!` for both `D` and `adjoint(D)`);
+self-consistent pairing and density fields are solved from one-recurrence local
+moments: the particle and hole entries of each recurrence vector provide both
+channels without assembling the BdG matrix.
 
 `superfluid_stiffness` evaluates a transverse finite-wavevector response as a
 paired superconducting/normal two-point KPM calculation.  The normal reference
@@ -216,15 +217,22 @@ The self-consistency unknowns are the **per-bond amplitudes**
 one-recurrence local moments, O(1) entry reads per bond).  Channel `weights`
 act as the seed pattern and as the projection diagnostic
 ([`channel_amplitude`](@ref)); they do not restrict the variational space.
-Each undirected bond belongs to exactly one channel; onsite bonds `(i, i)`
-are only legal in `:even` channels; entries of `D` outside the declared
-channels are held fixed by the solver.  With channels supplied, `U` drives
-only the Hartree term — an onsite `:even` channel with `V = U` reproduces the
-legacy onsite solver.  Orbital or spin structure needs no special support: a
-model with explicit spin is one whose indices the user has already flattened,
-and the onsite singlet `D = i sigma_y Delta` is simply an odd channel between
-co-located indices (with `g_rho=1`, since each index then carries one physical
-degree of freedom).
+Channels must have disjoint bond support: per-bond unknowns make same-bond
+channel decompositions degenerate, and mixed-parity pairing on a shared bond
+is representable only as fixed background entries in `D`, not as competing
+self-consistent channels. Onsite bonds `(i, i)` are only legal in `:even`
+channels; entries of `D` outside the declared channels are held fixed by the
+solver. With channels supplied, `U` drives only the Hartree term — an onsite
+`:even` channel with `V = U` reproduces the legacy onsite solver. The built-in
+`U`/`n` Hartree term `-(U/2)n` is the reduced-singlet or spinless prescription;
+a flattened explicit-spin Hubbard model instead needs the partner-spin field
+`-U n_partner`, which the package cannot construct because models are user
+data and it has no spin ontology. Explicit-spin callers must fold such shifts
+into `h` themselves (using any fixed `n` field as caller-owned input), keep
+`update_density=false`, and disable the built-in Hartree channel with `U=0`,
+as in `test/rashba_test.jl`. The onsite-singlet pairing channel itself remains
+fully supported, with `g_rho=1` for densities callers reconstruct themselves.
+A caller-supplied Hartree operator is explicit future work.
 
 ### Conventions (load-bearing)
 
@@ -240,7 +248,7 @@ degree of freedom).
 | Volume | The response is per caller-supplied `volume`, in the caller's units. |
 | Rescaling | `b=0` (radial bound); `a=2*radius/(2-eps)` from hardened multi-start power iteration with default `eps=0.2`. Runtime recurrence guards abort loudly if the spectrum escapes `(-1,1)`; `rescale(op; bound=:gershgorin)` gives a certified upper bound for assembled operators, and `radius=...` accepts a known bound. |
 | Stiffness definition | `Ds/pi = Re Pi_N - Re Pi_SC` (paramagnetic-only, exact for linear dispersion), with paired probes, `NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field; both states share a common Chebyshev scale `a_common = max(a_SC, a_N)` so the finite-`NC` broadening is identical in the subtraction. `include_diamagnetic=true` adds the lattice diamagnetic difference: `Ds_over_pi_complete = (Re Pi_N - Re Pi_SC) + (Dia_SC - Dia_N)`, anchored against the free-energy curvature `(2 g_J/V)(F''_SC - F''_N)` in the tests. |
-| Rigid-`Delta` convention (bond pairing) | Stiffness vertices are kinetic-only for every channel: the vector potential couples to hopping bonds via Peierls phases, and the pairing block `D` is held rigid — it contributes no current or diamagnetic vertex (the standard Scalapino–White–Zhang mean-field treatment). The free-energy-curvature anchor defines `H(A)` the same way, so it tests exactly the declared convention. The self-consistently gauge-coupled (charge-`2e`) pairing response is out of scope. |
+| Rigid-`Delta` convention (bond pairing) | This is the package's fixed-gauge, rigid-`D` functional: the vector potential adds Peierls phases to kinetic bonds only, while `D` contributes no current or diamagnetic vertex. It reduces to the standard mean-field Kubo (Scalapino–White–Zhang) treatment for onsite pairing, and the free-energy-curvature anchor tests exactly this functional. Local gauge covariance of a nonlocal pair field and the charge-`2e` pairing response are out of scope. |
 | `q` and `eta` guidance | Choose `q=2pi/L` transverse to `dir` and commensurate with the torus. Choose `eta` between the finite-size level spacing and the gap, with `eta >= 5 a pi / NC`. |
 
 ```@docs; canonical=false

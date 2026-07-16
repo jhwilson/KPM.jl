@@ -120,6 +120,11 @@ end
     @test op_onsite.Δ == Delta
     @test_throws ArgumentError KPM.BdGOperator(h; mu=0.0, U=0.0,
                                                 Delta=Delta, D=D)
+    h_bound = sparse(1.0I, 2, 2)
+    h_hole_bound = sparse(100.0I, 2, 2)
+    @test_throws ArgumentError KPM.BdGOperator(
+        h_bound; mu=0.0, U=0.0, h_hole=h_hole_bound,
+        hole_convention=:conjugate)
 
     op_bond = KPM.BdGOperator(h; mu=0.0, U=0.0, D=D,
                                hole_convention=:conjugate)
