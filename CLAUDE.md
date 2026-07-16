@@ -92,6 +92,19 @@ reports whether the GPU path is active.
 
 ## Physics conventions (load-bearing — do not change casually)
 
+- **Models are user data (governing design principle).** KPM.jl supplies
+  spectral algorithms; it never infers model content. What an index means
+  (site, orbital, spin, cell), which bonds exist, positions/displacements,
+  degeneracies (`g_rho`, `g_J`), and volume are user-supplied inputs. The
+  same Hamiltonian matrix under different embeddings (SSH as `2N` sites vs
+  `N` cells × 2 orbitals, split vs co-located positions) has **different
+  current operators** `(J_α)_ij = H_ij (r_i − r_j)_α` and responses — only
+  the user's `pos`/`disp` data decides. When adding any algorithm: take
+  geometry, degeneracy, and volume as explicit arguments; never derive
+  bonds or positions from the matrix, and never bake in a spin/orbital
+  interpretation. Canonical statement: docs/src/index.md ("Design
+  principle: models are user data"); applied plan:
+  design/pairing-channel-generalization.md.
 - **Rescaling**: everything is expanded in `T_n(H_norm)` with
   `H_norm = (H − b·I)/a`, spectrum inside (−1, 1). Plain `normalizeH(H)`
   scales by the spectral radius (`b = 0`) — valid for asymmetric spectra but
