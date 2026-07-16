@@ -86,7 +86,7 @@ end
 """
     nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
                     q::AbstractVector{<:Real}; dir::Integer=1, disp=nothing,
-                    hole_convention::Symbol=:singlet)
+                    hole_convention::Symbol=:conjugate)
         -> SparseMatrixCSC{ComplexF64, Int}
 
 Build the finite-wavevector current vertex in the reduced Nambu convention.
@@ -101,10 +101,11 @@ where `d = r_i - r_j` is the bond displacement and the unwrapped midpoint is
     J(q)_ij         = h_ij d_dir exp(-im q ⋅ m_ij),
     J(q)_(i+N,j+N) = j_hole exp(-im q ⋅ m_ij),
 
-and zero off-diagonal Nambu blocks. For `hole_convention=:singlet`,
+and zero off-diagonal Nambu blocks. For `hole_convention=:conjugate`
+(`:singlet` is an accepted alias),
 differentiating `-conj(h(A))` gives `j_hole = conj(h_ij d_dir)`. For
 `hole_convention=:intervalley`, differentiating the same-`h`, opposite-Peierls-
-phase hole block gives `j_hole = h_ij d_dir`. The conjugation in the singlet
+phase hole block gives `j_hole = h_ij d_dir`. The conjugation in the conjugate
 branch acts on the bond factor, not on the phase. Both branches coincide for
 real `h`. Zero-displacement entries are skipped.
 
@@ -127,15 +128,14 @@ the adjoint identity.
 """
 function nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
                          q::AbstractVector{<:Real}; dir::Integer=1, disp=nothing,
-                         hole_convention::Symbol=:singlet)
+                         hole_convention::Symbol=:conjugate)
     N = size(h, 1)
     size(h, 2) == N || throw(ArgumentError("nambu_current_q: h must be square (got $(size(h)))"))
     size(pos, 1) == N || throw(ArgumentError("nambu_current_q: pos has $(size(pos, 1)) rows; expected $N"))
     ndim = size(pos, 2)
     length(q) == ndim || throw(ArgumentError("nambu_current_q: q has length $(length(q)); expected $ndim"))
     1 <= dir <= ndim || throw(ArgumentError("nambu_current_q: dir must satisfy 1 <= dir <= $ndim (got $dir)"))
-    hole_convention in (:intervalley, :singlet) ||
-        throw(ArgumentError("nambu_current_q: hole_convention must be :intervalley or :singlet (got $hole_convention)"))
+    hole_convention = _canonical_hole_convention(hole_convention; caller="nambu_current_q")
 
     rows = Int[]
     cols = Int[]
@@ -153,7 +153,7 @@ function nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
         all(iszero, d) && continue
         phase = exp(-im * sum(q[ν] * (pos[j, ν] + d[ν] / 2) for ν in 1:ndim))
         bond = V[k] * d[dir]
-        hole_bond = hole_convention === :singlet ? conj(bond) : bond
+        hole_bond = hole_convention === :conjugate ? conj(bond) : bond
         push!(rows, i);     push!(cols, j);     push!(vals, ComplexF64(bond * phase))
         push!(rows, i + N); push!(cols, j + N); push!(vals, ComplexF64(hole_bond * phase))
     end
@@ -164,7 +164,7 @@ end
 """
     nambu_diamagnetic(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real};
                       dir::Integer=1, disp=nothing,
-                      hole_convention::Symbol=:singlet)
+                      hole_convention::Symbol=:conjugate)
         -> SparseMatrixCSC{ComplexF64, Int}
 
 Build the zero-wavevector second Peierls derivative
@@ -173,7 +173,7 @@ cancel, so this diamagnetic operator is independent of `q`. For bond
 displacement `d = r_i - r_j`, its nonzero entries are
 
     Dhat_ij             = -h_ij d_dir^2
-    Dhat_(i+N,j+N)      = +conj(h_ij) d_dir^2  (:singlet)
+    Dhat_(i+N,j+N)      = +conj(h_ij) d_dir^2  (:conjugate; :singlet alias)
                          +h_ij d_dir^2        (:intervalley).
 
 The off-diagonal Nambu blocks vanish and zero-displacement entries are
@@ -185,7 +185,7 @@ are used when `disp=nothing`.
 function nambu_diamagnetic(h::SparseMatrixCSC,
                            pos::AbstractMatrix{<:Real};
                            dir::Integer=1, disp=nothing,
-                           hole_convention::Symbol=:singlet)
+                           hole_convention::Symbol=:conjugate)
     N = size(h, 1)
     size(h, 2) == N ||
         throw(ArgumentError("nambu_diamagnetic: h must be square (got $(size(h)))"))
@@ -194,8 +194,7 @@ function nambu_diamagnetic(h::SparseMatrixCSC,
     ndim = size(pos, 2)
     1 <= dir <= ndim ||
         throw(ArgumentError("nambu_diamagnetic: dir must satisfy 1 <= dir <= $ndim (got $dir)"))
-    hole_convention in (:intervalley, :singlet) ||
-        throw(ArgumentError("nambu_diamagnetic: hole_convention must be :intervalley or :singlet (got $hole_convention)"))
+    hole_convention = _canonical_hole_convention(hole_convention; caller="nambu_diamagnetic")
 
     rows = Int[]
     cols = Int[]
@@ -214,7 +213,7 @@ function nambu_diamagnetic(h::SparseMatrixCSC,
         all(iszero, d) && continue
         d2 = d[dir]^2
         particle_bond = -V[k] * d2
-        hole_bond = (hole_convention === :singlet ? conj(V[k]) : V[k]) * d2
+        hole_bond = (hole_convention === :conjugate ? conj(V[k]) : V[k]) * d2
         push!(rows, i);     push!(cols, j);     push!(vals, ComplexF64(particle_bond))
         push!(rows, i + N); push!(cols, j + N); push!(vals, ComplexF64(hole_bond))
     end
@@ -380,7 +379,7 @@ function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
     op_n = BdGOperator(
         op.h; mu=op.μ, U=copy(op.U), n=copy(op.n),
         Delta=zeros(ComplexF64, op.N), hole_convention=op.hole_convention,
-        h_hole=op.hole_convention === :singlet ? op.h_hole : nothing,
+        h_hole=op.hole_convention === :conjugate ? op.h_hole : nothing,
         assume_intervalley=op.hole_convention === :intervalley)
     h_sparse = op.h isa SparseMatrixCSC ? op.h : sparse(op.h)
     Jq = nambu_current_q(h_sparse, pos, q; dir=dir, disp=disp,
