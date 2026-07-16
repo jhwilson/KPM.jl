@@ -163,21 +163,22 @@ ConductivityMoments
 
 ## Bogoliubov–de Gennes and superfluid stiffness
 
-The BdG layer is a matrix-free, reduced spin-singlet Nambu wrapper around any
-duck-typed normal operator that supports `size` and `mul!`.  It solves local,
-self-consistent `Delta` and density fields from one-recurrence local moments:
-the particle and hole entries of each recurrence vector provide both channels
-without assembling the BdG matrix.
+The BdG layer is a matrix-free Nambu wrapper around any duck-typed normal
+operator that supports `size` and `mul!`.  The pairing block is a general
+operator `D` (onsite `Diagonal`, sparse bond matrix, or any `mul!`-capable
+operator); self-consistent pairing and density fields are solved from
+one-recurrence local moments: the particle and hole entries of each recurrence
+vector provide both channels without assembling the BdG matrix.
 
 `superfluid_stiffness` evaluates a transverse finite-wavevector response as a
 paired superconducting/normal two-point KPM calculation.  The normal reference
 keeps the assembled hopping, chemical potential, interaction, and converged
-Hartree density, changing only `Delta` to zero.  This paramagnetic-only
+Hartree density, zeroing only the pairing block.  This paramagnetic-only
 subtraction is exact for strictly linear (continuum-Dirac-like) dispersions;
-for lattice models it omits the superconducting-vs-normal difference of the
-diamagnetic (kinetic) term — `O(Delta^2)`, zero at `Delta = 0` — which the
-lattice-complete stiffness would add as a separate single-operator trace
-(planned follow-up; see the `superfluid_stiffness` docstring).
+for lattice models pass `include_diamagnetic=true` to add the
+superconducting-vs-normal difference of the diamagnetic (kinetic) term —
+`O(Delta^2)`, zero at `Delta = 0` — as a Fermi-weighted single-operator trace
+(see the conventions table and the `superfluid_stiffness` docstring).
 
 ```julia
 using KPM
@@ -192,12 +193,46 @@ stiffness = KPM.superfluid_stiffness(op, pos, q; beta=8.0, eta=0.3,
                                      volume=Float64(Lx * Ly))
 ```
 
+### User-defined pairing channels
+
+Pairing structure is model content, so — like geometry and degeneracies — it
+is supplied by the user as plain data, never inferred from the matrix.  A
+[`PairingChannel`](@ref) declares which index pairs pair, with what form
+factor, coupling, and parity:
+
+```julia
+# spinless p-wave (Kitaev) chain: odd bond channel
+channel = KPM.PairingChannel([(i, i + 1) for i in 1:N-1], 1.0, V, :odd)
+op = KPM.BdGOperator(h; mu=mu, U=0.0,
+                     D=KPM.pairing_matrix(N, [channel]; amplitude=0.1),
+                     hole_convention=:conjugate)
+scf = KPM.bdg_solve!(op, [channel]; beta=8.0, NC=512, mix=0.3,
+                     update_density=false, g_rho=1)
+```
+
+The self-consistency unknowns are the **per-bond amplitudes**
+`Delta_b = -V_b (F_ij + s F_ji)/2` (`s = ±1` per the channel parity;
+`F_ij = <c_j c_i>`-type anomalous averages extracted from the same
+one-recurrence local moments, O(1) entry reads per bond).  Channel `weights`
+act as the seed pattern and as the projection diagnostic
+([`channel_amplitude`](@ref)); they do not restrict the variational space.
+Each undirected bond belongs to exactly one channel; onsite bonds `(i, i)`
+are only legal in `:even` channels; entries of `D` outside the declared
+channels are held fixed by the solver.  With channels supplied, `U` drives
+only the Hartree term — an onsite `:even` channel with `V = U` reproduces the
+legacy onsite solver.  Orbital or spin structure needs no special support: a
+model with explicit spin is one whose indices the user has already flattened,
+and the onsite singlet `D = i sigma_y Delta` is simply an odd channel between
+co-located indices (with `g_rho=1`, since each index then carries one physical
+degree of freedom).
+
 ### Conventions (load-bearing)
 
 | Topic | Convention |
 | --- | --- |
 | Nambu layout | `[particle; hole]`, with hole index `i+N`. |
-| Hole-block convention | `hole_convention=:intervalley` (default): hole block `-xi` with the **same** `h`, presuming `h_{-K}^* = h_K` (exact for real-symmetric `h`; non-symmetric complex `h` requires `assume_intervalley=true`). `hole_convention=:singlet`: standard same-valley `-conj(xi)` hole block, with **exact** particle-hole symmetry `tau_y K` for any complex Hermitian `h` and any complex `Delta`. Both conventions coincide for real-symmetric `h`; the current and diamagnetic vertices are convention-aware. |
+| Hole-block convention | `hole_convention=:intervalley` (default): hole block `-xi` with the **same** `h`, presuming `h_{-K}^* = h_K` (exact for real-symmetric `h`; non-symmetric complex `h` requires `assume_intervalley=true`). `hole_convention=:conjugate` (formerly `:singlet`, which remains an accepted alias): the fully general `-conj(xi)` hole block for any normal operator, including explicit-spin / spin-orbit-coupled `h` — singlet vs triplet content lives in the structure of `D`, not in the hole block. Both conventions coincide for real-symmetric `h`; the current and diamagnetic vertices are convention-aware. |
+| Particle-hole symmetry (parity-resolved) | With the `:conjugate` hole block, `tau_y K` is an exact PH symmetry iff `transpose(D) == +D` (even parity: onsite, extended-s, d-wave) and `tau_x K` iff `transpose(D) == -D` (odd parity: p-wave, explicit-spin onsite singlet `i sigma_y Delta`). Either way the spectrum has exact `±E` pairs. Mixed-parity `D` has no exact PH symmetry — nothing breaks: `b=0` remains a radial bound protected by the runtime guards; only Chebyshev resolution is paid. `moment_parity=:EVEN` eligibility inherits the same conditions. |
 | Interaction sign | `U > 0` is attractive: `H_int = -U sum n_up n_down` and `Delta_i = -U_i<c_down c_up>`. |
 | Hartree | `-(U/2) n_i`, with full site density; there is no double-counting correction, and the absorbed constant is **not** split from `mu`. |
 | Chemical potential | It is inside `H_BdG`, so all Fermi factors are at quasiparticle energy `0`. |
@@ -205,6 +240,7 @@ stiffness = KPM.superfluid_stiffness(op, pos, q; beta=8.0, eta=0.3,
 | Volume | The response is per caller-supplied `volume`, in the caller's units. |
 | Rescaling | `b=0` (radial bound); `a=2*radius/(2-eps)` from hardened multi-start power iteration with default `eps=0.2`. Runtime recurrence guards abort loudly if the spectrum escapes `(-1,1)`; `rescale(op; bound=:gershgorin)` gives a certified upper bound for assembled operators, and `radius=...` accepts a known bound. |
 | Stiffness definition | `Ds/pi = Re Pi_N - Re Pi_SC` (paramagnetic-only, exact for linear dispersion), with paired probes, `NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field; both states share a common Chebyshev scale `a_common = max(a_SC, a_N)` so the finite-`NC` broadening is identical in the subtraction. `include_diamagnetic=true` adds the lattice diamagnetic difference: `Ds_over_pi_complete = (Re Pi_N - Re Pi_SC) + (Dia_SC - Dia_N)`, anchored against the free-energy curvature `(2 g_J/V)(F''_SC - F''_N)` in the tests. |
+| Rigid-`Delta` convention (bond pairing) | Stiffness vertices are kinetic-only for every channel: the vector potential couples to hopping bonds via Peierls phases, and the pairing block `D` is held rigid — it contributes no current or diamagnetic vertex (the standard Scalapino–White–Zhang mean-field treatment). The free-energy-curvature anchor defines `H(A)` the same way, so it tests exactly the declared convention. The self-consistently gauge-coupled (charge-`2e`) pairing response is out of scope. |
 | `q` and `eta` guidance | Choose `q=2pi/L` transverse to `dir` and commensurate with the torus. Choose `eta` between the finite-size level spacing and the gap, with `eta >= 5 a pi / NC`. |
 
 ```@docs; canonical=false
@@ -218,6 +254,12 @@ bdg_solve!
 BdGSCFResult
 bdg_local_moments
 LocalBdGMoments
+PairingChannel
+pairing_matrix
+channel_amplitude
+bdg_channel_moments
+bdg_channel_update
+ChannelBdGMoments
 bdg_checkpoint
 bdg_restore!
 nambu_current_q

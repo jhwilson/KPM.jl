@@ -33,6 +33,18 @@ end
     include("pairing_channel_test.jl")
 end
 
+@testset "d-wave pairing channels (applications/bdg.jl)" begin
+    include("dwave_test.jl")
+end
+
+@testset "Rashba pairing channels (applications/bdg.jl)" begin
+    include("rashba_test.jl")
+end
+
+@testset "SSH embedding invariance (applications/stiffness.jl)" begin
+    include("ssh_invariance_test.jl")
+end
+
 @testset "superfluid stiffness (applications/stiffness.jl)" begin
     include("stiffness_test.jl")
 end

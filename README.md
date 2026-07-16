@@ -107,7 +107,21 @@ r = KPM.superfluid_stiffness(op, pos, q; beta=8.0, eta=0.3, dir=1,
 println(r.Ds_over_pi)  # Re Pi_N - Re Pi_SC
 ```
 
-The reduced-Nambu, Hartree, degeneracy, volume, rescaling, and finite-`q`
+Pairing is not limited to onsite singlets: a `PairingChannel` declares
+user-defined bond, p-wave, d-wave, or orbital-matrix pairing as plain data
+(bonds, weights, coupling, parity), with per-bond self-consistency and
+parity-resolved particle-hole symmetry:
+
+```julia
+channel = KPM.PairingChannel([(i, i + 1) for i in 1:N-1], 1.0, V, :odd)
+op = KPM.BdGOperator(h; mu=mu, U=0.0,
+                     D=KPM.pairing_matrix(N, [channel]; amplitude=0.1),
+                     hole_convention=:conjugate)
+KPM.bdg_solve!(op, [channel]; beta=8.0, NC=512, mix=0.3,
+               update_density=false, g_rho=1)
+```
+
+The Nambu, Hartree, degeneracy, volume, rescaling, finite-`q`, and rigid-`Delta`
 conventions are load-bearing; see the [BdG and stiffness documentation](docs/src/index.md#bogoliubovde-gennes-and-superfluid-stiffness).
 
 ## Installation

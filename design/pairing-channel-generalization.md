@@ -1,6 +1,13 @@
 # Plan: general pairing channels for the BdG layer
 
-Status: planned (not yet implemented). Scope: generalize the BdG +
+Status: implemented (branch `feature/pairing-channels`, 2026-07-16); §3–§5
+realized as staged commits with the §4 gates in `test/kitaev_test.jl`,
+`test/pairing_channel_test.jl`, `test/dwave_test.jl`, `test/rashba_test.jl`,
+`test/ssh_invariance_test.jl`, and `test/bond_stiffness_test.jl`. One
+deviation from §3.3: the SCF unknowns are the per-bond amplitudes (full
+Hartree–Fock–Bogoliubov mean field); channel weights are the seed pattern and
+projection diagnostic (`channel_amplitude`), not a variational restriction.
+Scope: generalize the BdG +
 superfluid-stiffness layer (PR #4) from onsite spin-singlet pairing to
 user-defined pairing channels (singlet, triplet, bond, orbital-matrix), with
 the particle-hole and vertex content following from user-supplied model data
