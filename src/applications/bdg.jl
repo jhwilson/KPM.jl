@@ -83,41 +83,57 @@ end
 
 """
     BdGOperator(h; mu, U, n=zeros(size(h, 1)),
-                Delta=zeros(ComplexF64, size(h, 1)), assume_intervalley=false)
+                Delta=zeros(ComplexF64, size(h, 1)),
+                hole_convention=:intervalley, h_hole=nothing,
+                assume_intervalley=false)
 
 Matrix-free reduced spin-singlet Nambu BdG operator with particle-hole layout
 `[particle; hole]` and hole index `i + N`:
 
     H_BdG = [ ξ                         Diagonal(Δ)       ]
-            [ Diagonal(conj(Δ))         -ξ                ]
+            [ Diagonal(conj(Δ))         hole              ]
 
 with `ξ = h - μ I - Diagonal(U n / 2)`.
 
 Here `U > 0` is attractive, with `H_int = -U Σ n↑n↓`, Hartree shift
 `-(U/2)n`, and `Δ_i = -U_i⟨c_{i↓}c_{i↑}⟩`. This CPU-only reduced convention
-uses the same `h` in the hole block and presumes `h_{-K}^* = h_K`; for matrix
-inputs this is exact when `h` is real-symmetric. A complex Hermitian matrix is
-rejected unless `assume_intervalley=true` explicitly asserts that it is the
-intervalley-identified operator. Matrix-free `h` is the caller's responsibility.
+supports two hole-block conventions:
 
-For complex `h` with a nonuniform gap phase the spectrum need not be
-particle-hole symmetric. The package's `b=0` rescaling is then a safe radial
-bound, not a symmetry statement.
+  * `hole_convention=:intervalley` (the default) uses `hole = -ξ`, hence the
+    same `h` in both blocks, and presumes `h_{-K}^* = h_K`. For matrix inputs a
+    complex Hermitian `h` is rejected unless `assume_intervalley=true`
+    explicitly asserts that it is the intervalley-identified operator. For
+    complex `h` with a nonuniform gap phase its spectrum need not be
+    particle-hole symmetric; the package's `b=0` rescaling remains a safe
+    radial bound, not a symmetry statement.
+  * `hole_convention=:singlet` is the standard same-valley
+    `(c_up, c_down^dagger)` convention and uses `hole = -conj(ξ)`. It obeys the
+    exact particle-hole symmetry `tau_y * conj(H) * tau_y = -H` for any complex
+    Hermitian `h` and any spatially varying complex `Δ`. For an assembled
+    matrix the conjugated hole operator is built automatically. Matrix-free
+    callers must supply it as `h_hole`.
+
+The conventions coincide identically for real-symmetric `h`.
 """
-mutable struct BdGOperator{TH}
+mutable struct BdGOperator{TH, THH}
     const h::TH
+    const h_hole::THH
     μ::Float64
     const U::Vector{Float64}
     const n::Vector{Float64}
     const Δ::Vector{ComplexF64}
     const N::Int
+    const hole_convention::Symbol
 end
 
 function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)),
                      Delta=zeros(ComplexF64, size(h, 1)),
+                     hole_convention::Symbol=:intervalley, h_hole=nothing,
                      assume_intervalley::Bool=false)
     N = size(h, 1)
     size(h, 2) == N || throw(ArgumentError("BdGOperator: h must be square (got $(size(h)))"))
+    hole_convention in (:intervalley, :singlet) ||
+        throw(ArgumentError("BdGOperator: hole_convention must be :intervalley or :singlet (got $hole_convention)"))
     U_vec = U isa Number ? fill(Float64(U), N) : collect(Float64, U)
     n_vec = collect(Float64, n)
     Δ_vec = collect(ComplexF64, Delta)
@@ -125,9 +141,15 @@ function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)),
     length(n_vec) == N || throw(ArgumentError("BdGOperator: n has length $(length(n_vec)); expected $N"))
     length(Δ_vec) == N || throw(ArgumentError("BdGOperator: Delta has length $(length(Δ_vec)); expected $N"))
 
-    if h isa AbstractMatrix
+    h_is_matrix = h isa AbstractMatrix
+    if h_is_matrix
         ishermitian(h) || throw(ArgumentError("BdGOperator: matrix h must be Hermitian"))
-        if eltype(h) <: Complex
+    end
+
+    h_hole_stored = if hole_convention === :intervalley
+        h_hole === nothing ||
+            throw(ArgumentError("BdGOperator: h_hole must be nothing for hole_convention=:intervalley"))
+        if h_is_matrix && eltype(h) <: Complex
             values = h isa SparseMatrixCSC ? nonzeros(h) : h
             max_imag = maximum(x -> abs(imag(x)), values; init=0.0)
             max_abs = maximum(abs, values; init=0.0)
@@ -136,8 +158,22 @@ function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)),
                 throw(ArgumentError("BdGOperator: for complex Hermitian h the reduced same-h hole block is only the correct physics if h is the intervalley-identified operator (h_{-K}^* = h_K); pass assume_intervalley=true to assert that, or use a real-symmetric h."))
             end
         end
+        h
+    else
+        assume_intervalley &&
+            throw(ArgumentError("BdGOperator: assume_intervalley is meaningless for hole_convention=:singlet; leave it false"))
+        if h_hole === nothing
+            h_is_matrix ||
+                throw(ArgumentError("BdGOperator: matrix-free h with hole_convention=:singlet requires h_hole, the conjugated normal-state operator"))
+            conj(h)
+        else
+            size(h_hole) == size(h) ||
+                throw(ArgumentError("BdGOperator: h_hole has size $(size(h_hole)); expected $(size(h))"))
+            h_hole
+        end
     end
-    return BdGOperator(h, Float64(mu), U_vec, n_vec, Δ_vec, N)
+    return BdGOperator(h, h_hole_stored, Float64(mu), U_vec, n_vec, Δ_vec, N,
+                       hole_convention)
 end
 
 Base.size(B::BdGOperator) = (2B.N, 2B.N)
@@ -153,7 +189,7 @@ function LinearAlgebra.mul!(Y::AbstractVecOrMat, B::BdGOperator,
     Yp = _nambu_block(Y, N, 1); Yh = _nambu_block(Y, N, 2)
     Xp = _nambu_block(X, N, 1); Xh = _nambu_block(X, N, 2)
     mul!(Yp, B.h, Xp, α, β)
-    mul!(Yh, B.h, Xh, -α, β)
+    mul!(Yh, B.h_hole, Xh, -α, β)
     @. Yp += α * ((-B.μ - (B.U / 2) * B.n) * Xp + B.Δ * Xh)
     @. Yh += α * (conj(B.Δ) * Xp - (-B.μ - (B.U / 2) * B.n) * Xh)
     return Y
@@ -175,6 +211,7 @@ construction. Matrix-free normal operators are not supported.
 function gershgorin_bound(op::BdGOperator)
     op.h isa AbstractMatrix ||
         throw(ArgumentError("gershgorin_bound: BdGOperator must have an assembled matrix h"))
+    # The singlet hole block has identical row sums because abs(conj(h)) == abs(h).
     N = op.N
     iszero(N) && return 0.0
     rowsums = zeros(Float64, N)

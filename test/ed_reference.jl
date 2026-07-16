@@ -12,7 +12,8 @@ using SparseArrays
 
 export haldane_model, haldane_bloch, chern_number_fhs,
        ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0,
-       ring_model, bdg_matrix, ed_two_energy_response
+       ring_model, flux_ring_model, bdg_matrix, bdg_matrix_singlet,
+       ed_two_energy_response
 
 """
     haldane_model(Lx, Ly; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
@@ -253,6 +254,25 @@ function ring_model(N::Int; t::Real=1.0)
 end
 
 """
+    flux_ring_model(N; t=1.0, phi=0.35) -> (h, pos, disp)
+
+N-site periodic ring with directed nearest-neighbor hopping
+`h[i, i+1] = -t * exp(im * phi)` and total flux `N * phi`.
+"""
+function flux_ring_model(N::Int; t::Real=1.0, phi::Real=0.35)
+    N > 0 || throw(ArgumentError("flux_ring_model: N must be positive"))
+    h = spzeros(ComplexF64, N, N)
+    hopping = -Float64(t) * cis(Float64(phi))
+    for i in 1:N
+        j = mod1(i + 1, N)
+        h[i, j] = hopping
+        h[j, i] = conj(hopping)
+    end
+    _, pos, disp = ring_model(N; t=t)
+    return h, pos, disp
+end
+
+"""
     bdg_matrix(h, mu, U, n, Δ) -> Matrix{ComplexF64}
 
 Assemble the dense reduced spin-singlet Nambu BdG reference matrix.
@@ -261,6 +281,18 @@ function bdg_matrix(h, mu, U, n, Δ)
     ξ = Matrix(h) - mu * I - Diagonal(U .* n ./ 2)
     D = Diagonal(Δ)
     return ComplexF64[ξ D; Diagonal(conj.(Δ)) -ξ]
+end
+
+"""
+    bdg_matrix_singlet(h, mu, U, n, Δ) -> Matrix{ComplexF64}
+
+Assemble the standard same-valley spin-singlet Nambu matrix with hole block
+`-conj(xi)`.
+"""
+function bdg_matrix_singlet(h, mu, U, n, Δ)
+    ξ = Matrix(h) - mu * I - Diagonal(U .* n ./ 2)
+    D = Diagonal(Δ)
+    return ComplexF64[ξ D; Diagonal(conj.(Δ)) -conj(ξ)]
 end
 
 """
@@ -338,15 +370,18 @@ function square_model(Lx::Int, Ly::Int; t::Real=1.0)
 end
 
 """
-    bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1)
+    bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1,
+                        hole_convention::Symbol=:singlet)
         -> Matrix{ComplexF64}
 
 Build only the kinetic Nambu part of the Peierls-coupled BdG matrix. Local
 chemical-potential, Hartree, and pairing terms do not couple to the vector
 potential. A real modulation `u(m) = cos(q ⋅ m)` is used when `q` is given,
-so the result remains Hermitian.
+so the result remains Hermitian. The singlet hole block is `-conj(h(A))`;
+the intervalley hole block uses the same `h` with the opposite Peierls phase.
 """
-function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1)
+function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1,
+                            hole_convention::Symbol=:singlet)
     N = size(h, 1)
     size(h, 2) == N || throw(ArgumentError("bdg_peierls_matrix: h must be square"))
     size(pos, 1) == N || throw(ArgumentError("bdg_peierls_matrix: incompatible pos"))
@@ -354,8 +389,11 @@ function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1)
     1 <= dir <= ndim || throw(ArgumentError("bdg_peierls_matrix: invalid dir=$dir"))
     q === nothing || length(q) == ndim ||
         throw(ArgumentError("bdg_peierls_matrix: q has length $(length(q)); expected $ndim"))
+    hole_convention in (:intervalley, :singlet) ||
+        throw(ArgumentError("bdg_peierls_matrix: invalid hole_convention=$hole_convention"))
 
     hp = zeros(ComplexF64, N, N)
+    hh = zeros(ComplexF64, N, N)
     I, J, V = findnz(sparse(h))
     for k in eachindex(V)
         i = I[k]
@@ -364,9 +402,11 @@ function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1)
         m = [pos[j, ν] + d[ν] / 2 for ν in 1:ndim]
         u = q === nothing ? 1.0 : cos(dot(q, m))
         hp[i, j] = V[k] * exp(im * A * d[dir] * u)
+        hole_hopping = hole_convention === :singlet ? conj(V[k]) : V[k]
+        hh[i, j] = -hole_hopping * exp(-im * A * d[dir] * u)
     end
     H = [hp zeros(ComplexF64, N, N);
-         zeros(ComplexF64, N, N) -transpose(hp)]
+         zeros(ComplexF64, N, N) hh]
     @assert ishermitian(H)
     return Matrix{ComplexF64}(H)
 end

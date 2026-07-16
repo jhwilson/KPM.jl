@@ -344,3 +344,116 @@ end
     @test maximum(abs.(n256 .- first(n256))) < 1e-10
     @test maximum(abs.(Delta256 .- first(Delta256))) < 1e-10
 end
+
+@testset "singlet hole convention (complex flux ring)" begin
+    N = 4
+    hf, posf, dispf = flux_ring_model(N; phi=0.35)
+    mu = -0.4
+    U = fill(2.0, N)
+    n = fill(0.9, N)
+    Delta = [0.4exp(0.3im), 0.4exp(1.1im),
+             0.4exp(-0.7im), 0.4exp(2.0im)]
+    Hs = bdg_matrix_singlet(hf, mu, U, n, Delta)
+    op_s = KPM.BdGOperator(
+        hf; mu=mu, U=U, n=n, Delta=Delta, hole_convention=:singlet)
+
+    Hmf = zeros(ComplexF64, 2N, 2N)
+    for j in axes(Hmf, 2)
+        e_j = zeros(ComplexF64, 2N)
+        e_j[j] = 1
+        mul!(view(Hmf, :, j), op_s, e_j)
+    end
+    @test Hmf ≈ Hs atol=1e-12
+    @test op_s.h_hole isa SparseMatrixCSC
+
+    rng = Xoshiro(91)
+    x = randn(rng, ComplexF64, 2N)
+    y = randn(rng, ComplexF64, 2N)
+    alpha = 1.2 - 0.3im
+    beta_mul = -0.4 + 0.7im
+    @test mul!(copy(y), op_s, x, alpha, beta_mul) ≈
+          alpha * Hs * x + beta_mul * y atol=1e-12
+
+    ev = sort(eigvals(Hermitian(Hs)))
+    @test ev ≈ -reverse(ev) atol=1e-10
+    op_i = KPM.BdGOperator(
+        hf; mu=mu, U=U, n=n, Delta=Delta,
+        hole_convention=:intervalley, assume_intervalley=true)
+    Hi = zeros(ComplexF64, 2N, 2N)
+    for j in axes(Hi, 2)
+        e_j = zeros(ComplexF64, 2N)
+        e_j[j] = 1
+        mul!(view(Hi, :, j), op_i, e_j)
+    end
+    ev_i = sort(eigvals(Hermitian(Hi)))
+    intervalley_pairing_mismatch = maximum(abs.(ev_i .+ reverse(ev_i)))
+    println("flux-ring PH mismatch: singlet=$(maximum(abs.(ev .+ reverse(ev)))), intervalley=$(intervalley_pairing_mismatch)")
+    @test intervalley_pairing_mismatch > 1e-3
+
+    beta = 10.0
+    F = eigen(Hermitian(Hs))
+    occupations = KPM.fermiFunctions(0.0, beta).(F.values)
+    Delta_exact = ComplexF64[
+        -U[i] * sum(F.vectors[i, j] * conj(F.vectors[i + N, j]) * occupations[j]
+                    for j in eachindex(F.values)) for i in 1:N]
+    n_exact = Float64[
+        2sum(abs2(F.vectors[i, j]) * occupations[j]
+             for j in eachindex(F.values)) for i in 1:N]
+    rh = KPM.rescale(op_s)
+    # NC=512: at NC=256 the flux ring's sharp levels leave ~3e-3 kernel
+    # broadening error; 512 comfortably meets the 2e-3 gate.
+    moments = KPM.bdg_local_moments(rh; NC=512, batch_size=3)
+    n_kpm, Delta_kpm = KPM.bdg_update(moments; beta=beta)
+    update_delta_relerr = maximum(abs.(Delta_kpm .- Delta_exact)) / maximum(abs, Delta_exact)
+    update_n_relerr = maximum(abs.(n_kpm .- n_exact)) / maximum(abs, n_exact)
+    println("flux-ring singlet update: Delta relerr=$(update_delta_relerr), n relerr=$(update_n_relerr)")
+    @test Delta_kpm ≈ Delta_exact rtol=2e-3
+    @test n_kpm ≈ n_exact rtol=2e-3
+
+    # SCF with a genuinely gapped fixed point: place mu on the xi = 0 level
+    # (flux-ring single-particle level at -2 sin(phi) = -0.686, Hartree
+    # -(U/2) n = -1.125 with the density frozen) so pairing is strong. At the
+    # original mu = -0.4 no level sits near the Fermi energy and the true
+    # fixed point is the normal state (Delta -> 0), which cannot anchor a
+    # relative comparison. Density feedback is already exercised by the
+    # real-ring SCF testset; here update_density=false keeps the level
+    # placement exact.
+    mu_scf = -2 * sin(0.35) - 1.125
+    U_scf = fill(2.5, N)
+    Delta_initial = fill(0.1 + 0.0im, N)
+    op_scf = KPM.BdGOperator(
+        hf; mu=mu_scf, U=U_scf, n=n, Delta=Delta_initial,
+        hole_convention=:singlet)
+    result = KPM.bdg_solve!(
+        op_scf; beta=beta, NC=512, mix=0.3, update_density=false,
+        tol_delta=1e-8, tol_n=1e-8, maxiter=800)
+    @test result.converged
+    @test maximum(abs.(abs.(op_scf.Δ) .- sum(abs, op_scf.Δ) / N)) < 1e-8
+    @test abs(op_scf.Δ[1]) > 0.05
+
+    Delta_ed = copy(Delta_initial)
+    residual_ed = Inf
+    for _ in 1:10_000
+        F_ed = eigen(Hermitian(bdg_matrix_singlet(hf, mu_scf, U_scf, n, Delta_ed)))
+        occupations_ed = KPM.fermiFunctions(0.0, beta).(F_ed.values)
+        Delta_new = ComplexF64[
+            -U_scf[i] * sum(F_ed.vectors[i, j] * conj(F_ed.vectors[i + N, j]) * occupations_ed[j]
+                            for j in eachindex(F_ed.values)) for i in 1:N]
+        residual_ed = norm(Delta_new .- Delta_ed, Inf)
+        @. Delta_ed = 0.7 * Delta_ed + 0.3 * Delta_new
+        residual_ed < 1e-12 && break
+    end
+    @test residual_ed < 1e-12
+    scf_delta_relerr = maximum(abs.(abs.(op_scf.Δ) .- abs.(Delta_ed))) / maximum(abs, Delta_ed)
+    println("flux-ring singlet SCF: |Delta_ed|=$(abs(Delta_ed[1])), Delta relerr=$(scf_delta_relerr)")
+    @test abs.(op_scf.Δ) ≈ abs.(Delta_ed) rtol=2e-3
+
+    @test_throws ArgumentError KPM.BdGOperator(
+        hf; mu=mu, U=U, n=n, Delta=Delta,
+        hole_convention=:intervalley, h_hole=conj(hf),
+        assume_intervalley=true)
+    hf_matrix_free = KPM.ScaledOperator(hf, 1.0, 0.0)
+    @test_throws ArgumentError KPM.BdGOperator(
+        hf_matrix_free; mu=mu, U=U, n=n, Delta=Delta,
+        hole_convention=:singlet)
+end
