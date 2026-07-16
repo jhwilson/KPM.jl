@@ -20,6 +20,7 @@ include("applications/conductivity.jl")
 include("applications/cpge.jl")
 include("applications/optical_cond.jl")
 include("applications/bdg.jl")
+include("applications/stiffness.jl")
 include("frontend.jl")
 
 end # module

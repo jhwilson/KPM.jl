@@ -25,6 +25,10 @@ end
     include("bdg_test.jl")
 end
 
+@testset "superfluid stiffness (applications/stiffness.jl)" begin
+    include("stiffness_test.jl")
+end
+
 @testset "KPM.jl" begin
     include("integration_test.jl")
 end

@@ -12,7 +12,7 @@ using SparseArrays
 
 export haldane_model, haldane_bloch, chern_number_fhs,
        ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0,
-       ring_model, bdg_matrix
+       ring_model, bdg_matrix, ed_two_energy_response
 
 """
     haldane_model(Lx, Ly; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
@@ -261,6 +261,41 @@ function bdg_matrix(h, mu, U, n, Δ)
     ξ = Matrix(h) - mu * I - Diagonal(U .* n ./ 2)
     D = Diagonal(Δ)
     return ComplexF64[ξ D; Diagonal(conj.(Δ)) -ξ]
+end
+
+"""
+    ed_two_energy_response(H, Jl, Jr; beta, eta, omega=0.0, Ef=0.0)
+        -> ComplexF64
+
+Dense Lehmann-sum reference for the generic two-energy response.
+"""
+function ed_two_energy_response(H, Jl, Jr; beta, eta, omega=0.0, Ef=0.0)
+    eta == 0 && !(omega == 0 && isfinite(beta)) &&
+        throw(ArgumentError("eta=0 requires omega=0 and finite beta"))
+
+    F = eigen(Hermitian(Matrix(H)))
+    Jl_e = F.vectors' * Matrix(Jl) * F.vectors
+    Jr_e = F.vectors' * Matrix(Jr) * F.vectors
+    fermi(e) = isinf(beta) ? ((e < Ef) + (e <= Ef)) / 2 :
+                             1 / (exp(beta * (e - Ef)) + 1)
+    occupations = fermi.(F.values)
+    acc = zero(ComplexF64)
+    for p in eachindex(F.values), q in eachindex(F.values)
+        delta_E = F.values[p] - F.values[q]
+        divided_difference = if eta == 0
+            if abs(delta_E) < 1e-8
+                fm = fermi((F.values[p] + F.values[q]) / 2)
+                -beta * fm * (1 - fm)
+            else
+                (occupations[p] - occupations[q]) / delta_E
+            end
+        else
+            (occupations[p] - occupations[q]) /
+                (omega + delta_E + im * eta)
+        end
+        acc += Jl_e[p, q] * Jr_e[q, p] * divided_difference
+    end
+    return ComplexF64(acc)
 end
 
 end # module
