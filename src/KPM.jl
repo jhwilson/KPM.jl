@@ -17,5 +17,6 @@ include("applications/ldos_mu.jl")
 include("applications/conductivity.jl")
 include("applications/cpge.jl")
 include("applications/optical_cond.jl")
+include("frontend.jl")
 
 end # module

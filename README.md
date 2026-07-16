@@ -27,6 +27,30 @@ with h₀ = 1, hₙ = 2 (n ≥ 1) and gₙ a damping kernel (Jackson by default)
 `kpm_1d` computes `NC` moments from `NC/2` matrix-vector recurrence steps
 (moment doubling), so `NC` must be even.
 
+## Typed front end (recommended)
+
+`KPM.rescale` packages the rescaling `(a, b)` together with the rescaled
+Hamiltonian, and the moment constructors record everything the reconstruction
+step needs (`a`, `b`, `NH`, `NR`), so none of that bookkeeping is threaded by
+hand — forgetting `b` or `NH` becomes impossible rather than silently wrong:
+
+```julia
+h = KPM.rescale(H; center=true)           # RescaledHamiltonian: H_norm, a, b
+m = KPM.dos_moments(h; NC=1024, NR=12)    # DosMoments (records a, b, NH, NR)
+E, rho = KPM.dos(m)                       # a, b applied automatically
+
+m2  = KPM.cond_moments(h, Jx, Jy; NC=256, NR=8)   # J from the UNRESCALED H (bond convention)
+σxy = KPM.kubo_bastin_cond(m2, Ef; area=A)        # in e²/h
+dσE = KPM.d_dc_cond(m2, E_values)                 # Kubo–Bastin integrand
+```
+
+For reproducible random-phase probe vectors pass an explicit RNG:
+`KPM.dos_moments(h; NC, NR, rng=Xoshiro(42))` (`using Random`). The raw-array
+interface below remains fully supported; the typed methods are thin wrappers
+over the same code paths. Typed wrappers for the optical (`optical_cond1/2`)
+and nonlinear (`cpge`) responses are not yet available — those functions take
+energies in rescaled units (see their docstrings).
+
 ## Capability
 
 KPM for density of states (DOS) (RevModPhys.78.275):
@@ -85,7 +109,19 @@ call computes everything in one step:
 E, rhoE = KPM.dos(H)
 ```
 
-For more control, rescale once, compute moments, then reconstruct:
+For more control, rescale once, compute moments, then reconstruct — the
+moments object remembers the rescaling, so reconstruction needs no extra
+arguments:
+
+```julia
+h = KPM.rescale(H)                          # use center=true for asymmetric spectra
+m = KPM.dos_moments(h; NC=1024, NR=13)
+rho_0 = KPM.dos0(m)                         # DOS at E = h.b (the rescaling center)
+d2rho_0 = KPM.dos0(m; dE_order=2)           # and its second derivative
+E_grid, rho_E = KPM.dos(m; N_tilde=2048)
+```
+
+The same computation through the explicit `(a, b)` interface:
 
 ```julia
 NC = 1024; NR = 13
