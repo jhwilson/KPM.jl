@@ -99,11 +99,13 @@ function dos(
         E_grid = collect(((0:(N_tilde)).*(E_range[2]-E_range[1]))./N_tilde .+ E_range[1])
     else
         @assert isnothing(E_range) "Should not set `E_grid` and `E_range` simultaneously."
-        @assert (length(E_grid) == N_tilde) """`N_tilde` does not match with `E_grid`.
-        `N_tilde` is only necessary when using `E_range` instead of `E_grid`"""
+        if N_tilde != 0
+            @assert (length(E_grid) == N_tilde) """`N_tilde` does not match with `E_grid`.
+            `N_tilde` is only necessary when using `E_range` instead of `E_grid`"""
+        end
     end
 
-    rhoE_full = similar(E_grid)
+    rhoE_full = similar(E_grid, float(eltype(E_grid)))
     rhoE_full .= 0
 
     # only x = (E-b)/a strictly inside (-1, 1) is reconstructable

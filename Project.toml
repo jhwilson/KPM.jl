@@ -1,7 +1,7 @@
 name = "KPM"
 uuid = "479eba37-df18-4d3d-9d60-66182c7f1954"
 authors = ["Yixing Fu, Angkun Wu"]
-version = "0.1.1"
+version = "0.2.0"
 
 [deps]
 Arpack = "7d9fca2a-8960-54d3-9f78-7d1dccf2cb97"
