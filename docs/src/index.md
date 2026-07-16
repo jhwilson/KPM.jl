@@ -33,6 +33,41 @@ and provide your GitHub username/password if prompted.
 
 For more details see the project's README.
 
+## Design principle: models are user data
+
+KPM.jl computes spectral quantities from operators. It never infers model
+content. What an index means (site, orbital, spin, sublattice, cell), which
+bonds exist, where things sit in space, which degeneracies are implicit, and
+what the volume is are all **user-supplied data**, assembled with whatever
+model-building tools you prefer and passed in as plain arrays, callables, and
+numbers:
+
+  * operators: `H` (and, for BdG, the pairing structure) — duck-typed, only
+    `size` and `mul!` required;
+  * geometry: positions `pos` and bond displacements `disp(i, j)` — these
+    *define* the current operator `(J_dir)_ij = H_ij (r_i - r_j)_dir`, the
+    Peierls coupling, and the diamagnetic operator;
+  * normalization content: degeneracy factors (`g_rho`, `g_J`), `volume`,
+    interaction couplings.
+
+Why this matters — the SSH example: the same SSH Hamiltonian matrix can be
+modeled as `2N` lattice sites with split positions, or as `N` cells with two
+orbitals each (co-located or split). These embeddings have **different
+current operators** — an intra-cell hop carries current only if the user's
+positions say its displacement is nonzero — and therefore different f-sum
+rules and transport responses. All embeddings are legitimate physics; only
+the user knows which one describes their system, so the package takes the
+displacement data verbatim and never derives geometry from the matrix.
+The same applies to degeneracies: nothing multiplies your results by 2 for
+spin unless you ask for it (`g_rho`, `g_J` are explicit, with documented
+defaults).
+
+Practical consequence: if a function needs geometry, degeneracy, or volume,
+it takes them as explicit arguments. If you see a result that seems off by a
+geometric or combinatorial factor, check the model data you supplied before
+suspecting the algorithm — and see the conventions tables below for what
+each factor means.
+
 ## Conventions and rescaling
 
 All quantities are expanded in Chebyshev polynomials of the rescaled

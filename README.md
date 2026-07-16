@@ -10,6 +10,16 @@ optional CUDA GPU acceleration.
 
 ## Conventions
 
+**Models are user data.** KPM.jl computes spectral quantities from operators
+and never infers model content: what an index means (site, orbital, spin,
+cell), which bonds exist, positions/displacements (which *define* the current
+operator `(J_dir)_ij = H_ij (r_i - r_j)_dir`), degeneracy factors, and volume
+are supplied by you. The same Hamiltonian matrix under different embeddings
+(e.g. SSH as `2N` sites vs `N` cells × 2 orbitals) has different current
+operators and responses — only your position data decides. See the
+[documentation](docs/src/index.md#design-principle-models-are-user-data) for
+the full statement.
+
 All quantities are expanded in Chebyshev polynomials of the rescaled
 Hamiltonian `H_norm = (H - b I) / a`, whose spectrum must lie inside (-1, 1).
 `KPM.normalizeH` computes the rescaling: by default it assumes a spectrum
