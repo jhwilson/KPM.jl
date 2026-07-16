@@ -162,6 +162,147 @@ function nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
 end
 
 """
+    nambu_diamagnetic(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real};
+                      dir::Integer=1, disp=nothing,
+                      hole_convention::Symbol=:singlet)
+        -> SparseMatrixCSC{ComplexF64, Int}
+
+Build the zero-wavevector second Peierls derivative
+`Dhat = d^2 H_BdG / dA_dir^2`. The finite-`q` phases from `u_q u_-q`
+cancel, so this diamagnetic operator is independent of `q`. For bond
+displacement `d = r_i - r_j`, its nonzero entries are
+
+    Dhat_ij             = -h_ij d_dir^2
+    Dhat_(i+N,j+N)      = +conj(h_ij) d_dir^2  (:singlet)
+                         +h_ij d_dir^2        (:intervalley).
+
+The off-diagonal Nambu blocks vanish and zero-displacement entries are
+skipped. For Hermitian `h` and consistent bond displacements the construction
+is Hermitian in both hole conventions. `disp(i, j)` should return the
+minimum-image displacement on periodic geometries; raw coordinate differences
+are used when `disp=nothing`.
+"""
+function nambu_diamagnetic(h::SparseMatrixCSC,
+                           pos::AbstractMatrix{<:Real};
+                           dir::Integer=1, disp=nothing,
+                           hole_convention::Symbol=:singlet)
+    N = size(h, 1)
+    size(h, 2) == N ||
+        throw(ArgumentError("nambu_diamagnetic: h must be square (got $(size(h)))"))
+    size(pos, 1) == N ||
+        throw(ArgumentError("nambu_diamagnetic: pos has $(size(pos, 1)) rows; expected $N"))
+    ndim = size(pos, 2)
+    1 <= dir <= ndim ||
+        throw(ArgumentError("nambu_diamagnetic: dir must satisfy 1 <= dir <= $ndim (got $dir)"))
+    hole_convention in (:intervalley, :singlet) ||
+        throw(ArgumentError("nambu_diamagnetic: hole_convention must be :intervalley or :singlet (got $hole_convention)"))
+
+    rows = Int[]
+    cols = Int[]
+    vals = ComplexF64[]
+    I, J, V = findnz(h)
+    sizehint!(rows, 2length(V))
+    sizehint!(cols, 2length(V))
+    sizehint!(vals, 2length(V))
+
+    for k in eachindex(V)
+        i = I[k]
+        j = J[k]
+        d = disp === nothing ? collect(view(pos, i, :) .- view(pos, j, :)) : disp(i, j)
+        length(d) == ndim ||
+            throw(ArgumentError("nambu_diamagnetic: disp($i, $j) has length $(length(d)); expected $ndim"))
+        all(iszero, d) && continue
+        d2 = d[dir]^2
+        particle_bond = -V[k] * d2
+        hole_bond = (hole_convention === :singlet ? conj(V[k]) : V[k]) * d2
+        push!(rows, i);     push!(cols, j);     push!(vals, ComplexF64(particle_bond))
+        push!(rows, i + N); push!(cols, j + N); push!(vals, ComplexF64(hole_bond))
+    end
+
+    # Hermiticity follows from Hermitian h and d_ij^2 == d_ji^2; avoid an
+    # O(nnz) runtime assertion here because this vertex is built at scale.
+    return sparse(rows, cols, vals, 2N, 2N)
+end
+
+"""
+    diamagnetic_term(op::BdGOperator, pos::AbstractMatrix{<:Real};
+                     dir::Integer=1, disp=nothing, beta::Real,
+                     NC::Integer=256, NR::Integer=8, rng=Xoshiro(0),
+                     psi_in=nothing, volume::Real, g_J::Real=1.0,
+                     kernel=JacksonKernel, Np::Integer=2*NC,
+                     rescale_eps::Real=0.2,
+                     a::Union{Nothing,Real}=nothing) -> Float64
+
+Compute the lattice diamagnetic contribution
+
+    Dia = (g_J / volume) sum_n f(E_n) <n|Dhat|n>,
+
+where `Dhat` is `nambu_diamagnetic` and the BdG Fermi level is zero. It enters
+the transverse electromagnetic kernel as `K_xx(q) = Dia - Pi(q)`. The
+Chebyshev moments are probe-averaged estimates of
+`Tr[Dhat T_m(H_scaled)] / (2N)`; the final `2N` factor restores the trace.
+There is no `a`-Jacobian because the spectral `1/a` cancels `dE = a dx`, as
+in `bdg_update`.
+
+The primary entry point is `superfluid_stiffness(...;
+include_diamagnetic=true)`, which evaluates superconducting and normal terms
+with common probes and a common scale.
+"""
+function diamagnetic_term(op::BdGOperator,
+                          pos::AbstractMatrix{<:Real};
+                          dir::Integer=1, disp=nothing, beta::Real,
+                          NC::Integer=256, NR::Integer=8, rng=Xoshiro(0),
+                          psi_in=nothing, volume::Real, g_J::Real=1.0,
+                          kernel=JacksonKernel, Np::Integer=2 * NC,
+                          rescale_eps::Real=0.2,
+                          a::Union{Nothing,Real}=nothing)
+    op.h isa AbstractMatrix ||
+        throw(ArgumentError("diamagnetic_term needs an assembled sparse h to build the vertex"))
+    size(pos, 1) == op.N ||
+        throw(ArgumentError("diamagnetic_term: pos has $(size(pos, 1)) rows; expected $(op.N)"))
+    beta > 0 || throw(ArgumentError("diamagnetic_term: beta must be positive (got $beta)"))
+    volume > 0 || throw(ArgumentError("diamagnetic_term: volume must be positive (got $volume)"))
+    NC >= 2 || throw(ArgumentError("diamagnetic_term: NC must be at least 2 (got $NC)"))
+    Np > 0 || throw(ArgumentError("diamagnetic_term: Np must be positive (got $Np)"))
+    NR > 0 || throw(ArgumentError("diamagnetic_term: NR must be positive (got $NR)"))
+    0 < rescale_eps < 2 ||
+        throw(ArgumentError("diamagnetic_term: rescale_eps must satisfy 0 < rescale_eps < 2 (got $rescale_eps)"))
+
+    h_sparse = op.h isa SparseMatrixCSC ? op.h : sparse(op.h)
+    Dhat = nambu_diamagnetic(h_sparse, pos; dir=dir, disp=disp,
+                             hole_convention=op.hole_convention)
+    scale = a === nothing ? rescale(op; eps=Float64(rescale_eps)).a : Float64(a)
+    isfinite(scale) && scale > 0 ||
+        throw(ArgumentError("diamagnetic_term: a must be finite and positive (got $scale)"))
+    Hs = ScaledOperator(op, scale, 0.0)
+
+    NH = 2 * op.N
+    NC_int = Int(NC)
+    stability = chebyshev_stability_probe(Hs, NH, NC_int)
+    if !(stability <= 1.5)
+        error("Chebyshev recurrence is unstable (maximum probe norm $stability > 1.5); use rescale(...; bound=:gershgorin) or a larger eps.")
+    end
+
+    NR_int = Int(NR)
+    if psi_in === nothing
+        psi_in = random_phase_vectors(rng, NH, NR_int)
+    else
+        NR_int = size(psi_in, 2)
+    end
+    size(psi_in) == (NH, NR_int) ||
+        throw(ArgumentError("diamagnetic_term: psi_in has size $(size(psi_in)); expected ($NH, $NR_int)"))
+
+    Gamma = kpm_1d_current(Hs, Dhat, NC_int, NR_int, NH; psi_in=psi_in)
+    Np_int = Int(Np)
+    gh = kernel.(0:NC_int-1, NC_int) .* hn.(0:NC_int-1)
+    nodes, _ = gausschebyshevt(Np_int)
+    wf = fermiFunctions(0.0, Float64(beta)).(scale .* nodes) ./ Np_int
+    C = cos.((0:NC_int-1) .* acos.(nodes'))
+    Dia_raw = dot(gh .* Gamma, C * wf)
+    return Float64(g_J * NH / volume * Dia_raw)
+end
+
+"""
     _kpm2d_workspace(NH::Integer, NR::Integer; arr_size::Integer=3) -> NamedTuple
 
 Allocate the complete workspace keyword set consumed by `kpm_2d!`.
@@ -190,14 +331,16 @@ Compute the finite-`q` paired paramagnetic response
 
     D_s / pi = Re Pi_N - Re Pi_SC.
 
-This is a paired paramagnetic subtraction with no separate diamagnetic term.
-It is exact for strictly linear (continuum-Dirac-like) dispersions, where the
-diamagnetic operator vanishes and the subtraction removes the ultraviolet
-cutoff dependence. For a lattice model it omits the superconducting-vs-normal
-difference of the diamagnetic (kinetic) expectation value, which vanishes as
-`Delta -> 0` (so the zero-gap cancellation is exact) but is generically
-`O(Delta^2)`; callers needing the lattice-complete stiffness must add
-`<T_dia>_SC - <T_dia>_N` separately (planned follow-up). The reference
+By default this is the paired paramagnetic subtraction of Eq. 24, with no
+separate diamagnetic term. It is exact for strictly linear
+(continuum-Dirac-like) dispersions, where the diamagnetic operator vanishes
+and the subtraction removes the ultraviolet cutoff dependence. On a lattice,
+pass `include_diamagnetic=true` to also compute
+
+    Ds_over_pi_complete = (Re Pi_N - Re Pi_SC) + (Dia_SC - Dia_N).
+
+The added diamagnetic difference vanishes as `Delta -> 0` (so the zero-gap
+cancellation is exact) but is generically `O(Delta^2)`. The normal reference
 retains the superconducting state's assembled hopping, chemical potential,
 interaction, and converged Hartree density, changing only `Delta` to zero.
 
@@ -207,12 +350,14 @@ SC and normal scales are estimated separately, then both calculations use
 `a_common = max(a_SC, a_N)`. This gives the subtraction equal physical
 regularization because finite-`NC` Jackson broadening scales as `a/NC`.
 
-The returned quantity is the finite-`q` paired paramagnetic response.
-`Ds_over_pi` is its transverse `q -> 0` limit only under the documented
-continuum/paramagnetic-only definition. Choose `q` perpendicular to `dir`,
-typically `q_y = 2pi/L_y` for an `x` current, and scan several commensurate
-wavevectors for extrapolation. Choose `eta` between the finite-size level
-spacing and the gap, and as a resolution rule use
+The default returned quantity is the finite-`q` paired paramagnetic response,
+and its NamedTuple fields are unchanged. With `include_diamagnetic=true`, the
+return additionally contains `Dia_SC`, `Dia_N`, and
+`Ds_over_pi_complete`. `Ds_over_pi` is its transverse `q -> 0` limit only
+under the documented continuum/paramagnetic-only definition. Choose `q`
+perpendicular to `dir`, typically `q_y = 2pi/L_y` for an `x` current, and
+scan several commensurate wavevectors for extrapolation. Choose `eta` between
+the finite-size level spacing and the gap, and as a resolution rule use
 `eta >= 5*a_common*pi/NC`. Vertices are always built from the unrescaled
 assembled hopping.
 """
@@ -224,7 +369,8 @@ function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
                               psi_in=nothing, volume::Real, g_J::Real=1.0,
                               kernel=JacksonKernel, Np::Integer=2 * NC,
                               moment_parity::Symbol=:NONE, arr_size::Integer=3,
-                              rescale_eps::Real=0.2, verbose::Integer=0)
+                              rescale_eps::Real=0.2, verbose::Integer=0,
+                              include_diamagnetic::Bool=false)
     op.h isa AbstractMatrix ||
         throw(ArgumentError("superfluid_stiffness needs an assembled sparse h to build vertices; matrix-free users can call nambu_current_q-equivalent vertices + kpm_2d + two_energy_response directly"))
     size(pos, 1) == op.N || throw(ArgumentError("superfluid_stiffness: pos has $(size(pos, 1)) rows; expected $(op.N)"))
@@ -290,10 +436,24 @@ function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
                                volume=volume, g_J=g_J, kernel=kernel,
                                Np=Np_int)
 
-    return (Ds_over_pi=real(Pi_N) - real(Pi_SC),
-            Pi_SC=Pi_SC, Pi_N=Pi_N, a_SC=rh_sc.a, a_N=rh_n.a,
-            a_common=a_common,
-            q=collect(Float64, q), dir=Int(dir), eta=Float64(eta),
-            beta=Float64(beta), omega=Float64(omega), NC=NC_int,
-            NR=NR_int, Np=Np_int)
+    result = (Ds_over_pi=real(Pi_N) - real(Pi_SC),
+              Pi_SC=Pi_SC, Pi_N=Pi_N, a_SC=rh_sc.a, a_N=rh_n.a,
+              a_common=a_common,
+              q=collect(Float64, q), dir=Int(dir), eta=Float64(eta),
+              beta=Float64(beta), omega=Float64(omega), NC=NC_int,
+              NR=NR_int, Np=Np_int)
+    if include_diamagnetic
+        Dia_SC = diamagnetic_term(
+            op, pos; dir=dir, disp=disp, beta=beta, NC=NC_int, NR=NR_int,
+            psi_in=psi_in, volume=volume, g_J=g_J, kernel=kernel,
+            Np=Np_int, rescale_eps=rescale_eps, a=a_common)
+        Dia_N = diamagnetic_term(
+            op_n, pos; dir=dir, disp=disp, beta=beta, NC=NC_int, NR=NR_int,
+            psi_in=psi_in, volume=volume, g_J=g_J, kernel=kernel,
+            Np=Np_int, rescale_eps=rescale_eps, a=a_common)
+        return merge(result,
+                     (Dia_SC=Dia_SC, Dia_N=Dia_N,
+                      Ds_over_pi_complete=result.Ds_over_pi + Dia_SC - Dia_N))
+    end
+    return result
 end

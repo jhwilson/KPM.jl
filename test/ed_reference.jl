@@ -13,7 +13,7 @@ using SparseArrays
 export haldane_model, haldane_bloch, chern_number_fhs,
        ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0,
        ring_model, flux_ring_model, bdg_matrix, bdg_matrix_singlet,
-       ed_two_energy_response
+       ed_two_energy_response, ed_diamagnetic, ed_bdg_free_energy
 
 """
     haldane_model(Lx, Ly; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
@@ -330,6 +330,20 @@ function ed_two_energy_response(H, Jl, Jr; beta, eta, omega=0.0, Ef=0.0)
     return ComplexF64(acc)
 end
 
+"""
+    ed_diamagnetic(H_dense, Dhat; beta) -> Float64
+
+Evaluate the bare dense-eigenvalue trace
+`sum_n f(E_n) <n|Dhat|n>` at BdG Fermi level zero.
+"""
+function ed_diamagnetic(H_dense, Dhat; beta)
+    F = eigen(Hermitian(Matrix(H_dense)))
+    D_eigen = F.vectors' * Matrix(Dhat) * F.vectors
+    fermi(e) = 1 / (exp(beta * e) + 1)
+    return Float64(real(sum(fermi(F.values[n]) * D_eigen[n, n]
+                            for n in eachindex(F.values))))
+end
+
 export square_model, bdg_peierls_matrix
 
 """
@@ -409,6 +423,37 @@ function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1,
          zeros(ComplexF64, N, N) hh]
     @assert ishermitian(H)
     return Matrix{ComplexF64}(H)
+end
+
+"""
+    ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta, A;
+                       q=nothing, dir=1, beta,
+                       hole_convention=:singlet) -> Float64
+
+Compute the dense BdG free energy
+`F(A) = -(1 / beta) sum_n log(1 + exp(-beta E_n(A)))` from the
+Peierls-coupled kinetic matrix plus the local chemical-potential, Hartree, and
+pairing terms. The softplus evaluation is stable for either sign of
+`-beta E_n`.
+"""
+function ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta, A;
+                            q=nothing, dir=1, beta,
+                            hole_convention=:singlet)
+    N = size(h, 1)
+    h0 = spzeros(eltype(h), N, N)
+    local_part = if hole_convention === :singlet
+        bdg_matrix_singlet(h0, mu, U, n, Delta)
+    elseif hole_convention === :intervalley
+        bdg_matrix(h0, mu, U, n, Delta)
+    else
+        throw(ArgumentError("ed_bdg_free_energy: invalid hole_convention=$hole_convention"))
+    end
+    H = bdg_peierls_matrix(
+        h, pos, disp, A; q=q, dir=dir, hole_convention=hole_convention) +
+        local_part
+    E = eigvals(Hermitian(H))
+    softplus(x) = x > 0 ? x + log1p(exp(-x)) : log1p(exp(x))
+    return Float64(-sum(softplus(-beta * e) for e in E) / beta)
 end
 
 end # module
