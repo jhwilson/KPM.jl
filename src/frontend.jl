@@ -269,6 +269,20 @@ function dc_cond_single(m::ConductivityMoments, Ef::Real; kwargs...)
 end
 
 """
+    two_energy_response(m::ConductivityMoments; beta, eta, volume, kwargs...)
+
+Reconstruct a generic two-energy response from typed moments. The stored
+rescaling shift and Hilbert-space dimension cannot be overridden.
+"""
+function two_energy_response(m::ConductivityMoments;
+                             beta::Real, eta::Real, volume::Real, kwargs...)
+    haskey(kwargs, :b) && throw(ArgumentError("b is stored in the moments object; do not pass it separately"))
+    haskey(kwargs, :NH) && throw(ArgumentError("NH is stored in the moments object; do not pass it separately"))
+    return two_energy_response(m.mu, m.a; b=m.b, beta=beta, eta=eta,
+                               NH=m.NH, volume=volume, kwargs...)
+end
+
+"""
     LocalBdGMoments(mu_rho, mu_delta, a, b, sites, NH, g_rho, U)
 
 Local density and pairing moments for a reduced BdG Hamiltonian, together
