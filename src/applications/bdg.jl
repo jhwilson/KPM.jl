@@ -83,21 +83,23 @@ end
 
 """
     BdGOperator(h; mu, U, n=zeros(size(h, 1)),
-                Delta=zeros(ComplexF64, size(h, 1)),
+                Delta=nothing, D=nothing,
                 hole_convention=:intervalley, h_hole=nothing,
                 assume_intervalley=false)
 
-Matrix-free reduced spin-singlet Nambu BdG operator with particle-hole layout
-`[particle; hole]` and hole index `i + N`:
+Matrix-free Nambu BdG operator with particle-hole layout `[particle; hole]`
+and hole index `i + N`:
 
-    H_BdG = [ ξ                         Diagonal(Δ)       ]
-            [ Diagonal(conj(Δ))         hole              ]
+    H_BdG = [ ξ          D       ]
+            [ adjoint(D) hole    ]
 
 with `ξ = h - μ I - Diagonal(U n / 2)`.
 
 Here `U > 0` is attractive, with `H_int = -U Σ n↑n↓`, Hartree shift
-`-(U/2)n`, and `Δ_i = -U_i⟨c_{i↓}c_{i↑}⟩`. This CPU-only reduced convention
-supports two hole-block conventions:
+`-(U/2)n`. `D` may be any pairing operator accepted by `mul!`; the `Delta`
+keyword remains as an onsite compatibility shorthand and constructs
+`Diagonal(Delta)`. This CPU-only reduced convention supports two hole-block
+conventions:
 
   * `hole_convention=:intervalley` (the default) uses `hole = -ξ`, hence the
     same `h` in both blocks, and presumes `h_{-K}^* = h_K`. For matrix inputs a
@@ -106,40 +108,74 @@ supports two hole-block conventions:
     complex `h` with a nonuniform gap phase its spectrum need not be
     particle-hole symmetric; the package's `b=0` rescaling remains a safe
     radial bound, not a symmetry statement.
-  * `hole_convention=:singlet` is the standard same-valley
+  * `hole_convention=:conjugate` is the standard same-valley
     `(c_up, c_down^dagger)` convention and uses `hole = -conj(ξ)`. It obeys the
-    exact particle-hole symmetry `tau_y * conj(H) * tau_y = -H` for any complex
-    Hermitian `h` and any spatially varying complex `Δ`. For an assembled
-    matrix the conjugated hole operator is built automatically. Matrix-free
-    callers must supply it as `h_hole`.
+    exact particle-hole symmetry `tau_y * conj(H) * tau_y = -H` when
+    `transpose(D) == D`, or `tau_x * conj(H) * tau_x = -H` when
+    `transpose(D) == -D`; mixed-parity `D` has neither exact symmetry.
+    `:singlet` remains an accepted alias. For an assembled matrix the
+    conjugated hole operator is built automatically. Matrix-free callers must
+    supply it as `h_hole`.
 
 The conventions coincide identically for real-symmetric `h`.
 """
-mutable struct BdGOperator{TH, THH}
+mutable struct BdGOperator{TH, THH, TD}
     const h::TH
     const h_hole::THH
     μ::Float64
     const U::Vector{Float64}
     const n::Vector{Float64}
-    const Δ::Vector{ComplexF64}
+    const D::TD
     const N::Int
     const hole_convention::Symbol
 end
 
+function Base.getproperty(B::BdGOperator, s::Symbol)
+    if s === :Δ
+        D = getfield(B, :D)
+        D isa Diagonal ||
+            throw(ArgumentError("BdGOperator: Δ is only defined for onsite (Diagonal) pairing; access op.D"))
+        return D.diag
+    end
+    return getfield(B, s)
+end
+
+Base.propertynames(B::BdGOperator, private::Bool=false) =
+    getfield(B, :D) isa Diagonal ? (fieldnames(typeof(B))..., :Δ) : fieldnames(typeof(B))
+
+function _canonical_hole_convention(s::Symbol; caller::AbstractString="BdGOperator")
+    s === :singlet && return :conjugate
+    s in (:conjugate, :intervalley) && return s
+    throw(ArgumentError("$caller: hole_convention must be :intervalley or :conjugate (:singlet is an alias) (got $s)"))
+end
+
 function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)),
-                     Delta=zeros(ComplexF64, size(h, 1)),
+                     Delta=nothing, D=nothing,
                      hole_convention::Symbol=:intervalley, h_hole=nothing,
                      assume_intervalley::Bool=false)
     N = size(h, 1)
     size(h, 2) == N || throw(ArgumentError("BdGOperator: h must be square (got $(size(h)))"))
-    hole_convention in (:intervalley, :singlet) ||
-        throw(ArgumentError("BdGOperator: hole_convention must be :intervalley or :singlet (got $hole_convention)"))
+    hole_convention = _canonical_hole_convention(hole_convention)
     U_vec = U isa Number ? fill(Float64(U), N) : collect(Float64, U)
     n_vec = collect(Float64, n)
-    Δ_vec = collect(ComplexF64, Delta)
     length(U_vec) == N || throw(ArgumentError("BdGOperator: U has length $(length(U_vec)); expected $N"))
     length(n_vec) == N || throw(ArgumentError("BdGOperator: n has length $(length(n_vec)); expected $N"))
-    length(Δ_vec) == N || throw(ArgumentError("BdGOperator: Delta has length $(length(Δ_vec)); expected $N"))
+    Delta !== nothing && D !== nothing &&
+        throw(ArgumentError("BdGOperator: supply only one of Delta or D"))
+    D_stored = if Delta !== nothing
+        Delta isa AbstractVector ||
+            throw(ArgumentError("BdGOperator: Delta must be a vector"))
+        Δ_vec = collect(ComplexF64, Delta)
+        length(Δ_vec) == N ||
+            throw(ArgumentError("BdGOperator: Delta has length $(length(Δ_vec)); expected $N"))
+        Diagonal(Δ_vec)
+    elseif D !== nothing
+        size(D) == (N, N) ||
+            throw(ArgumentError("BdGOperator: D has size $(size(D)); expected ($N, $N)"))
+        D
+    else
+        Diagonal(zeros(ComplexF64, N))
+    end
 
     h_is_matrix = h isa AbstractMatrix
     if h_is_matrix
@@ -161,10 +197,10 @@ function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)),
         h
     else
         assume_intervalley &&
-            throw(ArgumentError("BdGOperator: assume_intervalley is meaningless for hole_convention=:singlet; leave it false"))
+            throw(ArgumentError("BdGOperator: assume_intervalley is meaningless for hole_convention=:conjugate; leave it false"))
         if h_hole === nothing
             h_is_matrix ||
-                throw(ArgumentError("BdGOperator: matrix-free h with hole_convention=:singlet requires h_hole, the conjugated normal-state operator"))
+                throw(ArgumentError("BdGOperator: matrix-free h with hole_convention=:conjugate requires h_hole, the conjugated normal-state operator"))
             conj(h)
         else
             size(h_hole) == size(h) ||
@@ -172,7 +208,7 @@ function BdGOperator(h; mu::Real, U, n=zeros(size(h, 1)),
             h_hole
         end
     end
-    return BdGOperator(h, h_hole_stored, Float64(mu), U_vec, n_vec, Δ_vec, N,
+    return BdGOperator(h, h_hole_stored, Float64(mu), U_vec, n_vec, D_stored, N,
                        hole_convention)
 end
 
@@ -190,8 +226,15 @@ function LinearAlgebra.mul!(Y::AbstractVecOrMat, B::BdGOperator,
     Xp = _nambu_block(X, N, 1); Xh = _nambu_block(X, N, 2)
     mul!(Yp, B.h, Xp, α, β)
     mul!(Yh, B.h_hole, Xh, -α, β)
-    @. Yp += α * ((-B.μ - (B.U / 2) * B.n) * Xp + B.Δ * Xh)
-    @. Yh += α * (conj(B.Δ) * Xp - (-B.μ - (B.U / 2) * B.n) * Xh)
+    if B.D isa Diagonal
+        @. Yp += α * ((-B.μ - (B.U / 2) * B.n) * Xp + B.D.diag * Xh)
+        @. Yh += α * (conj(B.D.diag) * Xp - (-B.μ - (B.U / 2) * B.n) * Xh)
+    else
+        @. Yp += α * ((-B.μ - (B.U / 2) * B.n) * Xp)
+        @. Yh += α * (-(-B.μ - (B.U / 2) * B.n) * Xh)
+        mul!(Yp, B.D, Xh, α, true)
+        mul!(Yh, adjoint(B.D), Xp, α, true)
+    end
     return Y
 end
 
@@ -204,14 +247,15 @@ LinearAlgebra.mul!(Y::AbstractVecOrMat, B::BdGOperator, X::AbstractVecOrMat) =
 Certified Gershgorin upper bound on the spectral radius of an assembled BdG
 operator. Off-diagonal hopping row sums are accumulated from the stored matrix
 entries, while the diagonal is replaced explicitly by
-`abs(h[i,i] - mu - U[i]*n[i]/2)` and the pairing contribution `abs(Delta[i])`
-is added. Both Nambu blocks have the same bound by symmetry of this
-construction. Matrix-free normal operators are not supported.
+`abs(h[i,i] - mu - U[i]*n[i]/2)`. For onsite pairing the contribution is
+`abs(D.diag[i])`; for an assembled general pairing matrix it is the larger of
+the absolute row and column sums of `D` at site `i`. Matrix-free normal
+operators and non-matrix pairing operators are not supported.
 """
 function gershgorin_bound(op::BdGOperator)
     op.h isa AbstractMatrix ||
         throw(ArgumentError("gershgorin_bound: BdGOperator must have an assembled matrix h"))
-    # The singlet hole block has identical row sums because abs(conj(h)) == abs(h).
+    # The conjugate hole block has identical row sums because abs(conj(h)) == abs(h).
     N = op.N
     iszero(N) && return 0.0
     rowsums = zeros(Float64, N)
@@ -240,8 +284,35 @@ function gershgorin_bound(op::BdGOperator)
         end
     end
 
+    pairing_rowsums = if op.D isa Diagonal
+        abs.(op.D.diag)
+    elseif op.D isa AbstractMatrix
+        row_sums = zeros(Float64, N)
+        col_sums = zeros(Float64, N)
+        if op.D isa SparseMatrixCSC
+            rows_D = rowvals(op.D)
+            values_D = nonzeros(op.D)
+            for j in axes(op.D, 2)
+                for k in nzrange(op.D, j)
+                    value = abs(values_D[k])
+                    row_sums[rows_D[k]] += value
+                    col_sums[j] += value
+                end
+            end
+        else
+            for j in axes(op.D, 2), i in axes(op.D, 1)
+                value = abs(op.D[i, j])
+                row_sums[i] += value
+                col_sums[j] += value
+            end
+        end
+        max.(row_sums, col_sums)
+    else
+        throw(ArgumentError("gershgorin_bound: D must be an AbstractMatrix"))
+    end
+
     @inbounds for i in 1:N
-        rowsums[i] += abs(diagonal[i] - op.μ - op.U[i] * op.n[i] / 2) + abs(op.Δ[i])
+        rowsums[i] += abs(diagonal[i] - op.μ - op.U[i] * op.n[i] / 2) + pairing_rowsums[i]
     end
     return maximum(rowsums)
 end
@@ -511,6 +582,8 @@ function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
                     mixing::Symbol=:linear, anderson_history::Integer=6,
                     anderson_delay::Integer=5, anderson_max_step::Real=50.0,
                     verbose::Integer=0)
+    op.D isa Diagonal ||
+        throw(ArgumentError("bdg_solve!: the onsite gap equation requires Diagonal (onsite) pairing; bond-channel self-consistency is not yet implemented"))
     beta > 0 || throw(ArgumentError("bdg_solve!: beta must be positive (got $beta)"))
     NC >= 2 || throw(ArgumentError("bdg_solve!: NC must be at least 2 (got $NC)"))
     Np > 0 || throw(ArgumentError("bdg_solve!: Np must be positive (got $Np)"))
