@@ -82,3 +82,180 @@ function two_energy_response(mu2D::AbstractMatrix, a::Real;
 
     return ComplexF64(g_J * NH / volume / Np_int^2 * sum(Gamma .* F))
 end
+
+"""
+    nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
+                    q::AbstractVector{<:Real}; dir::Integer=1, disp=nothing)
+        -> SparseMatrixCSC{ComplexF64, Int}
+
+Build the finite-wavevector current vertex in the reduced Nambu convention.
+For a Peierls field `A_x(r) = A u_q(r)`, with
+`u_q(r) = exp(-im * dot(q, r))`, the hopping is
+
+    h(A)_ij = h_ij exp(+im A d_dir u_q(m_ij)),
+
+where `d = r_i - r_j` is the bond displacement and the unwrapped midpoint is
+`m_ij = r_j + d / 2`. Thus `J_BdG(q) = (1/im) dH_BdG/dA` has entries
+
+    J(q)_ij         = h_ij d_dir exp(-im q ⋅ m_ij),
+    J(q)_(i+N,j+N) = conj(h_ij d_dir) exp(-im q ⋅ m_ij),
+
+and zero off-diagonal Nambu blocks. The conjugation in the hole block acts on
+the bond factor, not on the phase. Zero-displacement entries are skipped.
+
+The input `h` must be the unrescaled hopping matrix; using a rescaled hopping
+would spuriously divide a response by the square of its energy scale. The
+reduced kinetic convention is `[h(A) 0; 0 -h(A)^T]` and assumes `h^T = h`,
+which is exact for the real-symmetric models targeted here. With the package's
+anti-Hermitian bond-current convention the vertices obey
+`J(q)' == -J(-q)`; at `q = 0` and real `h`, both Nambu blocks equal the bond
+current `(J_dir)_ij = h_ij d_dir`.
+
+`disp(i, j)` should return the minimum-image displacement `r_i - r_j`.
+When `disp=nothing`, raw coordinate differences are used, which is correct
+only for open boundaries.
+
+On periodic geometries `q` must be commensurate with the simulation torus
+(a reciprocal-grid vector, e.g. `2π/L` multiples): the directed unwrapped
+midpoints of a wrapped bond differ by a lattice vector `L`, so
+`J(q)' == -J(-q)` — and the single-valuedness of `A(r) = exp(-im q ⋅ r)`
+itself — require `exp(im q ⋅ L) = 1`. Incommensurate `q` silently breaks
+the adjoint identity.
+"""
+function nambu_current_q(h::SparseMatrixCSC, pos::AbstractMatrix{<:Real},
+                         q::AbstractVector{<:Real}; dir::Integer=1, disp=nothing)
+    N = size(h, 1)
+    size(h, 2) == N || throw(ArgumentError("nambu_current_q: h must be square (got $(size(h)))"))
+    size(pos, 1) == N || throw(ArgumentError("nambu_current_q: pos has $(size(pos, 1)) rows; expected $N"))
+    ndim = size(pos, 2)
+    length(q) == ndim || throw(ArgumentError("nambu_current_q: q has length $(length(q)); expected $ndim"))
+    1 <= dir <= ndim || throw(ArgumentError("nambu_current_q: dir must satisfy 1 <= dir <= $ndim (got $dir)"))
+
+    rows = Int[]
+    cols = Int[]
+    vals = ComplexF64[]
+    I, J, V = findnz(h)
+    sizehint!(rows, 2length(V))
+    sizehint!(cols, 2length(V))
+    sizehint!(vals, 2length(V))
+
+    for k in eachindex(V)
+        i = I[k]
+        j = J[k]
+        d = disp === nothing ? collect(view(pos, i, :) .- view(pos, j, :)) : disp(i, j)
+        length(d) == ndim || throw(ArgumentError("nambu_current_q: disp($i, $j) has length $(length(d)); expected $ndim"))
+        all(iszero, d) && continue
+        phase = exp(-im * sum(q[ν] * (pos[j, ν] + d[ν] / 2) for ν in 1:ndim))
+        bond = V[k] * d[dir]
+        push!(rows, i);     push!(cols, j);     push!(vals, ComplexF64(bond * phase))
+        push!(rows, i + N); push!(cols, j + N); push!(vals, ComplexF64(conj(bond) * phase))
+    end
+
+    return sparse(rows, cols, vals, 2N, 2N)
+end
+
+"""
+    _kpm2d_workspace(NH::Integer, NR::Integer; arr_size::Integer=3) -> NamedTuple
+
+Allocate the complete workspace keyword set consumed by `kpm_2d!`.
+"""
+function _kpm2d_workspace(NH::Integer, NR::Integer; arr_size::Integer=3)
+    NH > 0 || throw(ArgumentError("_kpm2d_workspace: NH must be positive (got $NH)"))
+    NR > 0 || throw(ArgumentError("_kpm2d_workspace: NR must be positive (got $NR)"))
+    arr_size >= 2 || throw(ArgumentError("_kpm2d_workspace: arr_size must be at least 2 (got $arr_size)"))
+    return (
+        ψ0r=maybe_on_device_zeros(dt_cplx, NH, NR),
+        Jψ0r=maybe_on_device_zeros(dt_cplx, NH, NR),
+        JTnHJψr=maybe_on_device_zeros(dt_cplx, NH, NR),
+        ψall_r=maybe_on_device_zeros(dt_cplx, NH, NR, 3),
+        ψ0l=maybe_on_device_zeros(dt_cplx, NH, NR),
+        ψall_l=maybe_on_device_zeros(dt_cplx, NH, NR, arr_size),
+        ψw=maybe_on_device_zeros(dt_cplx, NH, NR),
+    )
+end
+
+"""
+    superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
+                         q::AbstractVector{<:Real}; beta, eta, ...)
+        -> NamedTuple
+
+Compute the paired finite-`q` superfluid stiffness
+
+    D_s / pi = Re Pi_N - Re Pi_SC.
+
+This is an Eq.-24-style paired subtraction with no separate diamagnetic term:
+the normal-state reference removes the ultraviolet/diamagnetic contribution.
+The reference retains the superconducting state's assembled hopping, chemical
+potential, interaction, and converged Hartree density, changing only `Delta`
+to zero.
+
+Both responses use `Jalpha = J(q)` and `Jbeta = J(-q)`, the same probes,
+`NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field. Each state is
+rescaled independently; this is valid because `two_energy_response` restores
+physical energies before the subtraction, so `a_SC` and `a_N` may differ.
+
+For a transverse stiffness choose `q` perpendicular to `dir`, typically
+`q_y = 2pi/L_y` for an `x` current. Choose `eta` between the finite-size level
+spacing and the gap, and as a resolution rule use `eta >= 5*a*pi/NC`.
+Vertices are always built from the unrescaled assembled hopping.
+"""
+function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
+                              q::AbstractVector{<:Real};
+                              beta::Real, eta::Real, omega::Real=0.0,
+                              dir::Integer=1, disp=nothing,
+                              NC::Integer=256, NR::Integer=8, rng=Xoshiro(0),
+                              psi_in=nothing, volume::Real, g_J::Real=1.0,
+                              kernel=JacksonKernel, Np::Integer=2 * NC,
+                              moment_parity::Symbol=:NONE, arr_size::Integer=3,
+                              rescale_eps::Real=0.2, verbose::Integer=0)
+    op.h isa AbstractMatrix ||
+        throw(ArgumentError("superfluid_stiffness needs an assembled sparse h to build vertices; matrix-free users can call nambu_current_q-equivalent vertices + kpm_2d + two_energy_response directly"))
+    size(pos, 1) == op.N || throw(ArgumentError("superfluid_stiffness: pos has $(size(pos, 1)) rows; expected $(op.N)"))
+
+    op_n = BdGOperator(op.h; mu=op.μ, U=copy(op.U), n=copy(op.n),
+                       Delta=zeros(ComplexF64, op.N))
+    h_sparse = op.h isa SparseMatrixCSC ? op.h : sparse(op.h)
+    Jq = nambu_current_q(h_sparse, pos, q; dir=dir, disp=disp)
+    Jmq = nambu_current_q(h_sparse, pos, -q; dir=dir, disp=disp)
+
+    rh_sc = rescale(op; eps=Float64(rescale_eps))
+    rh_n = rescale(op_n; eps=Float64(rescale_eps))
+
+    NH = 2 * op.N
+    NR_int = Int(NR)
+    if psi_in === nothing
+        psi_in = random_phase_vectors(rng, NH, NR_int)
+    else
+        NR_int = size(psi_in, 2)
+    end
+    size(psi_in) == (NH, NR_int) ||
+        throw(ArgumentError("superfluid_stiffness: psi_in has size $(size(psi_in)); expected ($NH, $NR_int)"))
+
+    NC_int = Int(NC)
+    arr_size_int = Int(arr_size)
+    ws = _kpm2d_workspace(NH, NR_int; arr_size=arr_size_int)
+    mu_sc = zeros(dt_cplx, NC_int, NC_int)
+    mu_n = zeros(dt_cplx, NC_int, NC_int)
+    kpm_2d!(rh_sc.H, Jq, Jmq, NC_int, NR_int, NH, mu_sc, psi_in;
+            ws..., moment_parity=moment_parity, arr_size=arr_size_int,
+            verbose=verbose)
+    kpm_2d!(rh_n.H, Jq, Jmq, NC_int, NR_int, NH, mu_n, psi_in;
+            ws..., moment_parity=moment_parity, arr_size=arr_size_int,
+            verbose=verbose)
+
+    Np_int = Int(Np)
+    Pi_SC = two_energy_response(mu_sc, rh_sc.a; b=0.0, beta=beta,
+                                eta=eta, omega=omega, Ef=0.0, NH=NH,
+                                volume=volume, g_J=g_J, kernel=kernel,
+                                Np=Np_int)
+    Pi_N = two_energy_response(mu_n, rh_n.a; b=0.0, beta=beta,
+                               eta=eta, omega=omega, Ef=0.0, NH=NH,
+                               volume=volume, g_J=g_J, kernel=kernel,
+                               Np=Np_int)
+
+    return (Ds_over_pi=real(Pi_N) - real(Pi_SC),
+            Pi_SC=Pi_SC, Pi_N=Pi_N, a_SC=rh_sc.a, a_N=rh_n.a,
+            q=collect(Float64, q), dir=Int(dir), eta=Float64(eta),
+            beta=Float64(beta), omega=Float64(omega), NC=NC_int,
+            NR=NR_int, Np=Np_int)
+end

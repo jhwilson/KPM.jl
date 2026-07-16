@@ -298,4 +298,77 @@ function ed_two_energy_response(H, Jl, Jr; beta, eta, omega=0.0, Ef=0.0)
     return ComplexF64(acc)
 end
 
+export square_model, bdg_peierls_matrix
+
+"""
+    square_model(Lx, Ly; t=1.0) -> (h, pos, disp)
+
+Periodic square-lattice nearest-neighbor model with hopping `-t`, coordinates
+`(ix - 1, iy - 1)`, and column-major site index
+`i = ix + (iy - 1) * Lx`. The returned closure supplies minimum-image
+displacements in both periodic directions.
+"""
+function square_model(Lx::Int, Ly::Int; t::Real=1.0)
+    Lx > 0 || throw(ArgumentError("square_model: Lx must be positive"))
+    Ly > 0 || throw(ArgumentError("square_model: Ly must be positive"))
+    N = Lx * Ly
+    site(ix, iy) = mod1(ix, Lx) + (mod1(iy, Ly) - 1) * Lx
+    h = spzeros(Float64, N, N)
+    pos = zeros(Float64, N, 2)
+
+    for iy in 1:Ly, ix in 1:Lx
+        i = site(ix, iy)
+        pos[i, :] .= (ix - 1, iy - 1)
+        for (jx, jy) in ((ix + 1, iy), (ix - 1, iy),
+                         (ix, iy + 1), (ix, iy - 1))
+            h[i, site(jx, jy)] = -Float64(t)
+        end
+    end
+
+    function disp(i, j)
+        dx = pos[i, 1] - pos[j, 1]
+        dy = pos[i, 2] - pos[j, 2]
+        dx > Lx / 2 && (dx -= Lx)
+        dx < -Lx / 2 && (dx += Lx)
+        dy > Ly / 2 && (dy -= Ly)
+        dy < -Ly / 2 && (dy += Ly)
+        return [dx, dy]
+    end
+    return h, pos, disp
+end
+
+"""
+    bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1)
+        -> Matrix{ComplexF64}
+
+Build only the kinetic Nambu part of the Peierls-coupled BdG matrix. Local
+chemical-potential, Hartree, and pairing terms do not couple to the vector
+potential. A real modulation `u(m) = cos(q ⋅ m)` is used when `q` is given,
+so the result remains Hermitian.
+"""
+function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1)
+    N = size(h, 1)
+    size(h, 2) == N || throw(ArgumentError("bdg_peierls_matrix: h must be square"))
+    size(pos, 1) == N || throw(ArgumentError("bdg_peierls_matrix: incompatible pos"))
+    ndim = size(pos, 2)
+    1 <= dir <= ndim || throw(ArgumentError("bdg_peierls_matrix: invalid dir=$dir"))
+    q === nothing || length(q) == ndim ||
+        throw(ArgumentError("bdg_peierls_matrix: q has length $(length(q)); expected $ndim"))
+
+    hp = zeros(ComplexF64, N, N)
+    I, J, V = findnz(sparse(h))
+    for k in eachindex(V)
+        i = I[k]
+        j = J[k]
+        d = disp(i, j)
+        m = [pos[j, ν] + d[ν] / 2 for ν in 1:ndim]
+        u = q === nothing ? 1.0 : cos(dot(q, m))
+        hp[i, j] = V[k] * exp(im * A * d[dir] * u)
+    end
+    H = [hp zeros(ComplexF64, N, N);
+         zeros(ComplexF64, N, N) -transpose(hp)]
+    @assert ishermitian(H)
+    return Matrix{ComplexF64}(H)
+end
+
 end # module
