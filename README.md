@@ -84,6 +84,22 @@ dchi_xyz = KPM.d_cpge(mu_3d_xyz, NC, w1, w2, E)
 where `dchi_xyz` is the differential second-order conductivity
 (arXiv:2312.14244) and `w1, w2` are the two drive frequencies.
 
+### Self-consistent BdG + superfluid stiffness
+
+```julia
+op = KPM.BdGOperator(h; mu=-0.5, U=2.5, n=fill(0.5, N),
+                     Delta=fill(0.2 + 0im, N))
+KPM.bdg_solve!(op; beta=8.0, NC=256, Np=512, mix=0.3,
+               tol_delta=1e-7, tol_n=1e-7)
+q = [0.0, 2pi / Ly]
+r = KPM.superfluid_stiffness(op, pos, q; beta=8.0, eta=0.3, dir=1,
+                              disp=disp, NC=256, NR=8, volume=Float64(Lx * Ly))
+println(r.Ds_over_pi)  # Re Pi_N - Re Pi_SC
+```
+
+The reduced-Nambu, Hartree, degeneracy, volume, rescaling, and finite-`q`
+conventions are load-bearing; see the [BdG and stiffness documentation](docs/src/index.md#bogoliubovde-gennes-and-superfluid-stiffness).
+
 ## Installation
 
 This is an [unregistered package](https://pkgdocs.julialang.org/v1/managing-packages/#Adding-unregistered-packages); install it from the GitHub URL:

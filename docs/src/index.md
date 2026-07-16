@@ -126,6 +126,66 @@ DosMoments
 ConductivityMoments
 ```
 
+## Bogoliubov–de Gennes and superfluid stiffness
+
+The BdG layer is a matrix-free, reduced spin-singlet Nambu wrapper around any
+duck-typed normal operator that supports `size` and `mul!`.  It solves local,
+self-consistent `Delta` and density fields from one-recurrence local moments:
+the particle and hole entries of each recurrence vector provide both channels
+without assembling the BdG matrix.
+
+`superfluid_stiffness` evaluates a transverse finite-wavevector response as a
+paired superconducting/normal two-point KPM calculation.  The normal reference
+keeps the assembled hopping, chemical potential, interaction, and converged
+Hartree density, changing only `Delta` to zero; its subtraction removes the
+ultraviolet/diamagnetic contribution.
+
+```julia
+using KPM
+
+op = KPM.BdGOperator(h; mu=-0.5, U=2.5, n=fill(0.5, size(h, 1)),
+                     Delta=fill(0.2 + 0im, size(h, 1)))
+scf = KPM.bdg_solve!(op; beta=8.0, NC=256, Np=512, mix=0.3,
+                     tol_delta=1e-7, tol_n=1e-7)
+q = [0.0, 2pi / Ly]
+stiffness = KPM.superfluid_stiffness(op, pos, q; beta=8.0, eta=0.3,
+                                     dir=1, disp=disp, NC=256, NR=8,
+                                     volume=Float64(Lx * Ly))
+```
+
+### Conventions (load-bearing)
+
+| Topic | Convention |
+| --- | --- |
+| Nambu layout | `[particle; hole]`, with hole index `i+N`. |
+| Reduced convention | The hole block is `-xi` with the **same** `h`; this presumes `h_{-K}^* = h_K` and is exact for real-symmetric `h`. |
+| Interaction sign | `U > 0` is attractive: `H_int = -U sum n_up n_down` and `Delta_i = -U_i<c_down c_up>`. |
+| Hartree | `-(U/2) n_i`, with full site density; there is no double-counting correction, and the absorbed constant is **not** split from `mu`. |
+| Chemical potential | It is inside `H_BdG`, so all Fermi factors are at quasiparticle energy `0`. |
+| Degeneracies | `g_rho` multiplies the density channel and `g_J` the response; neither is applied silently. |
+| Volume | The response is per caller-supplied `volume`, in the caller's units. |
+| Rescaling | `b=0` by particle-hole symmetry; `a=2*radius/(2-eps)` from power iteration, with default `eps=0.2`. |
+| Stiffness definition | `Ds/pi = Re Pi_N - Re Pi_SC`, with paired probes, `NC`, kernel, `Np`, `eta`, chemical potential, and Hartree field; each state has its own `a`. |
+| `q` and `eta` guidance | Choose `q=2pi/L` transverse to `dir` and commensurate with the torus. Choose `eta` between the finite-size level spacing and the gap, with `eta >= 5 a pi / NC`. |
+
+```@docs; canonical=false
+BdGOperator
+ScaledOperator
+spectral_radius
+rescale(::BdGOperator)
+bdg_site_moments
+bdg_update
+bdg_solve!
+BdGSCFResult
+bdg_local_moments
+LocalBdGMoments
+bdg_checkpoint
+bdg_restore!
+nambu_current_q
+two_energy_response
+superfluid_stiffness
+```
+
 ## Quick examples
 
 ### 1) Density of States (DOS) — concise example
