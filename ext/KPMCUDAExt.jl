@@ -40,10 +40,12 @@ KPM.device_rand(::CUDADevice, args...) = CUDA.rand(args...)
 # The GPU path for BdG runs on the assembled sparse matrix: blockwise
 # matrix-free mul! would need strided CUSPARSE views, so instead the operator
 # is materialized (cheap, O(nnz)) and moved as one CSR matrix. Matrix-free
-# blocks cannot be assembled — those operators stay on the host, and every
-# workspace follows them there via to_device_of/device_zeros_of.
+# blocks cannot be assembled, and a dense h would blow up into a near-full
+# sparse matrix rebuilt every SCF iteration — both stay on the host, and
+# every workspace follows them there via to_device_of/device_zeros_of.
 function KPM.to_device(dev::CUDADevice, op::KPM.BdGOperator, expect_eltype)
-    KPM._bdg_assemblable(op) || return op
+    (KPM._bdg_assemblable(op) &&
+     getfield(op, :h) isa SparseArrays.AbstractSparseMatrix) || return op
     return KPM.to_device(dev, KPM.bdg_assemble(op), expect_eltype)
 end
 

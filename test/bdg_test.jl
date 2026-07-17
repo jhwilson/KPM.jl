@@ -73,6 +73,30 @@ const BdG_Hd = bdg_matrix(BdG_h, BdG_mu, BdG_U, BdG_n, BdG_Delta)
                               h_hole=KPM.ScaledOperator(conj(BdG_h), 1.0, 0.0),
                               hole_convention=:conjugate)
     @test_throws ArgumentError KPM.bdg_assemble(op_free)
+
+    # Remaining block combinations: dense h, Hermitian-wrapped sparse h, and
+    # complex intervalley (assume_intervalley) must all assemble to the same
+    # matrix as the matrix-free action.
+    action_matrix(o) = begin
+        M = zeros(ComplexF64, 2o.N, 2o.N)
+        e = zeros(ComplexF64, 2o.N)
+        for j in axes(M, 2)
+            fill!(e, 0); e[j] = 1
+            mul!(view(M, :, j), o, e)
+        end
+        M
+    end
+    op_dense = KPM.BdGOperator(Matrix(BdG_h); mu=BdG_mu, U=BdG_U, n=BdG_n,
+                               Delta=BdG_Delta)
+    @test Matrix(KPM.bdg_assemble(op_dense)) ≈ action_matrix(op_dense) atol=1e-12
+    op_herm = KPM.BdGOperator(Hermitian(sparse(BdG_h)); mu=BdG_mu, U=BdG_U,
+                              n=BdG_n, Delta=BdG_Delta)
+    @test Matrix(KPM.bdg_assemble(op_herm)) ≈ action_matrix(op_herm) atol=1e-12
+    h_iv = sparse(ComplexF64[0 im; -im 0])
+    op_iv = KPM.BdGOperator(h_iv; mu=0.2, U=0.0, n=zeros(2),
+                            Delta=ComplexF64[0.3 + 0.1im, 0.2 - 0.4im],
+                            assume_intervalley=true)
+    @test Matrix(KPM.bdg_assemble(op_iv)) ≈ action_matrix(op_iv) atol=1e-12
 end
 
 @testset "complex hopping intervalley opt-in and sparse constructor scaling" begin
@@ -209,6 +233,9 @@ end
         if KPM.whichcore()
             # GPU kernels are not guaranteed bitwise-deterministic; the
             # bitwise checkpoint/restart contract holds on the CPU path.
+            # atol=1e-10 bounds run-to-run kernel accumulation drift over the
+            # restarted iterations (fields are O(1)); tighten if measured GPU
+            # discrepancies come in lower.
             @test op_b_restart.Δ ≈ op_c.Δ atol=1e-10 rtol=0
             @test op_b_restart.n ≈ op_c.n atol=1e-10 rtol=0
         else
