@@ -300,6 +300,142 @@ function two_energy_response(m::ConductivityMoments;
 end
 
 """
+    transport_distribution(m::ConductivityMoments, E; volume, kwargs...)
+
+Reconstruct the symmetric, dissipative transport distribution at physical
+energies `E` from typed moments. A vector input returns a vector and a scalar
+input returns a scalar. Units are as in [`transport_distribution`](@ref); only
+the symmetric part of `sigma_alphabeta` is reconstructed. The stored rescaling
+shift and Hilbert-space dimension cannot be overridden.
+"""
+function transport_distribution(m::ConductivityMoments, E; volume::Real, kwargs...)
+    haskey(kwargs, :b) && throw(ArgumentError("b is stored in the moments object; do not pass it separately"))
+    haskey(kwargs, :NH) && throw(ArgumentError("NH is stored in the moments object; do not pass it separately"))
+    return transport_distribution(m.mu, m.a, E; b=m.b, NH=m.NH,
+                                  volume=volume, kwargs...)
+end
+
+"""
+    transport_integrals(m::ConductivityMoments, mu_chem; beta, volume, kwargs...)
+
+Compute Chester–Thellung/Kubo–Greenwood transport integrals from typed moments
+at physical chemical potential `mu_chem`. See [`transport_integrals`](@ref) for
+units and numerical controls. The stored rescaling shift and Hilbert-space
+dimension cannot be overridden.
+"""
+function transport_integrals(m::ConductivityMoments, mu_chem::Real;
+                             beta::Real, volume::Real, kwargs...)
+    haskey(kwargs, :b) && throw(ArgumentError("b is stored in the moments object; do not pass it separately"))
+    haskey(kwargs, :NH) && throw(ArgumentError("NH is stored in the moments object; do not pass it separately"))
+    return transport_integrals(m.mu, m.a, mu_chem; beta=beta, b=m.b, NH=m.NH,
+                               volume=volume, kwargs...)
+end
+
+"""
+    thermoelectric(m::ConductivityMoments, mu_chem; beta, volume, kwargs...)
+
+Compute a [`ThermoelectricResult`](@ref) from typed conductivity moments at
+physical chemical potential `mu_chem`. The stored rescaling shift and
+Hilbert-space dimension cannot be overridden. See [`thermoelectric`](@ref) for
+the physical scope, units, and numerical controls.
+"""
+function thermoelectric(m::ConductivityMoments, mu_chem::Real;
+                        beta::Real, volume::Real, kwargs...)
+    haskey(kwargs, :b) && throw(ArgumentError("b is stored in the moments object; do not pass it separately"))
+    haskey(kwargs, :NH) && throw(ArgumentError("NH is stored in the moments object; do not pass it separately"))
+    return thermoelectric(m.mu, m.a, mu_chem; beta=beta, b=m.b, NH=m.NH,
+                          volume=volume, kwargs...)
+end
+
+"""
+    thermoelectric(M::AbstractMatrix{<:ConductivityMoments}, mu_chem;
+                   beta, volume, g_J=1.0, kernel=JacksonKernel,
+                   NC=minimum(nc(m) for m in M), quad_N=8NC,
+                   edge_cutoff=1e-3, sigma_min=nothing)
+
+Compose a two- or three-dimensional thermoelectric tensor from typed
+conductivity moments. `M[i, j]` holds moments for the current pair `(J_i, J_j)`
+in the caller's own axis ordering; no direction is inferred from matrix indices,
+from `H`, or from the moments. A caller exploiting symmetry must place the same
+moments object in both off-diagonal slots explicitly, for example
+`M[1, 2] = M[2, 1] = mxy`.
+
+!!! warning
+    This composition yields the **symmetric part** of the transport tensors
+    only. The equal-energy Kubo–Greenwood contraction cannot produce
+    antisymmetric (Hall-like) components, so for a time-reversal-broken model
+    this is the symmetric projection, not the full conductivity or Seebeck
+    tensor, and must not be presented as such.
+
+This typed-only composition has no raw-`mu2D` tensor counterpart. The default
+`sigma_min` is `SEEBECK_SIGMA_FLOOR_RTOL` times the largest absolute diagonal
+band transport distribution. `neg_weight` records the maximum componentwise
+negative weight without emitting the scalar-method warning. See
+[`thermoelectric`](@ref) for units and physical scope.
+"""
+function thermoelectric(M::AbstractMatrix{<:ConductivityMoments}, mu_chem::Real;
+                        beta::Real, volume::Real, g_J::Real=1.0,
+                        kernel=JacksonKernel,
+                        NC::Int64=minimum(nc(m) for m in M),
+                        quad_N::Int64=8 * NC,
+                        edge_cutoff::Real=1e-3,
+                        sigma_min::Union{Nothing, Real}=nothing)
+    size(M, 1) == size(M, 2) && size(M, 1) in (2, 3) ||
+        throw(ArgumentError("thermoelectric: the moments matrix must be square with size 2 or 3 (got $(size(M)))"))
+
+    reference = M[1, 1]
+    for i in axes(M, 1), j in axes(M, 2)
+        m = M[i, j]
+        if m.a != reference.a
+            throw(ArgumentError("thermoelectric: moments at index ($i, $j) have a=$(m.a) but expected a=$(reference.a); all entries must share identical (a, b, NH, NC)"))
+        elseif m.b != reference.b
+            throw(ArgumentError("thermoelectric: moments at index ($i, $j) have b=$(m.b) but expected b=$(reference.b); all entries must share identical (a, b, NH, NC)"))
+        elseif m.NH != reference.NH
+            throw(ArgumentError("thermoelectric: moments at index ($i, $j) have NH=$(m.NH) but expected NH=$(reference.NH); all entries must share identical (a, b, NH, NC)"))
+        elseif nc(m) != nc(reference)
+            throw(ArgumentError("thermoelectric: moments at index ($i, $j) have nc=$(nc(m)) but expected nc=$(nc(reference)); all entries must share identical (a, b, NH, NC)"))
+        end
+    end
+
+    L0 = Matrix{Float64}(undef, size(M))
+    L1 = Matrix{Float64}(undef, size(M))
+    L2 = Matrix{Float64}(undef, size(M))
+    neg_weight = 0.0
+    for i in axes(M, 1), j in axes(M, 2)
+        m = M[i, j]
+        integrals = transport_integrals(m.mu, m.a, mu_chem;
+                                        beta=beta, b=m.b, NH=m.NH,
+                                        volume=volume, g_J=g_J, kernel=kernel,
+                                        NC=NC, quad_N=quad_N,
+                                        edge_cutoff=edge_cutoff)
+        L0[i, j] = integrals.L0
+        L1[i, j] = integrals.L1
+        L2[i, j] = integrals.L2
+        neg_weight = max(neg_weight, integrals.neg_weight)
+    end
+
+    if sigma_min === nothing
+        max_sigma = 0.0
+        for i in axes(M, 1)
+            m = M[i, i]
+            af = m.a
+            bf = m.b
+            w = af * (1 - Float64(edge_cutoff))
+            E_band = collect(range(bf - w, bf + w; length=257))
+            sigma_band = transport_distribution(m.mu, m.a, E_band;
+                                                b=m.b, NH=m.NH, volume=volume,
+                                                g_J=g_J, kernel=kernel, NC=NC,
+                                                edge_cutoff=edge_cutoff)
+            max_sigma = max(max_sigma, maximum(abs, sigma_band))
+        end
+        sigma_min = SEEBECK_SIGMA_FLOOR_RTOL * max_sigma
+    end
+    S = seebeck_solve(L0, L1, Float64(beta); sigma_min=Float64(sigma_min))
+    return ThermoelectricResult(L0, L1, L2, S, Float64(mu_chem), Float64(beta),
+                                neg_weight)
+end
+
+"""
     LocalBdGMoments(mu_rho, mu_delta, a, b, sites, NH, g_rho, U)
 
 Local density and pairing moments for a reduced BdG Hamiltonian, together
