@@ -1,6 +1,11 @@
 # k_B/|e| in microvolt per kelvin
 const KB_OVER_E_UV_PER_K = 86.17333262
 
+# Default relative conductivity floor: a thermal-window L0 whose (symmetric-part)
+# scale is more than this factor below the band maximum of |Sigma(E)| is treated
+# as numerically insulating.
+const SEEBECK_SIGMA_FLOOR_RTOL = 1e-6
+
 # Bare diagonal Chebyshev contraction at rescaled nodes. The node chunks keep
 # each NC x K reconstruction workspace near 16 MB.
 function _transport_nodes(mu_tilde::AbstractMatrix, x::AbstractVector{Float64}, NC::Int)
@@ -201,28 +206,38 @@ function Base.show(io::IO, ::MIME"text/plain", r::ThermoelectricResult)
 end
 
 """
-    seebeck_solve(L0, L1, beta)
+    seebeck_solve(L0, L1, beta; sigma_min=0.0)
 
 Solve for the dimensionless electron-convention Seebeck coefficient,
-`S = -L0 \\ (beta*L1)`. Scalar non-positive or non-finite `L0`, and singular
-or hopelessly ill-conditioned matrix `L0`, produce a warning and `NaN` output.
-The matrix method uses a left solve and never forms an explicit inverse.
+`S = -L0 \\ (beta*L1)`. `sigma_min` is an absolute floor in the units of `L0`;
+its default of `0.0` applies only the sign, finiteness, and definiteness checks.
+For scalars, non-finite `L0`, `L0 <= 0`, or `L0 < sigma_min` produces a warning
+and `NaN`. For matrices, non-finite entries, a symmetric-part eigenvalue `<= 0`
+or `< sigma_min`, a singular matrix, or condition number above `1e12` produces
+a warning and an all-`NaN` matrix. The matrix method uses a left solve and never
+forms an explicit inverse.
 """
-function seebeck_solve(L0::Float64, L1::Float64, beta::Float64)
-    if !isfinite(L0) || L0 <= 0
-        @warn "Cannot compute Seebeck coefficient for insulating/non-positive L0; returning NaN." L0=L0
+function seebeck_solve(L0::Float64, L1::Float64, beta::Float64; sigma_min::Real=0.0)
+    if !isfinite(L0) || L0 <= 0 || L0 < sigma_min
+        @warn "Cannot compute Seebeck coefficient for insulating/non-positive or below-conductivity-floor L0; returning NaN." L0=L0 sigma_min=sigma_min
         return NaN
     end
     return -beta * L1 / L0
 end
 
-function seebeck_solve(L0::Matrix{Float64}, L1::Matrix{Float64}, beta::Float64)
+function seebeck_solve(L0::Matrix{Float64}, L1::Matrix{Float64}, beta::Float64;
+                       sigma_min::Real=0.0)
     size(L0, 1) == size(L0, 2) ||
         throw(DimensionMismatch("seebeck_solve: L0 must be square."))
     size(L1) == size(L0) ||
         throw(DimensionMismatch("seebeck_solve: L0 and L1 must have matching sizes."))
     if !all(isfinite, L0)
         @warn "Cannot compute Seebeck tensor because L0 is non-finite; returning NaNs."
+        return fill(NaN, size(L0))
+    end
+    lam_min = eigmin(Symmetric((L0 + transpose(L0)) / 2))
+    if lam_min <= 0 || lam_min < sigma_min
+        @warn "Cannot compute Seebeck tensor for an insulating or non-positive-definite symmetric part of L0; returning NaNs." lam_min=lam_min sigma_min=sigma_min
         return fill(NaN, size(L0))
     end
     F = lu(L0; check=false)
@@ -241,7 +256,7 @@ end
 """
     thermoelectric(mu2D, a, mu_chem; beta, b=0.0, NH, volume, g_J=1.0,
                    kernel=JacksonKernel, NC=size(mu2D, 1), quad_N=8*NC,
-                   edge_cutoff=1e-3)
+                   edge_cutoff=1e-3, sigma_min=nothing)
 
 Compute the longitudinal electronic Seebeck coefficient from the
 Chester–Thellung/Kubo–Greenwood (CTKG), or Jonson–Mahan, relations
@@ -265,12 +280,19 @@ the thermal window becomes a delta function and returns the trivial `L1=0`,
 hiding the physically relevant low-temperature Mott slope. See also
 [`transport_distribution`](@ref), [`transport_integrals`](@ref), and
 [`kubo_bastin_cond`](@ref).
+
+By default, `sigma_min` is
+`SEEBECK_SIGMA_FLOOR_RTOL * max_E |Sigma(E)|` over the usable band. An
+insulating thermal window therefore yields `S = NaN` with a warning while
+`L0`, `L1`, and `L2` are still reported. Pass `sigma_min` explicitly (for
+example, `sigma_min=0.0`) to override this floor.
 """
 function thermoelectric(mu2D, a::Real, mu_chem::Real;
                         beta::Real, b::Real=0.0, NH::Integer, volume::Real,
                         g_J::Real=1.0, kernel=JacksonKernel,
                         NC::Int64=size(mu2D, 1), quad_N::Int64=8*NC,
-                        edge_cutoff::Real=1e-3)
+                        edge_cutoff::Real=1e-3,
+                        sigma_min::Union{Nothing,Real}=nothing)
     integrals = transport_integrals(mu2D, a, mu_chem; beta=beta, b=b, NH=NH,
                                     volume=volume, g_J=g_J, kernel=kernel,
                                     NC=NC, quad_N=quad_N,
@@ -279,7 +301,16 @@ function thermoelectric(mu2D, a::Real, mu_chem::Real;
         @warn "Transport distribution has significant negative weight in the thermal window; increase NR/NC or broadening — result may not be converged." neg_weight=integrals.neg_weight
     end
     beta_f = Float64(beta)
-    S = seebeck_solve(integrals.L0, integrals.L1, beta_f)
+    if sigma_min === nothing
+        af = Float64(a); bf = Float64(b); w = af * (1 - Float64(edge_cutoff))
+        E_band = collect(range(bf - w, bf + w; length=257))
+        sigma_band = transport_distribution(mu2D, a, E_band; b=b, NH=NH, volume=volume,
+                                            g_J=g_J, kernel=kernel, NC=NC,
+                                            edge_cutoff=edge_cutoff)
+        sigma_min = SEEBECK_SIGMA_FLOOR_RTOL * maximum(abs, sigma_band)
+    end
+    S = seebeck_solve(integrals.L0, integrals.L1, beta_f;
+                      sigma_min=Float64(sigma_min))
     return ThermoelectricResult(integrals.L0, integrals.L1, integrals.L2, S,
                                 Float64(mu_chem), beta_f,
                                 integrals.neg_weight)
