@@ -31,7 +31,9 @@ function cpge(Gamma, NC, ω; beta=Inf, E_f=0.0, kernel=JacksonKernel, δ=1e-5, �
     ω₂ = Ω - ω
     Λnmp_all = map(nmp -> Λnmp(nmp, ω₁, ω₂; δ=δ, E_f=E_f, beta=beta, quad=quad), Iterators.product(0:(NC-1), 0:(NC-1), 0:(NC-1)))
 
-    Gamma_tilde .*= Λnmp_all
+    # Gamma_tilde lives on the active device; the host-computed Λ table must
+    # move there before the broadcast (host arrays cannot enter GPU kernels).
+    Gamma_tilde .*= maybe_to_device(Λnmp_all)
     #for n in 1:NC
     #    for m in 1:NC
     #        for p in 1:NC

@@ -177,7 +177,9 @@ end
         psi_in = exp.(2im * pi * rand(rng, NH, NR))
         KPM.normalize_by_col(psi_in, NR)
         mu_all = zeros(ComplexF64, NR, NC)
-        α_all = zeros(ComplexF64, NH, NR, 2)
+        # the recurrence workspace lives on the active device (host arrays
+        # cannot receive device probes when a GPU is active)
+        α_all = KPM.maybe_on_device_zeros(ComplexF64, NH, NR, 2)
         KPM.kpm_1d!(H, NC, NR, NH, mu_all, psi_in; α_all=α_all)  # warm up
         @allocated KPM.kpm_1d!(H, NC, NR, NH, mu_all, psi_in; α_all=α_all)
     end
