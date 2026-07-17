@@ -46,6 +46,33 @@ const BdG_Hd = bdg_matrix(BdG_h, BdG_mu, BdG_U, BdG_n, BdG_Delta)
     Y = randn(rng, ComplexF64, 2BdG_N, 3)
     @test mul!(copy(Y), BdG_op, X, α, β) ≈ α * BdG_Hd * X + β * Y atol=1e-12
     @test BdG_Hd ≈ BdG_Hd'
+
+    # bdg_assemble is the operator the GPU path runs on: it must reproduce
+    # the matrix-free action exactly, including a general sparse pairing block.
+    H_asm = KPM.bdg_assemble(BdG_op)
+    @test H_asm isa SparseMatrixCSC{ComplexF64, Int}
+    @test Matrix(H_asm) ≈ BdG_Hd atol=1e-12
+    @test ishermitian(H_asm)
+
+    bonds = [(1, 2), (3, 4)]
+    channel = KPM.PairingChannel(bonds, 1.0, 1.0, :even)
+    D_bond = KPM.pairing_matrix(BdG_N, [channel]; amplitude=0.25 + 0.1im)
+    op_bond = KPM.BdGOperator(BdG_h; mu=BdG_mu, U=BdG_U, n=BdG_n, D=D_bond,
+                              hole_convention=:conjugate)
+    H_bond = KPM.bdg_assemble(op_bond)
+    Hmf_bond = zeros(ComplexF64, 2BdG_N, 2BdG_N)
+    for j in axes(Hmf_bond, 2)
+        e_j = zeros(ComplexF64, 2BdG_N)
+        e_j[j] = 1
+        mul!(view(Hmf_bond, :, j), op_bond, e_j)
+    end
+    @test Matrix(H_bond) ≈ Hmf_bond atol=1e-12
+
+    op_free = KPM.BdGOperator(KPM.ScaledOperator(BdG_h, 1.0, 0.0);
+                              mu=BdG_mu, U=BdG_U, n=BdG_n, Delta=BdG_Delta,
+                              h_hole=KPM.ScaledOperator(conj(BdG_h), 1.0, 0.0),
+                              hole_convention=:conjugate)
+    @test_throws ArgumentError KPM.bdg_assemble(op_free)
 end
 
 @testset "complex hopping intervalley opt-in and sparse constructor scaling" begin
@@ -179,8 +206,15 @@ end
         op_c = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
         KPM.bdg_solve!(op_c; beta=beta, NC=512, mix=0.3,
                        tol_delta=1e-14, tol_n=1e-14, maxiter=14)
-        @test op_b_restart.Δ == op_c.Δ
-        @test op_b_restart.n == op_c.n
+        if KPM.whichcore()
+            # GPU kernels are not guaranteed bitwise-deterministic; the
+            # bitwise checkpoint/restart contract holds on the CPU path.
+            @test op_b_restart.Δ ≈ op_c.Δ atol=1e-10 rtol=0
+            @test op_b_restart.n ≈ op_c.n atol=1e-10 rtol=0
+        else
+            @test op_b_restart.Δ == op_c.Δ
+            @test op_b_restart.n == op_c.n
+        end
     end
 
     op_filling = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)

@@ -251,9 +251,17 @@ A caller-supplied Hartree operator is explicit future work.
 | Rigid-`Delta` convention (bond pairing) | This is the package's fixed-gauge, rigid-`D` functional: the vector potential adds Peierls phases to kinetic bonds only, while `D` contributes no current or diamagnetic vertex. It reduces to the standard mean-field Kubo (Scalapino–White–Zhang) treatment for onsite pairing, and the free-energy-curvature anchor tests exactly this functional. Local gauge covariance of a nonlocal pair field and the charge-`2e` pairing response are out of scope. |
 | `q` and `eta` guidance | Choose `q=2pi/L` transverse to `dir` and commensurate with the torus. Choose `eta` between the finite-size level spacing and the gap, with `eta >= 5 a pi / NC`. |
 
+With a CUDA GPU active, `bdg_solve!` and `superfluid_stiffness` run their
+Chebyshev recurrences on the device: the operator is assembled into one
+sparse BdG matrix (`bdg_assemble`) and moved to the GPU, while fields,
+mixing, checkpoints, and spectral reconstruction stay on the host.  This
+requires assembled matrix blocks — operators with matrix-free `h` or `D`
+run entirely on the CPU even when a GPU is present.
+
 ```@docs; canonical=false
 BdGOperator
 ScaledOperator
+bdg_assemble
 spectral_radius
 rescale(::BdGOperator)
 bdg_site_moments

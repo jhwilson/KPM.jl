@@ -279,7 +279,9 @@ function diamagnetic_term(op::BdGOperator,
     scale = a === nothing ? rescale(op; eps=Float64(rescale_eps)).a : Float64(a)
     isfinite(scale) && scale > 0 ||
         throw(ArgumentError("diamagnetic_term: a must be finite and positive (got $scale)"))
-    Hs = ScaledOperator(op, scale, 0.0)
+    # On GPU, the assembled BdG matrix moves to the device once here; the
+    # kpm_1d_current workspaces and vertex transfer follow the active device.
+    Hs = ScaledOperator(maybe_to_device(op), scale, 0.0)
 
     NH = 2 * op.N
     NC_int = Int(NC)
@@ -374,6 +376,11 @@ scan several commensurate wavevectors for extrapolation. Choose `eta` between
 the finite-size level spacing and the gap, and as a resolution rule use
 `eta >= 5*a_common*pi/NC`. Vertices are always built from the unrescaled
 assembled hopping.
+
+With a CUDA GPU active, both moment computations (and the optional
+diamagnetic traces) run on the device: the assembled BdG matrices, vertices,
+probes, and Chebyshev workspaces are moved automatically, while scale
+estimation and the spectral reconstruction stay on the host.
 """
 function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
                               q::AbstractVector{<:Real};
@@ -409,8 +416,10 @@ function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
     rh_sc = rescale(op; eps=Float64(rescale_eps))
     rh_n = rescale(op_n; eps=Float64(rescale_eps))
     a_common = max(rh_sc.a, rh_n.a)
-    Hs_sc = ScaledOperator(op, a_common, 0.0)
-    Hs_n = ScaledOperator(op_n, a_common, 0.0)
+    # Scale estimation runs on the host (deterministic, one-time); the moment
+    # recurrences run wherever the active device puts the assembled operator.
+    Hs_sc = ScaledOperator(maybe_to_device(op), a_common, 0.0)
+    Hs_n = ScaledOperator(maybe_to_device(op_n), a_common, 0.0)
 
     NH = 2 * op.N
     NR_int = Int(NR)

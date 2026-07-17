@@ -344,8 +344,15 @@ end
         KPM.bdg_solve!(op_full, [channel]; beta=8.0, NC=256, g_rho=1,
                        mix=0.3, update_density=false, tol_delta=1e-14,
                        maxiter=10)
-        @test nonzeros(op_restart.D) == nonzeros(op_full.D)
-        @test op_restart.n == op_full.n
+        if KPM.whichcore()
+            # GPU kernels are not guaranteed bitwise-deterministic; the
+            # bitwise checkpoint/restart contract holds on the CPU path.
+            @test nonzeros(op_restart.D) ≈ nonzeros(op_full.D) atol=1e-10 rtol=0
+            @test op_restart.n ≈ op_full.n atol=1e-10 rtol=0
+        else
+            @test nonzeros(op_restart.D) == nonzeros(op_full.D)
+            @test op_restart.n == op_full.n
+        end
 
         mismatch = KPM.PairingChannel(bonds, 1.0, 2.5, :odd)
         @test_throws ArgumentError KPM.bdg_restore!(make_op(), [mismatch], checkpoint)

@@ -90,6 +90,16 @@ automatic fallback); and `kpm_2d` accumulates its moment matrix on the host —
 `kubo_bastin_cond` reconstruction is CPU-side by design. `KPM.whichcore()`
 reports whether the GPU path is active.
 
+**BdG on GPU**: the matrix-free `BdGOperator` action is host-only (blockwise
+CUSPARSE would need strided views); with a GPU active, `bdg_solve!` and
+`superfluid_stiffness` instead assemble the full sparse BdG matrix
+(`bdg_assemble`) and move it to the device — the SCF driver re-assembles it
+every iteration to bake in the updated fields. Operators with matrix-free
+blocks silently stay on the CPU. BdG workspaces follow the *operator's*
+residence via `to_device_of`/`device_zeros_of` (not the global device flag),
+and `bdg_channel_moments` extraction is gather/scatter-based so one code path
+serves both devices. Checkpoints, fields, and mixing always live on the host.
+
 ## Physics conventions (load-bearing — do not change casually)
 
 - **Models are user data (governing design principle).** KPM.jl supplies
