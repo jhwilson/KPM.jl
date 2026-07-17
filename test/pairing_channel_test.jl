@@ -348,11 +348,12 @@ end
             # GPU kernels are not guaranteed bitwise-deterministic; the
             # bitwise checkpoint/restart contract holds on the CPU path.
             @test nonzeros(op_restart.D) ≈ nonzeros(op_full.D) atol=1e-10 rtol=0
-            @test op_restart.n ≈ op_full.n atol=1e-10 rtol=0
         else
             @test nonzeros(op_restart.D) == nonzeros(op_full.D)
-            @test op_restart.n == op_full.n
         end
+        # update_density=false: n is never touched by the solver on any
+        # device, so it must be bitwise identical even under GPU.
+        @test op_restart.n == op_full.n
 
         mismatch = KPM.PairingChannel(bonds, 1.0, 2.5, :odd)
         @test_throws ArgumentError KPM.bdg_restore!(make_op(), [mismatch], checkpoint)

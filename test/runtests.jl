@@ -1,5 +1,18 @@
+# KPM_TEST_GPU=1 loads CUDA before anything else so the extension activates
+# and the whole suite exercises the GPU code paths (requires a functional
+# GPU; used by the manual cluster validation, never by CI).
+if get(ENV, "KPM_TEST_GPU", "") in ("1", "true")
+    using CUDA
+    @assert CUDA.functional() "KPM_TEST_GPU is set but CUDA is not functional"
+end
+
 using KPM
 using Test
+
+if get(ENV, "KPM_TEST_GPU", "") in ("1", "true")
+    @assert KPM.whichcore() "KPM_TEST_GPU is set but the GPU device did not activate"
+    @info "KPM test suite running with the GPU device active"
+end
 
 @testset "kernels/kernels.jl" begin
     include("test_kernel.jl")

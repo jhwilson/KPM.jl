@@ -255,8 +255,10 @@ With a CUDA GPU active, `bdg_solve!` and `superfluid_stiffness` run their
 Chebyshev recurrences on the device: the operator is assembled into one
 sparse BdG matrix (`bdg_assemble`) and moved to the GPU, while fields,
 mixing, checkpoints, and spectral reconstruction stay on the host.  This
-requires assembled matrix blocks — operators with matrix-free `h` or `D`
-run entirely on the CPU even when a GPU is present.
+requires a sparse `h` and matrix `D` blocks; operators that cannot be
+assembled to the device (matrix-free or dense blocks) run entirely on the
+CPU in `bdg_solve!`, and throw in `superfluid_stiffness`/`diamagnetic_term`
+(whose workspaces follow the globally active device).
 
 ```@docs; canonical=false
 BdGOperator

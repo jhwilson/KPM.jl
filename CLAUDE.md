@@ -94,11 +94,18 @@ reports whether the GPU path is active.
 CUSPARSE would need strided views); with a GPU active, `bdg_solve!` and
 `superfluid_stiffness` instead assemble the full sparse BdG matrix
 (`bdg_assemble`) and move it to the device — the SCF driver re-assembles it
-every iteration to bake in the updated fields. Operators with matrix-free
-blocks silently stay on the CPU. BdG workspaces follow the *operator's*
-residence via `to_device_of`/`device_zeros_of` (not the global device flag),
-and `bdg_channel_moments` extraction is gather/scatter-based so one code path
+every iteration to bake in the updated fields. Only operators with sparse `h`
+and matrix `D` blocks are device-assemblable (dense `h` would sparsify into a
+near-full matrix): non-assemblable operators silently stay on the CPU in the
+SCF path (whose workspaces follow the *operator's* residence via
+`to_device_of`/`device_zeros_of`), but **throw** in
+`superfluid_stiffness`/`diamagnetic_term`, whose `kpm_2d!`/`kpm_1d_current!`
+workspaces follow the global device flag and would otherwise mix residences.
+`bdg_channel_moments` extraction is gather/scatter-based so one code path
 serves both devices. Checkpoints, fields, and mixing always live on the host.
+Device sparse indices are 32-bit (CUSPARSE `Cint`): dimensions and nnz must
+stay below `typemax(Int32)`. `KPM_TEST_GPU=1 Pkg.test()` runs the whole suite
+with the GPU device active (used by `test/gpu_smoke.jl`'s sbatch stage 3).
 
 ## Physics conventions (load-bearing — do not change casually)
 
