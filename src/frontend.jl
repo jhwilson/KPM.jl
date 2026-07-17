@@ -360,6 +360,13 @@ from `H`, or from the moments. A caller exploiting symmetry must place the same
 moments object in both off-diagonal slots explicitly, for example
 `M[1, 2] = M[2, 1] = mxy`.
 
+Exact Kubo–Greenwood moments give symmetric `L_r` tensors by trace cyclicity.
+The skew part produced when components are estimated independently is treated
+as stochastic noise (or an inconsistent-moments diagnostic) and projected out
+before the open-circuit solve. The final `S = -L0 \\ (beta*L1)` is not itself
+symmetrized: symmetric `L0` and `L1` need not commute, so a nonsymmetric `S` is
+correct.
+
 !!! warning
     This composition yields the **symmetric part** of the transport tensors
     only. The equal-energy Kubo–Greenwood contraction cannot produce
@@ -369,8 +376,10 @@ moments object in both off-diagonal slots explicitly, for example
 
 This typed-only composition has no raw-`mu2D` tensor counterpart. The default
 `sigma_min` is `SEEBECK_SIGMA_FLOOR_RTOL` times the largest absolute diagonal
-band transport distribution. `neg_weight` records the maximum componentwise
-negative weight without emitting the scalar-method warning. See
+band transport distribution. `neg_weight` records the maximum negative weight
+over diagonal components only, because off-diagonal transport distributions
+can legitimately be negative; the tensor wrapper does not emit the scalar
+method's negative-weight warning. See
 [`thermoelectric`](@ref) for units and physical scope.
 """
 function thermoelectric(M::AbstractMatrix{<:ConductivityMoments}, mu_chem::Real;
@@ -411,7 +420,18 @@ function thermoelectric(M::AbstractMatrix{<:ConductivityMoments}, mu_chem::Real;
         L0[i, j] = integrals.L0
         L1[i, j] = integrals.L1
         L2[i, j] = integrals.L2
-        neg_weight = max(neg_weight, integrals.neg_weight)
+        if i == j
+            neg_weight = max(neg_weight, integrals.neg_weight)
+        end
+    end
+
+    L0_sym = (L0 + transpose(L0)) / 2
+    L1_sym = (L1 + transpose(L1)) / 2
+    L2_sym = (L2 + transpose(L2)) / 2
+    skew = opnorm(L0 - transpose(L0)) /
+           max(2 * opnorm(L0_sym), eps())
+    if skew > 0.05
+        @warn "Thermoelectric L0 tensor has a large skew fraction; stochastic noise or inconsistent component moments may be significant before symmetrization." skew=skew
     end
 
     if sigma_min === nothing
@@ -421,7 +441,8 @@ function thermoelectric(M::AbstractMatrix{<:ConductivityMoments}, mu_chem::Real;
             af = m.a
             bf = m.b
             w = af * (1 - Float64(edge_cutoff))
-            E_band = collect(range(bf - w, bf + w; length=257))
+            n_scan = max(257, 4 * NC + 1)
+            E_band = collect(range(bf - w, bf + w; length=n_scan))
             sigma_band = transport_distribution(m.mu, m.a, E_band;
                                                 b=m.b, NH=m.NH, volume=volume,
                                                 g_J=g_J, kernel=kernel, NC=NC,
@@ -430,9 +451,10 @@ function thermoelectric(M::AbstractMatrix{<:ConductivityMoments}, mu_chem::Real;
         end
         sigma_min = SEEBECK_SIGMA_FLOOR_RTOL * max_sigma
     end
-    S = seebeck_solve(L0, L1, Float64(beta); sigma_min=Float64(sigma_min))
-    return ThermoelectricResult(L0, L1, L2, S, Float64(mu_chem), Float64(beta),
-                                neg_weight)
+    S = seebeck_solve(L0_sym, L1_sym, Float64(beta);
+                      sigma_min=Float64(sigma_min))
+    return ThermoelectricResult(L0_sym, L1_sym, L2_sym, S, Float64(mu_chem),
+                                Float64(beta), neg_weight)
 end
 
 """

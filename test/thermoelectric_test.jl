@@ -67,8 +67,9 @@ E_test = b .+ a .* [-0.8, -0.35, 0.0, 0.22, 0.6, 0.93]
     # while staying robust to BLAS-dependent roundoff
     @test sig_kpm ≈ sig_direct rtol=1e-9
     @test all(sig_kpm .>= 0)
+    # Scalar and batched BLAS contractions can differ at the ulp level by platform.
     @test KPM.transport_distribution(mu2D, a, E_test[2]; b=b, NH=N,
-                                     volume=vol, g_J=gJ, NC=NC) == sig_kpm[2]
+                                     volume=vol, g_J=gJ, NC=NC) ≈ sig_kpm[2] rtol=1e-13
     @test KPM.transport_distribution(mu2D, a, E_test; b=b, NH=N, volume=2vol,
                                      g_J=gJ, NC=NC) ≈ sig_kpm ./ 2
     @test KPM.transport_distribution(mu2D, a, b + 1.5a; b=b, NH=N,
@@ -123,6 +124,19 @@ end
     @test_throws ArgumentError KPM.transport_integrals(mu2D, a, mu_chem; beta=0.0, kwargs...)
     @test_throws ArgumentError KPM.transport_integrals(mu2D, a, mu_chem; beta=-1.0, kwargs...)
     @test_throws ArgumentError KPM.thermoelectric(mu2D, a, mu_chem; beta=Inf, kwargs...)
+    @test_throws ArgumentError KPM.transport_integrals(mu2D, a, NaN; beta=beta, kwargs...)
+    @test_throws ArgumentError KPM.thermoelectric(mu2D, a, NaN; beta=beta, kwargs...)
+    @test_throws ArgumentError KPM.transport_distribution(mu2D, Inf, E_test; kwargs...)
+    @test_throws ArgumentError KPM.transport_distribution(mu2D, a, E_test; b=NaN, NH=N, volume=vol)
+    @test_throws ArgumentError KPM.transport_distribution(mu2D, a, [0.0, NaN]; kwargs...)
+
+    @test_logs (:warn, r"Jackson-kernel KPM energy-resolution estimate") begin
+        KPM.transport_integrals(mu2D, a, b; beta=100.0, kwargs...)
+    end
+    band_upper = b + a * (1 - 1e-3)
+    @test_logs (:warn, r"thermal window extends past the usable band") match_mode=:any begin
+        KPM.transport_integrals(mu2D, a, band_upper - 0.5; beta=1.0, kwargs...)
+    end
 end
 
 @testset "particle-hole symmetry and Seebeck sign on a ring" begin
@@ -142,6 +156,7 @@ end
 
     r0 = KPM.thermoelectric(mur, ar, 0.0; beta=5.0, NH=Nr, volume=Float64(Nr), b=br)
     @test r0.L0 > 0 && isfinite(r0.L0)
+    # Exact particle-hole symmetry leaves only deterministic recurrence roundoff.
     @test abs(r0.L1) < 1e-7
     @test abs(r0.S_over_kB_over_e) < 1e-8
 
@@ -174,6 +189,7 @@ end
         KPM.thermoelectric(mud, ad, 0.1; dkwargs...)
     end
     @test isnan(rg.S_over_kB_over_e)
+    # This bound separates the intended insulating window from a merely small metal.
     @test 0 <= rg.L0 < 1e-4
 
     res = Logging.with_logger(Logging.NullLogger()) do
@@ -184,6 +200,7 @@ end
         KPM.thermoelectric(mud, ad, -1.0; dkwargs...)
     end
     @test isfinite(rmet.S_over_kB_over_e)
+    # The in-band comparison point must remain safely above the insulating scale.
     @test rmet.L0 > 1e-2
 end
 
@@ -197,6 +214,10 @@ end
     @test norm(S - (-beta .* L1m ./ L0m)) > 1e-3
 
     @test KPM.seebeck_solve(2.0, 0.5, beta) == -beta * 0.5 / 2.0
+    @test_throws ArgumentError KPM.seebeck_solve(2.0, 0.5, beta; sigma_min=NaN)
+    @test_logs (:warn, r"L1 is non-finite") begin
+        @test isnan(KPM.seebeck_solve(2.0, NaN, beta))
+    end
     @test_logs (:warn, r"below-conductivity-floor") begin
         @test isnan(KPM.seebeck_solve(0.0, 0.5, beta))
     end
@@ -219,6 +240,10 @@ end
     @test all(isnan, Logging.with_logger(Logging.NullLogger()) do
         KPM.seebeck_solve([1.0 1.0; 1.0 1.0], L1m, beta)
     end)
+    @test_logs (:warn, r"L1 is non-finite") begin
+        @test all(isnan, KPM.seebeck_solve(Matrix{Float64}(I, 2, 2),
+                                           [NaN 0.0; 0.0 1.0], beta))
+    end
     @test_throws DimensionMismatch KPM.seebeck_solve(zeros(2, 3), zeros(2, 3), beta)
     @test_throws DimensionMismatch KPM.seebeck_solve(zeros(2, 2), zeros(3, 3), beta)
 end
@@ -238,6 +263,7 @@ end
         mu2D = exact_mu2D(H, J, a, b, NC)
         kg = KPM.transport_distribution(mu2D, a, Ef; b=b, NH=N, volume=1.0)
         kb = KPM.kubo_bastin_cond(mu2D, a, Ef; b=b, NH=N, area=1.0)
+        # A 0.1 absolute margin isolates the shared KG/KB normalization at finite NC.
         @test kb / kg ≈ 1 atol=0.1
         @test kg > 0
     end
@@ -336,6 +362,9 @@ end
     end
     ed_integrals = ed_transport_integrals(
         H3, Jx3, Jx3, volume3; mu_chem=mu_chem3, beta=beta3, eta=eta)
+    # Freezing eta at x_mu is valid here because the narrow ~1/beta window is
+    # interior and sqrt(1-x^2) varies little across it; wide or edge windows
+    # require a local eta(E) reference.
     S_kpm = -beta3 * kpm_integrals.L1 / kpm_integrals.L0
     S_ed = -beta3 * ed_integrals.L1 / ed_integrals.L0
     # Relative errors are 0.42%, 0.42%, and 0.84% for L0, L1, and S;
@@ -500,6 +529,7 @@ end
 
     sigma_xy = KPM.kubo_bastin_cond(
         muh_xy, ah, 0.0; b=bh, NH=Dh, area=area_h)
+    # Finite-size/NC error in the Chern plateau is comfortably below this pin.
     @test abs(sigma_xy) ≈ 1.0 atol=0.05
 
     ti = Logging.with_logger(Logging.NullLogger()) do
@@ -512,6 +542,26 @@ end
     # The Fermi-sea Bastin antisymmetric response is invisible to the
     # equal-energy KG contraction by design: KG reconstructs only the
     # symmetric part and therefore vanishes in the insulating gap.
+    # The 0.1 bounds distinguish this scope boundary without claiming convergence.
     @test abs(ti.L0) < 0.1
     @test abs(sigma_kg) < 0.1
+end
+
+@testset "review diagnostics and ED helper guards" begin
+    @test_throws ArgumentError cubic_model(2)
+    Htiny = Diagonal(ComplexF64[-1, 1])
+    Jtiny = ComplexF64[0 1; -1 0]
+    empty_ed = ed_transport_integrals(
+        Htiny, Jtiny, Jtiny, 1.0; mu_chem=100.0, beta=100.0, eta=0.01)
+    @test empty_ed == (L0=0.0, L1=0.0, L2=0.0)
+
+    # A deliberately under-resolved synthetic NC=8 moment set isolates the
+    # negative-weight diagnostic from model- and platform-dependent ringing.
+    NC_bad = 8
+    mu_bad = zeros(ComplexF64, NC_bad, NC_bad)
+    mu_bad[1, 1] = 1.0
+    @test_logs (:warn, r"significant negative weight") match_mode=:any begin
+        KPM.thermoelectric(mu_bad, a, b + 0.2a; beta=4.0, b=b, NH=N,
+                          volume=vol, g_J=gJ, NC=NC_bad, sigma_min=0.0)
+    end
 end

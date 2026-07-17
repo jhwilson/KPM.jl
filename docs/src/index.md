@@ -134,10 +134,14 @@ In 3D, with caller-supplied `volume` in `length^3`, `L0` is in
 `(e^2/h) * length^(2-d)`, with `L_r` gaining `energy^r`). `S` is independent
 of a common volume and of the `g_J` degeneracy factor, but both are normalized
 correctly rather than relying on cancellation. By default,
-`sigma_min = 1e-6 * max_E |Sigma(E)|` over the usable band; an insulating
-thermal window yields `S = NaN` with a warning while `L0`, `L1`, and `L2` are
-still reported. `neg_weight` is the fraction of thermally weighted
-`|Sigma|` from negative values, a convergence diagnostic that is never clipped.
+`sigma_min = 1e-6 * max_E |Sigma(E)|` over an NC-resolved usable-band scan with
+`max(257, 4NC+1)` points; an insulating thermal window yields `S = NaN` with a
+warning while `L0`, `L1`, and `L2` are still reported. Pass `sigma_min`
+explicitly, for example `sigma_min=0.0`, to disable this floor. `neg_weight` is
+the fraction of thermally weighted `|Sigma|` from negative values, a convergence
+diagnostic that is never clipped; for tensor results it is maximized over the
+diagonal components only because off-diagonal distributions may legitimately
+be negative.
 
 !!! warning
     This route reconstructs the **symmetric part only**: it contains no
@@ -162,6 +166,9 @@ M = Matrix{KPM.ConductivityMoments}(undef, 2, 2)  # caller's own axis ordering
 M[1, 1] = mxx; M[1, 2] = M[2, 1] = mxy; M[2, 2] = myy  # mxy = cond_moments(h, Jx, Jy; ...)
 r_tensor = KPM.thermoelectric(M, mu_chem; beta=beta, volume=V) # symmetric tensors; left solve, no inverse
 ```
+
+Tensor components are symmetrized before the open-circuit solve, and a skew
+fraction above 5% triggers a stochastic-noise/inconsistent-moments warning.
 
 ```@docs; canonical=false
 transport_distribution

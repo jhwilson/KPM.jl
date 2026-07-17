@@ -222,7 +222,7 @@ The sparse bond-current operators use minimum-image torus displacements, and
 `volume = L^3`.
 """
 function cubic_model(L::Int; t::Real=1.0, W::Real=0.0, rng=Xoshiro(1))
-    L > 0 || throw(ArgumentError("cubic_model: L must be positive"))
+    L >= 3 || throw(ArgumentError("cubic_model: L must be at least 3"))
     W >= 0 || throw(ArgumentError("cubic_model: W must be nonnegative"))
     site(x, y, z) = mod1(x, L) + L * (mod1(y, L) - 1) +
                     L^2 * (mod1(z, L) - 1)
@@ -303,6 +303,7 @@ function ed_transport_integrals(H, Ja, Jb, volume; mu_chem::Real, beta::Real,
     ev, U = eigen(Hermitian(Matrix(H)))
     lo = max(minimum(ev) - 20 * eta, mu_chem - 40 / beta)
     hi = min(maximum(ev) + 20 * eta, mu_chem + 40 / beta)
+    lo < hi || return (L0=0.0, L1=0.0, L2=0.0)
     grid_N = max(grid_N, ceil(Int, 20 * (hi - lo) / eta))
     energies = range(lo, hi; length=grid_N)
     dE = step(energies)

@@ -41,8 +41,8 @@ fermiFunctions(; E_f, beta) = fermiFunctions(Float64(E_f), Float64(beta))
 Return the thermal window function `w(E) = -df/dE = beta*f(E)*(1-f(E))` for
 the Fermi function at Fermi energy `E_f` and inverse temperature `beta`.
 Throws `ArgumentError` for `beta <= 0` or `beta == Inf` (the window
-degenerates to a delta function; zero-temperature limits are handled
-analytically by the callers).
+degenerates to a delta function, which callers reject; the physically relevant
+`T -> 0` thermoelectric statement is the Mott relation).
 """
 function fermi_window(E_f::Float64, beta::Float64)
     isfinite(beta) && beta > 0 ||
