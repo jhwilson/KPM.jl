@@ -31,7 +31,7 @@ try
 catch e
     println("cpge not implemented correctly, failing by error $(e).")
     println("test implementation of Λnmp ...")
-    @test KPM.Λnmp([1,1,1], 0.1) != nothing
+    @test KPM.Λnmp([1,1,1], 0.1, -0.095) != nothing
     println("test implementation of gn_A ...")
     @test KPM.gn_A(0.1, 1) != nothing
     println("test implementation of Δn ...")
