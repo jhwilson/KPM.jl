@@ -533,9 +533,15 @@ end
                              tol_delta=1e-9, tol_n=1e-9, maxiter=400)
     @test res_lin.converged
 
+    # Tightened safeguards (delay=10, max_step=20): with the loose defaults
+    # this small-seed fixture is basin-marginal — ulp-level GPU kernel
+    # nondeterminism was enough to send the Newton-like step to the unstable
+    # Delta=0 root. The test pins "same fixed point, fewer iterations", not
+    # basin robustness of the default safeguards.
     op_and = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
     res_and = KPM.bdg_solve!(op_and; beta=beta, NC=512, mix=0.3,
                              mixing=:anderson, anderson_history=6,
+                             anderson_delay=10, anderson_max_step=20.0,
                              tol_delta=1e-9, tol_n=1e-9, maxiter=400)
     println("mixing iterations: linear=$(res_lin.iterations), anderson=$(res_and.iterations)")
     @test res_and.converged
@@ -547,6 +553,7 @@ end
     op_and_nd = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
     res_and_nd = KPM.bdg_solve!(op_and_nd; beta=beta, NC=512, mix=0.3,
                                 mixing=:anderson, update_density=false,
+                                anderson_delay=10, anderson_max_step=20.0,
                                 tol_delta=1e-9, maxiter=400)
     @test res_and_nd.converged
 
