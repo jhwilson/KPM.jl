@@ -116,6 +116,40 @@ square_site(ix, iy, Lx, Ly) = mod1(ix, Lx) + (mod1(iy, Ly) - 1) * Lx
     @test rad_g ≈ rad_c rtol=1e-6
 end
 
+@testset "bdg_channel_moments: raw GPU moments == CPU (nonuniform, partial batch)" begin
+    rng = Xoshiro(21)
+    N = 45
+    A = sprandn(rng, ComplexF64, N, N, 0.15)
+    h = (A + A') / 2
+    op = KPM.BdGOperator(h; mu=0.17, U=1.3, n=rand(rng, N),
+                         Delta=0.3 .* randn(rng, ComplexF64, N),
+                         hole_convention=:conjugate)
+    # Shuffled partial site set: 31 sites with batch_size=16 exercises the
+    # final-partial-batch buffer reallocation; the bond list mixes onsite
+    # bonds, several targets per source, and both directed orders.
+    sites = Random.shuffle(rng, collect(1:N))[1:31]
+    directed = Tuple{Int, Int}[]
+    for k in 1:8
+        i, j = sites[k], sites[k + 1]
+        push!(directed, (i, i))
+        push!(directed, (i, j))
+        push!(directed, (j, i))
+        push!(directed, (i, sites[k + 2]))
+    end
+    unique!(directed)
+    a = 2 * first(KPM.spectral_radius(op)) / (2 - 0.2)
+    NC = 64
+
+    Hs_g = KPM.ScaledOperator(KPM.maybe_to_device(op), a, 0.0)
+    rho_g, F_g = KPM.bdg_channel_moments(Hs_g, N, sites, directed, NC;
+                                         batch_size=16)
+    Hs_c = KPM.ScaledOperator(op, a, 0.0)
+    rho_c, F_c = KPM.bdg_channel_moments(Hs_c, N, sites, directed, NC;
+                                         batch_size=16)
+    @test rho_g ≈ rho_c atol=1e-9 rtol=0
+    @test F_g ≈ F_c atol=1e-9 rtol=0
+end
+
 @testset "BdG onsite SCF: GPU fixed point == CPU fixed point" begin
     Lx, Ly = 8, 8
     N = Lx * Ly
@@ -181,9 +215,10 @@ end
     @test res_g.Pi_N ≈ res_c.Pi_N rtol=1e-5
     @test res_g.Dia_SC ≈ res_c.Dia_SC rtol=1e-5
     @test res_g.Dia_N ≈ res_c.Dia_N rtol=1e-5
-    scale = max(abs(res_c.Pi_SC), abs(res_c.Pi_N))
-    @test res_g.Ds_over_pi ≈ res_c.Ds_over_pi atol=1e-5 * scale
-    @test res_g.Ds_over_pi_complete ≈ res_c.Ds_over_pi_complete atol=1e-5 * scale
+    # Compare the subtracted stiffness directly (not scaled by the large
+    # unsubtracted responses, which would slacken the cancellation check).
+    @test res_g.Ds_over_pi ≈ res_c.Ds_over_pi rtol=1e-4 atol=1e-8
+    @test res_g.Ds_over_pi_complete ≈ res_c.Ds_over_pi_complete rtol=1e-4 atol=1e-8
     println("stiffness: Ds/π = $(round(res_g.Ds_over_pi_complete, digits=6)) ",
             "(GPU) vs $(round(res_c.Ds_over_pi_complete, digits=6)) (CPU)")
 end

@@ -295,6 +295,26 @@ function bdg_assemble(op::BdGOperator)
 end
 
 """
+    _device_operator(op::BdGOperator, caller) -> op or device operator
+
+Move `op` to the active device, but *error* instead of silently mixing
+residences: the two-point KPM routines (`kpm_2d!`, `kpm_1d_current!`)
+allocate their workspaces from the globally active device, so a host
+operator cannot flow through them while a GPU is active. The SCF path does
+not use this guard — its workspaces follow the operator's residence, so the
+silent host fallback there is consistent. Note the device conversion uses
+32-bit sparse indices (CUSPARSE `Cint`), so dimensions and nnz must stay
+below `typemax(Int32)`.
+"""
+function _device_operator(op::BdGOperator, caller::AbstractString)
+    op_dev = maybe_to_device(op)
+    if whichcore() && op_dev === op
+        throw(ArgumentError("$caller: the active GPU device requires a device-assemblable operator (sparse matrix h and matrix D blocks); matrix-free or dense blocks would mix host and device residences here — sparsify/assemble the blocks or deactivate the GPU"))
+    end
+    return op_dev
+end
+
+"""
     PairingChannel(bonds, weights, V, parity)
 
 Plain-data description of a pairing channel. `bonds` contains oriented
@@ -1172,11 +1192,12 @@ solver-parameter differences are warned about but allowed. Restart cannot be
 combined with `target_filling` because the outer bisection state is not
 checkpointed.
 
-With a CUDA GPU active and assembled matrix blocks, each iteration bakes the
-current fields into a fresh assembled device operator ([`bdg_assemble`](@ref))
-and runs the power iteration and moment recurrence on the GPU; fields,
-mixing, and checkpoints stay on the host. Operators with matrix-free blocks
-run entirely on the host.
+With a CUDA GPU active and a sparse `h` with matrix `D` blocks, each
+iteration bakes the current fields into a fresh assembled device operator
+([`bdg_assemble`](@ref)) and runs the power iteration and moment recurrence
+on the GPU; fields, mixing, and checkpoints stay on the host. Operators that
+cannot be assembled to the device (matrix-free or dense blocks) run entirely
+on the host.
 """
 function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
                     g_rho::Real=2.0, mix::Real=0.1,
