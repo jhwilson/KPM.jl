@@ -65,14 +65,14 @@ end
     KPM.normalize_by_col(psi, NR)
     m2 = KPM.cond_moments(h, Jx, Jy; NC=32, psi_in=copy(psi))
     mu2_ref = KPM.kpm_2d(h.H, Jx, Jy, 32, NR, size(h.H, 1); psi_in=copy(psi))
-    @test m2.mu == mu2_ref
-    @test KPM.kubo_bastin_cond(m2, 0.1; area=1.0) == KPM.kubo_bastin_cond(mu2_ref, h.a, 0.1; b=h.b, NH=size(h.H, 1), area=1.0)
-    @test KPM.dc_cond_single(m2, 0.1) == KPM.dc_cond_single(mu2_ref, h.a, 0.1; b=h.b)
-    @test KPM.dc_cond0(m2) == KPM.dc_cond0(mu2_ref, h.a)
-    @test KPM.d_dc_cond(m2, [0.0, 0.1]) == KPM.d_dc_cond(mu2_ref, h.a, [0.0, 0.1]; b=h.b)
+    @test delegates_exactly(m2.mu, mu2_ref)
+    @test delegates_exactly(KPM.kubo_bastin_cond(m2, 0.1; area=1.0), KPM.kubo_bastin_cond(mu2_ref, h.a, 0.1; b=h.b, NH=size(h.H, 1), area=1.0))
+    @test delegates_exactly(KPM.dc_cond_single(m2, 0.1), KPM.dc_cond_single(mu2_ref, h.a, 0.1; b=h.b))
+    @test delegates_exactly(KPM.dc_cond0(m2), KPM.dc_cond0(mu2_ref, h.a))
+    @test delegates_exactly(KPM.d_dc_cond(m2, [0.0, 0.1]), KPM.d_dc_cond(mu2_ref, h.a, [0.0, 0.1]; b=h.b))
     @test KPM.d_dc_cond(m2, 0.0:0.05:0.2) == KPM.d_dc_cond(m2, collect(0.0:0.05:0.2))
     @test KPM.d_dc_cond(m2, 0.1) isa Real
-    @test KPM.d_dc_cond(m2, 0.1) == only(KPM.d_dc_cond(mu2_ref, h.a, [0.1]; b=h.b))
+    @test delegates_exactly(KPM.d_dc_cond(m2, 0.1), only(KPM.d_dc_cond(mu2_ref, h.a, [0.1]; b=h.b)))
 
     @test_throws ArgumentError KPM.kubo_bastin_cond(m2, 0.1; area=1.0, NH=10)
     @test_throws ArgumentError KPM.ConductivityMoments(zeros(ComplexF64, 3, 2), 1.0, 0.0, NH, 1)
