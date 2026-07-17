@@ -26,6 +26,15 @@ using Printf
 using TOML
 using JLD2
 
+# KPM's CUDA extension only activates when CUDA.jl is loaded in the session,
+# so load it when the environment provides it. Nodes without a functional
+# device (and environments without CUDA) fall back to the CPU path.
+try
+    @eval using CUDA
+catch
+    println("CUDA.jl not available in this environment — CPU path")
+end
+
 site_index(ix, iy, iz, L) = ix + 1 + L * (iy + L * iz)
 minimum_image(delta, L) = mod(delta + fld(L, 2), L) - fld(L, 2)
 
