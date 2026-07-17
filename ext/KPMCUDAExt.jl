@@ -35,6 +35,27 @@ KPM.maybe_to_host(x::CuSparseMatrixCSC) = SparseMatrixCSC(x)
 KPM.device_zeros(::CUDADevice, args...) = CUDA.zeros(args...)
 KPM.device_rand(::CUDADevice, args...) = CUDA.rand(args...)
 
+# --- BdG operators -----------------------------------------------------------
+
+# The GPU path for BdG runs on the assembled sparse matrix: blockwise
+# matrix-free mul! would need strided CUSPARSE views, so instead the operator
+# is materialized (cheap, O(nnz)) and moved as one CSR matrix. Matrix-free
+# blocks cannot be assembled — those operators stay on the host, and every
+# workspace follows them there via to_device_of/device_zeros_of.
+function KPM.to_device(dev::CUDADevice, op::KPM.BdGOperator, expect_eltype)
+    KPM._bdg_assemblable(op) || return op
+    return KPM.to_device(dev, KPM.bdg_assemble(op), expect_eltype)
+end
+
+KPM.to_device(dev::CUDADevice, S::KPM.ScaledOperator, expect_eltype) =
+    KPM.ScaledOperator(KPM.to_device(dev, S.op, expect_eltype), S.a, S.b)
+
+# Residence-following workspace helpers keyed on device-resident references.
+const _CuOpRef = Union{AbstractCuSparseMatrix, CuArray}
+KPM.to_device_of(::_CuOpRef, x::Array) = CuArray(x)
+KPM.to_device_of(::_CuOpRef, x::CuArray) = x
+KPM.device_zeros_of(::_CuOpRef, T::Type, dims...) = CUDA.zeros(T, dims...)
+
 # --- Chebyshev three-term recurrence ---------------------------------------
 
 # α_{n+1} = 2 H α_n - α_{n-1}, fused into one 5-arg mul! that overwrites the

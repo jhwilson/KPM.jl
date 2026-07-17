@@ -50,9 +50,11 @@ const _CHEB_SERIAL_CUTOFF = 1 << 14
 
 # The core step: V_pp <- 2 H V_p - V_pp, one fused 5-arg mul! per column,
 # multithreaded over the NR random-vector columns (serial for tiny blocks).
+# Accepts plain Matrix workspaces too (BdG batch buffers); CuArray workspaces
+# dispatch to the extension's fused method instead.
 function chebyshev_iter_single(H,
-                               V_pp_in::SubArray,
-                               V_p_in::SubArray)
+                               V_pp_in::Union{Matrix, SubArray},
+                               V_p_in::Union{Matrix, SubArray})
     T = eltype(V_pp_in)
     if Threads.nthreads() == 1 || length(V_pp_in) <= _CHEB_SERIAL_CUTOFF
         for i = 1:size(V_pp_in, 2)
