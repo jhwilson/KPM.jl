@@ -65,10 +65,16 @@ function transport_distribution(mu2D, a::Real, E::AbstractVector{<:Real};
                                 g_J::Real=1.0, kernel=JacksonKernel,
                                 NC::Int64=size(mu2D, 1),
                                 edge_cutoff::Real=1e-3)
-    a > 0 || throw(ArgumentError("transport_distribution: a must be positive."))
-    volume > 0 || throw(ArgumentError("transport_distribution: volume must be positive."))
+    isfinite(a) && a > 0 ||
+        throw(ArgumentError("transport_distribution: a must be finite and positive."))
+    isfinite(b) || throw(ArgumentError("transport_distribution: b must be finite."))
+    isfinite(volume) && volume > 0 ||
+        throw(ArgumentError("transport_distribution: volume must be finite and positive."))
     NH > 0 || throw(ArgumentError("transport_distribution: NH must be positive."))
-    g_J > 0 || throw(ArgumentError("transport_distribution: g_J must be positive."))
+    isfinite(g_J) && g_J > 0 ||
+        throw(ArgumentError("transport_distribution: g_J must be finite and positive."))
+    all(isfinite, E) ||
+        throw(ArgumentError("transport_distribution: all energies E must be finite."))
     0 <= edge_cutoff < 1 ||
         throw(ArgumentError("transport_distribution: edge_cutoff must be in [0, 1)."))
 
@@ -99,6 +105,10 @@ using Gauss–Legendre quadrature over the intersection of the usable band and
 is approximately `4e-18`. `beta` must be finite and positive; the CTKG thermal
 window does not support the zero-temperature delta-function limit.
 
+The thermal-resolution warning compares `1/beta` with the Jackson-kernel
+estimate `pi*a/NC`. For `LorentzKernels(lambda)`, the broadening instead scales
+with `lambda` and can be larger; no kernel introspection is attempted.
+
 Returns `(L0, L1, L2, neg_weight)`, where `neg_weight` is the fraction of the
 absolute thermally weighted transport distribution contributed by negative
 values. Negative values are retained in all three integrals.
@@ -108,15 +118,21 @@ function transport_integrals(mu2D, a::Real, mu_chem::Real;
                              g_J::Real=1.0, kernel=JacksonKernel,
                              NC::Int64=size(mu2D, 1), quad_N::Int64=8*NC,
                              edge_cutoff::Real=1e-3)
-    a > 0 || throw(ArgumentError("transport_integrals: a must be positive."))
-    volume > 0 || throw(ArgumentError("transport_integrals: volume must be positive."))
+    isfinite(a) && a > 0 ||
+        throw(ArgumentError("transport_integrals: a must be finite and positive."))
+    isfinite(b) || throw(ArgumentError("transport_integrals: b must be finite."))
+    isfinite(volume) && volume > 0 ||
+        throw(ArgumentError("transport_integrals: volume must be finite and positive."))
     NH > 0 || throw(ArgumentError("transport_integrals: NH must be positive."))
-    g_J > 0 || throw(ArgumentError("transport_integrals: g_J must be positive."))
+    isfinite(g_J) && g_J > 0 ||
+        throw(ArgumentError("transport_integrals: g_J must be finite and positive."))
     quad_N > 0 || throw(ArgumentError("transport_integrals: quad_N must be positive."))
     0 <= edge_cutoff < 1 ||
         throw(ArgumentError("transport_integrals: edge_cutoff must be in [0, 1)."))
     isfinite(beta) && beta > 0 ||
         throw(ArgumentError("transport_integrals: beta must be finite and positive; T=0 is not supported by the CTKG window."))
+    isfinite(mu_chem) ||
+        throw(ArgumentError("transport_integrals: mu_chem must be finite."))
 
     NC = min(NC, size(mu2D, 1), size(mu2D, 2))
     NC > 0 || throw(ArgumentError("transport_integrals: NC must be positive."))
@@ -126,14 +142,27 @@ function transport_integrals(mu2D, a::Real, mu_chem::Real;
     mu_f = Float64(mu_chem)
     edge_f = Float64(edge_cutoff)
     if inv(beta_f) < pi * af / NC
-        @warn "Thermal width 1/beta is narrower than the Jackson-kernel KPM energy resolution pi*a/NC; thermoelectric results may not be converged." beta=beta_f kpm_resolution=pi * af / NC
+        @warn "Thermal width 1/beta is narrower than the Jackson-kernel KPM energy-resolution estimate pi*a/NC; thermoelectric results may not be converged. Lorentz-kernel broadening scales with lambda and can be larger." beta=beta_f jackson_resolution=pi * af / NC
     end
 
     band_halfwidth = af * (1 - edge_f)
-    lower = max(bf - band_halfwidth, mu_f - 40 / beta_f)
-    upper = min(bf + band_halfwidth, mu_f + 40 / beta_f)
+    band_lower = bf - band_halfwidth
+    band_upper = bf + band_halfwidth
+    tail_lower = mu_f - 40 / beta_f
+    tail_upper = mu_f + 40 / beta_f
+    lower = max(band_lower, tail_lower)
+    upper = min(band_upper, tail_upper)
     lower < upper ||
         return (L0=0.0, L1=0.0, L2=0.0, neg_weight=0.0)
+
+    if lower == band_lower || upper == band_upper
+        f_lower = fermiFunction(lower, mu_f, beta_f)
+        f_upper = fermiFunction(upper, mu_f, beta_f)
+        lost_mass = 1 - (f_lower - f_upper)
+        if lost_mass > 1e-6
+            @warn "The thermal window extends past the usable band; clipped Fermi-window mass can bias L1 and the Seebeck coefficient." lost_fermi_window_mass=lost_mass
+        end
+    end
 
     nodes, weights = gausslegendre(quad_N)
     halfwidth = (upper - lower) / 2
@@ -211,15 +240,22 @@ end
 Solve for the dimensionless electron-convention Seebeck coefficient,
 `S = -L0 \\ (beta*L1)`. `sigma_min` is an absolute floor in the units of `L0`;
 its default of `0.0` applies only the sign, finiteness, and definiteness checks.
-For scalars, non-finite `L0`, `L0 <= 0`, or `L0 < sigma_min` produces a warning
-and `NaN`. For matrices, non-finite entries, a symmetric-part eigenvalue `<= 0`
-or `< sigma_min`, a singular matrix, or condition number above `1e12` produces
-a warning and an all-`NaN` matrix. The matrix method uses a left solve and never
+`sigma_min` must be finite and nonnegative. For scalars, non-finite `L0` or
+`L1`, `L0 <= 0`, or `L0 < sigma_min` produces a warning and `NaN`. For
+matrices, non-finite entries, a symmetric-part eigenvalue `<= 0` or
+`< sigma_min`, a singular matrix, or condition number above `1e12` produces a
+warning and an all-`NaN` matrix. The matrix method uses a left solve and never
 forms an explicit inverse.
 """
 function seebeck_solve(L0::Float64, L1::Float64, beta::Float64; sigma_min::Real=0.0)
+    isfinite(sigma_min) && sigma_min >= 0 ||
+        throw(ArgumentError("seebeck_solve: sigma_min must be finite and nonnegative."))
+    if !isfinite(L1)
+        @warn "Cannot compute Seebeck coefficient because L1 is non-finite; returning NaN." L1=L1
+        return NaN
+    end
     if !isfinite(L0) || L0 <= 0 || L0 < sigma_min
-        @warn "Cannot compute Seebeck coefficient for insulating/non-positive or below-conductivity-floor L0; returning NaN." L0=L0 sigma_min=sigma_min
+        @warn "Cannot compute Seebeck coefficient for insulating/non-positive or below-conductivity-floor L0; returning NaN. Pass sigma_min explicitly, e.g. sigma_min=0.0 to disable the floor." L0=L0 sigma_min=sigma_min
         return NaN
     end
     return -beta * L1 / L0
@@ -227,6 +263,8 @@ end
 
 function seebeck_solve(L0::Matrix{Float64}, L1::Matrix{Float64}, beta::Float64;
                        sigma_min::Real=0.0)
+    isfinite(sigma_min) && sigma_min >= 0 ||
+        throw(ArgumentError("seebeck_solve: sigma_min must be finite and nonnegative."))
     size(L0, 1) == size(L0, 2) ||
         throw(DimensionMismatch("seebeck_solve: L0 must be square."))
     size(L1) == size(L0) ||
@@ -235,9 +273,13 @@ function seebeck_solve(L0::Matrix{Float64}, L1::Matrix{Float64}, beta::Float64;
         @warn "Cannot compute Seebeck tensor because L0 is non-finite; returning NaNs."
         return fill(NaN, size(L0))
     end
+    if !all(isfinite, L1)
+        @warn "Cannot compute Seebeck tensor because L1 is non-finite; returning NaNs."
+        return fill(NaN, size(L0))
+    end
     lam_min = eigmin(Symmetric((L0 + transpose(L0)) / 2))
     if lam_min <= 0 || lam_min < sigma_min
-        @warn "Cannot compute Seebeck tensor for an insulating or non-positive-definite symmetric part of L0; returning NaNs." lam_min=lam_min sigma_min=sigma_min
+        @warn "Cannot compute Seebeck tensor for an insulating, below-conductivity-floor, or non-positive-definite symmetric part of L0; returning NaNs. Pass sigma_min explicitly, e.g. sigma_min=0.0 to disable the floor." lam_min=lam_min sigma_min=sigma_min
         return fill(NaN, size(L0))
     end
     F = lu(L0; check=false)
@@ -293,6 +335,10 @@ function thermoelectric(mu2D, a::Real, mu_chem::Real;
                         NC::Int64=size(mu2D, 1), quad_N::Int64=8*NC,
                         edge_cutoff::Real=1e-3,
                         sigma_min::Union{Nothing,Real}=nothing)
+    isfinite(mu_chem) ||
+        throw(ArgumentError("thermoelectric: mu_chem must be finite."))
+    isfinite(beta) && beta > 0 ||
+        throw(ArgumentError("thermoelectric: beta must be finite and positive; T=0 is not supported by the CTKG window."))
     integrals = transport_integrals(mu2D, a, mu_chem; beta=beta, b=b, NH=NH,
                                     volume=volume, g_J=g_J, kernel=kernel,
                                     NC=NC, quad_N=quad_N,
@@ -303,7 +349,8 @@ function thermoelectric(mu2D, a::Real, mu_chem::Real;
     beta_f = Float64(beta)
     if sigma_min === nothing
         af = Float64(a); bf = Float64(b); w = af * (1 - Float64(edge_cutoff))
-        E_band = collect(range(bf - w, bf + w; length=257))
+        n_scan = max(257, 4 * NC + 1)
+        E_band = collect(range(bf - w, bf + w; length=n_scan))
         sigma_band = transport_distribution(mu2D, a, E_band; b=b, NH=NH, volume=volume,
                                             g_J=g_J, kernel=kernel, NC=NC,
                                             edge_cutoff=edge_cutoff)

@@ -8,14 +8,14 @@ using Printf
 # constant is one. These defaults are intended to finish in about a minute.
 const L = 8                    # Linear size; D = L^3
 const NC = 256                 # Chebyshev order
-const NR = 8                   # Random-phase probes
+const NR = 16                  # Random-phase probes
 const W = 3.0                  # Uniform on-site disorder strength
 const beta = 6.0               # Inverse temperature (energy^-1)
 const t = 1.0                  # Nearest-neighbor hopping
 
 site_index(x, y, z, L) = x + 1 + L * (y + L * z)
 
-# Put a displacement into (-L/2, L/2], so boundary-crossing NN bonds retain
+# For even L, put a displacement into [-L/2, L/2), so boundary-crossing NN bonds retain
 # their physical length rather than their coordinate difference on the torus.
 minimum_image(delta, L) = mod(delta + fld(L, 2), L) - fld(L, 2)
 
@@ -109,6 +109,8 @@ elapsed = @elapsed begin
     # remaining small on the scale of the disorder-broadened band structure.
     dE = max(0.10, 2 * pi * h.a / NC)
 
+    println("\nCaveat: at these demo defaults the table is noise-dominated (see convergence appendix);")
+    println("increase L, NC, NR, and average disorder realizations before quoting numbers.")
     println("\n mu_chem          L0 [(e^2/h)/length]  S [uV/K]       S_Mott [uV/K]")
     println("----------------------------------------------------------------------------")
     for mu_chem in mu_values
@@ -172,6 +174,7 @@ elapsed = @elapsed begin
         @printf("    %-20s % .6f uV/K\n", label * ":", S)
     end
     report_drift("kernel sweep", S_kernel)
+    println("  A full study must also sweep L and disorder realizations; this appendix covers NC/NR/kernel only.")
 end
 
 @printf("\nTotal elapsed time: %.2f s\n", elapsed)

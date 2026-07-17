@@ -178,10 +178,116 @@ end
     @test delegates_exactly(typed_result.S_over_kB_over_e,
                             raw_result.S_over_kB_over_e)
 
+    # Pin stored scalar integrals directly so L2 cannot be accidentally routed from L1.
+    scalar_integrals = Logging.with_logger(Logging.NullLogger()) do
+        KPM.transport_integrals(m2, 0.1; beta=5.0, volume=1.0)
+    end
+    scalar_result = Logging.with_logger(Logging.NullLogger()) do
+        KPM.thermoelectric(m2, 0.1; beta=5.0, volume=1.0)
+    end
+    @test scalar_result.L0 == scalar_integrals.L0
+    @test scalar_result.L1 == scalar_integrals.L1
+    @test scalar_result.L2 == scalar_integrals.L2
+
     @test_throws ArgumentError KPM.transport_distribution(m2, [0.1]; volume=1.0, b=0.0)
     @test_throws ArgumentError KPM.transport_distribution(m2, [0.1]; volume=1.0, NH=NH)
     @test_throws ArgumentError KPM.transport_integrals(m2, 0.1; beta=5.0, volume=1.0, b=0.0)
     @test_throws ArgumentError KPM.transport_integrals(m2, 0.1; beta=5.0, volume=1.0, NH=NH)
     @test_throws ArgumentError KPM.thermoelectric(m2, 0.1; beta=5.0, volume=1.0, b=0.0)
     @test_throws ArgumentError KPM.thermoelectric(m2, 0.1; beta=5.0, volume=1.0, NH=NH)
+end
+
+@testset "typed anisotropic thermoelectric tensor" begin
+    # A rectangular hopping tensor plus deterministic disorder makes anisotropy
+    # genuine, while identity probes remove stochastic ambiguity from the
+    # componentwise-reference and symmetrization assertions.
+    Lx = 5
+    Ly = 5
+    Nt = Lx * Ly
+    tx = 1.0
+    ty = 0.6
+    site(x, y) = mod(x, Lx) + 1 + Lx * mod(y, Ly)
+    minimum_image(d, L) = mod(d + fld(L, 2), L) - fld(L, 2)
+    positions = [(x, y) for y in 0:(Ly - 1) for x in 0:(Lx - 1)]
+    Ht = spzeros(ComplexF64, Nt, Nt)
+    Jxt = spzeros(ComplexF64, Nt, Nt)
+    Jyt = spzeros(ComplexF64, Nt, Nt)
+    rng_t = Xoshiro(2026)
+    for i in 1:Nt
+        Ht[i, i] = 0.15 * (rand(rng_t) - 0.5)
+    end
+    for y in 0:(Ly - 1), x in 0:(Lx - 1)
+        i = site(x, y)
+        for (j, hopping) in ((site(x + 1, y), tx), (site(x, y + 1), ty))
+            Ht[i, j] = Ht[j, i] = -hopping
+            dx = minimum_image(positions[i][1] - positions[j][1], Lx)
+            dy = minimum_image(positions[i][2] - positions[j][2], Ly)
+            Jxt[i, j] = Ht[i, j] * dx
+            Jxt[j, i] = Ht[j, i] * -dx
+            Jyt[i, j] = Ht[i, j] * dy
+            Jyt[j, i] = Ht[j, i] * -dy
+        end
+    end
+
+    ht = KPM.rescale(Ht; center=true)
+    psi_t = Matrix{ComplexF64}(I, Nt, Nt)
+    mxx = KPM.cond_moments(ht, Jxt, Jxt; NC=64, psi_in=copy(psi_t))
+    myy = KPM.cond_moments(ht, Jyt, Jyt; NC=64, psi_in=copy(psi_t))
+    mxy = KPM.cond_moments(ht, Jxt, Jyt; NC=64, psi_in=copy(psi_t))
+    myx = KPM.cond_moments(ht, Jyt, Jxt; NC=64, psi_in=copy(psi_t))
+    M = [mxx mxy; myx myy]
+    mu_t = ht.b + 0.12ht.a
+    beta_t = 2.0
+    kwargs_t = (; beta=beta_t, volume=Float64(Nt), NC=64,
+                 quad_N=8 * 64, sigma_min=0.0)
+
+    raw = Matrix{Any}(undef, 2, 2)
+    for i in 1:2, j in 1:2
+        raw[i, j] = Logging.with_logger(Logging.NullLogger()) do
+            KPM.transport_integrals(M[i, j], mu_t; beta=beta_t,
+                                    volume=Float64(Nt), NC=64, quad_N=8 * 64)
+        end
+    end
+    raw_L0 = [raw[i, j].L0 for i in 1:2, j in 1:2]
+    raw_L1 = [raw[i, j].L1 for i in 1:2, j in 1:2]
+    raw_L2 = [raw[i, j].L2 for i in 1:2, j in 1:2]
+    L0_ref = (raw_L0 + transpose(raw_L0)) / 2
+    L1_ref = (raw_L1 + transpose(raw_L1)) / 2
+    L2_ref = (raw_L2 + transpose(raw_L2)) / 2
+    result = Logging.with_logger(Logging.NullLogger()) do
+        KPM.thermoelectric(M, mu_t; kwargs_t...)
+    end
+    @test result.L0 ≈ L0_ref rtol=1e-12
+    @test result.L1 ≈ L1_ref rtol=1e-12
+    @test result.L2 ≈ L2_ref rtol=1e-12
+    @test result.S_over_kB_over_e ≈
+          KPM.seebeck_solve(L0_ref, L1_ref, beta_t; sigma_min=0.0) rtol=1e-12
+    @test result.L0[1, 1] != result.L0[2, 2]
+
+    bad_a = KPM.ConductivityMoments(mxy.mu, mxy.a + 0.1, mxy.b, mxy.NH, mxy.NR)
+    bad_NH = KPM.ConductivityMoments(mxy.mu, mxy.a, mxy.b, mxy.NH + 1, mxy.NR)
+    M_bad = copy(M)
+    M_bad[1, 2] = bad_a
+    @test_throws ArgumentError KPM.thermoelectric(M_bad, mu_t; kwargs_t...)
+    M_bad[1, 2] = bad_NH
+    @test_throws ArgumentError KPM.thermoelectric(M_bad, mu_t; kwargs_t...)
+    @test_throws ArgumentError KPM.thermoelectric(reshape(fill(mxx, 6), 2, 3), mu_t;
+                                                  kwargs_t...)
+    @test_throws ArgumentError KPM.thermoelectric(fill(mxx, 4, 4), mu_t; kwargs_t...)
+
+    insulating = @test_logs (:warn, r"below-conductivity-floor") match_mode=:any begin
+        KPM.thermoelectric(M, mu_t; beta=beta_t, volume=Float64(Nt),
+                          NC=64, quad_N=8 * 64, sigma_min=1e100)
+    end
+    @test all(isnan, insulating.S_over_kB_over_e)
+
+    off12 = KPM.ConductivityMoments(10 .* mxx.mu, mxx.a, mxx.b, mxx.NH, mxx.NR)
+    off21 = KPM.ConductivityMoments(-10 .* mxx.mu, mxx.a, mxx.b, mxx.NH, mxx.NR)
+    M_skew = [mxx off12; off21 myy]
+    skew_result = @test_logs (:warn, r"skew") match_mode=:any begin
+        KPM.thermoelectric(M_skew, mu_t; beta=beta_t, volume=Float64(Nt),
+                          NC=64, quad_N=8 * 64, sigma_min=0.0)
+    end
+    diagonal_neg = maximum(raw[i, i].neg_weight for i in 1:2)
+    @test skew_result.neg_weight ≈ diagonal_neg rtol=1e-12
 end
