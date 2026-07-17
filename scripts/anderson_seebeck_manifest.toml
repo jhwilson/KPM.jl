@@ -28,5 +28,11 @@ pairs_per_size = 12
 [analysis]
 # Offline reconstruction reference values (not used by the compute script).
 kBT = [0.15, 0.25, 0.35]
-Ec_ref = 7.5
+# Measured KPM transport edge (free-(Ec,x) fit, invariant over L=16-24 and
+# NC=256-1024; notebook/2026-07-17_anderson-ensemble-convergence.md). The
+# historical critical estimate 7.5 (Grussbach-Schreiber PRB 51, 663) is kept
+# for comparison; KPM broadening makes 8.155 an upper bound on the
+# thermodynamic edge.
+Ec_ref = 8.155
+Ec_hist = 7.5
 x_ref = 1.5

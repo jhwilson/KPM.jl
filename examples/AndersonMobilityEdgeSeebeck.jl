@@ -15,6 +15,19 @@ finite periodic cube, the DC, infinite-size, and vanishing-kernel-width limits
 do not commute; a critical study needs much larger sizes, more disorder, and
 joint scaling in size and broadening.
 
+The z-mapping and reference curve are anchored at Ec = 8.155, the KPM
+transport edge measured by the companion cluster ensemble (invariant over
+L = 16-24, NC = 256-1024; see notebook/2026-07-17_anderson-ensemble-
+convergence.md and scripts/anderson_seebeck_manifest.toml). Because KPM
+broadening lets localized states conduct, that value is an upper bound on the
+thermodynamic mobility edge — transfer-matrix results place it near 7.8
+(Bulka-Schreiber-Kramer 1987) — and the historical multifractal estimate
+Ec = 7.5 (Grussbach-Schreiber 1995) used by Villagonzalo et al. is a
+finite-size underestimate by its authors' own account. The accessible scales
+resolve a crossover edge exponent x_eff ~ 0.5-0.6 rather than the critical
+x = 1.5 of the reference curve, so the universal-curve target can fail
+honestly even with the measured anchor.
+
 The fast defaults are intended to take roughly 2--4 minutes on a laptop CPU.
 (The plan's provisional L=10, NR=4, two-pair setting ran in ~15 s but was
 noise-dominated; the committed defaults spend the budget on statistics and
@@ -67,7 +80,18 @@ const arr_size = 16
 const a = 12.25
 const b = 0.0
 const kBT_values = (0.25, 0.35)
-const Ec = 7.5
+# Transport-edge anchor for the z-mapping and the reference curve. 8.155 is
+# the KPM transport edge measured by the cluster ensemble study (free-(Ec,x)
+# fit of the disorder-averaged Sigma(E), invariant over L=16-24 and
+# NC=256-1024; notebook/2026-07-17_anderson-ensemble-convergence.md). KPM
+# broadening lets localized states conduct, so this is an upper bound on the
+# thermodynamic mobility edge: transfer-matrix results place that near 7.8
+# (Bulka-Schreiber-Kramer, Z. Phys. B 66, 21 (1987); trajectory reproduced in
+# Grussbach-Schreiber, PRB 51, 663 (1995), Fig. 3), while the historical
+# multifractal value 7.5 used by Villagonzalo et al. is a finite-size
+# underestimate by its authors' own account.
+const Ec = 8.155
+const Ec_hist = 7.5
 const x_ref = 1.5
 const z_values = collect(range(-4.0, 8.0; length=25))
 const z_floor_checks = (-4.0, -8.0, -12.0, -16.0)
@@ -303,8 +327,9 @@ function main()
             L, NH, W, t, NC, NR, n_disorder_pairs)
     @printf("fixed a=%.2f, b=%.1f, pi*a/NC=%.6f; kBT=%s\n",
             a, b, pi * a / NC, string(kBT_values))
-    @printf("Ec=%.2f, x_ref=%.1f, seed_base=%d; per-pair seeds are seed_base + pair_index\n",
-            Ec, x_ref, seed_base)
+    @printf("Ec=%.3f (measured transport edge; historical critical estimate %.1f), x_ref=%.1f\n",
+            Ec, Ec_hist, x_ref)
+    @printf("seed_base=%d; per-pair seeds are seed_base + pair_index\n", seed_base)
     println("NR counts stochastic probes per realization; disorder-pair count is separate.")
 
     println("\n-- Universal reference anchors --")
@@ -557,16 +582,18 @@ function main()
                              for kBT in kBT_values)
     @printf("Metallic-window Seebeck sign check: minimum S = %.6f uV/K (%s).\n",
             metallic_S_min, passfail(metallic_S_min > 0))
-    println("Honesty statement: this example does not measure E_c or the critical exponent.")
+    println("Honesty statement: this example does not measure the critical exponent, and")
+    println("the anchor Ec=8.155 is a measured KPM transport edge (an upper bound on the")
+    println("thermodynamic mobility edge), not a critical-point determination.")
     println("""
-        Interpretation of failing targets at the fast defaults: the disorder-averaged
-        transport edge at this size and kernel width is a smeared crossover profile
-        (Sigma stays finite well above E_c = 7.5 and does not follow the critical
-        power law), so the universal-curve and collapse targets fail for physical,
-        parameter-limited reasons -- in the plan's ordered causes: finite L and the
-        historical E_c outside its finite-size accuracy, not stochastic noise. A
-        convergence study in L, NC, and temperature is the follow-up, not gate
-        loosening.""")
+        Interpretation of any failing targets at the fast defaults: the z-mapping is
+        anchored at the measured transport edge, so the edge-position error of the
+        historical Ec=7.5 is removed; what remains is that the accessible (L, NC)
+        window resolves only a crossover edge exponent x_eff ~ 0.5-0.6, not the
+        critical x = 1.5 assumed by the reference curve (cluster ensemble,
+        notebook/2026-07-17_anderson-ensemble-convergence.md). That deviation
+        shrinks only with a joint large-L, fine-broadening study -- it is physics
+        of the comparison, not stochastic noise and not gate loosening territory.""")
 
     reconstruction_seconds = time() - reconstruction_start
 
@@ -586,10 +613,10 @@ function main()
     legend_style = (; legend_background_color=:transparent,
                     legend_foreground_color=:transparent)
 
-    edge_indices = findall(E -> 4.5 <= E <= 8.5, E_band)
+    edge_indices = findall(E -> 4.5 <= E <= 9.0, E_band)
     E_edge = E_band[edge_indices]
     sigma_edge = sigma_band[edge_indices]
-    fit_window = (5.5, 7.0)
+    fit_window = (6.0, 7.5)
     fit_indices = findall(E -> fit_window[1] <= E <= fit_window[2], E_edge)
     edge_power = max.(Ec .- E_edge, 0.0) .^ x_ref
     fit_power = edge_power[fit_indices]
@@ -602,7 +629,10 @@ function main()
     Plots.plot!(p1, E_edge, sigma_fit; color=:crimson, linestyle=:dash,
                 linewidth=2, label=@sprintf("A(Ec-E)^1.5 fit, %.1f<=E<=%.1f",
                                             fit_window...))
-    Plots.vline!(p1, [Ec]; color=:gray, linestyle=:dot, label="Ec=7.5 (fixed)")
+    Plots.vline!(p1, [Ec]; color=:gray, linestyle=:dot,
+                 label=@sprintf("Ec=%.3f (measured)", Ec))
+    Plots.vline!(p1, [Ec_hist]; color=:gray, linestyle=:dashdot,
+                 label=@sprintf("Ec=%.1f (historical)", Ec_hist))
 
     p2 = Plots.plot(z_values, S_reference; color=:black, linestyle=:dash,
                     linewidth=2.5, xlabel="z = (Ec-mu)/(kBT)",
