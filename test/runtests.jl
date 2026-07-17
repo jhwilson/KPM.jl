@@ -34,6 +34,10 @@ end
     include("kubo_bastin_test.jl")
 end
 
+@testset "thermoelectric (applications/thermoelectric.jl)" begin
+    include("thermoelectric_test.jl")
+end
+
 @testset "BdG self-consistency (applications/bdg.jl)" begin
     include("bdg_test.jl")
 end
