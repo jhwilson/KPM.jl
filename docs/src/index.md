@@ -117,6 +117,61 @@ normalizations have **not** been validated against exact diagonalization.
 kubo_bastin_cond
 ```
 
+### Thermoelectric (Seebeck) response
+
+The same `cond_moments` / `mu2D` used by `kubo_bastin_cond` are reused to
+reconstruct the equal-energy Kubo–Greenwood transport distribution
+`Sigma_ab(E)`, the dissipative, symmetric part of the conductivity tensor. The
+Chester–Thellung–Kubo–Greenwood (Jonson–Mahan) integrals are
+`L_r = integral dE (E-mu)^r (-df/dE) Sigma(E)` for `r = 0, 1, 2`, and the
+electron-convention (`q = -|e|`) Seebeck coefficient is
+`S = -L0 \ (beta * L1)` in units of `k_B/|e|`; the carrier sign emerges from
+the particle-hole asymmetry of `Sigma(E)`, never from flipping the charge.
+`seebeck_uVK` converts with `k_B/|e| = 86.17333262 uV/K`.
+
+In 3D, with caller-supplied `volume` in `length^3`, `L0` is in
+`(e^2/h)/length` (in general `Sigma` and `L_r` carry
+`(e^2/h) * length^(2-d)`, with `L_r` gaining `energy^r`). `S` is independent
+of a common volume and of the `g_J` degeneracy factor, but both are normalized
+correctly rather than relying on cancellation. By default,
+`sigma_min = 1e-6 * max_E |Sigma(E)|` over the usable band; an insulating
+thermal window yields `S = NaN` with a warning while `L0`, `L1`, and `L2` are
+still reported. `neg_weight` is the fraction of thermally weighted
+`|Sigma|` from negative values, a convergence diagnostic that is never clipped.
+
+!!! warning
+    This route reconstructs the **symmetric part only**: it contains no
+    antisymmetric (Hall-like) components, including the zero-field anomalous
+    Hall/Nernst response of time-reversal-broken models such as the Haldane
+    model in this package's own tests (use `kubo_bastin_cond` for those).
+    It covers elastic/static scattering only — not phonon drag, inelastic, or
+    interacting transport. Kernel broadening is a physical/numerical choice,
+    and clean ballistic DC transport is **not** a finite bulk conductivity;
+    check system size, `NC`, `NR`, and broadening before quoting bulk values.
+    `beta=Inf` is rejected: at `T=0` the thermal window is a delta function
+    and `L1` vanishes trivially; the correct `T -> 0` statement is the Mott
+    relation.
+
+```julia
+h   = KPM.rescale(H; center=true)
+mxx = KPM.cond_moments(h, Jx, Jx; NC=512, NR=12, rng=Xoshiro(42))
+r   = KPM.thermoelectric(mxx, mu_chem; beta=beta, volume=V)  # ThermoelectricResult
+r.L0; r.S_over_kB_over_e; KPM.seebeck_uVK(r)
+
+M = Matrix{KPM.ConductivityMoments}(undef, 2, 2)  # caller's own axis ordering
+M[1, 1] = mxx; M[1, 2] = M[2, 1] = mxy; M[2, 2] = myy  # mxy = cond_moments(h, Jx, Jy; ...)
+r_tensor = KPM.thermoelectric(M, mu_chem; beta=beta, volume=V) # symmetric tensors; left solve, no inverse
+```
+
+```@docs; canonical=false
+transport_distribution
+transport_integrals
+thermoelectric
+ThermoelectricResult
+seebeck_uVK
+fermi_window
+```
+
 ## Typed front end
 
 The recommended interface packages the rescaling and the moment metadata into
@@ -528,6 +583,10 @@ Below is a concise list of the main public APIs provided by the package.
   - reconstruction via the same names as the raw interface: `dos(m)`,
     `dos0(m)`, `kubo_bastin_cond(m, Ef; area)`, `d_dc_cond(m, E)`,
     `dc_cond0(m)`, `dc_cond_single(m, Ef)`
+  - thermoelectric reconstruction: `transport_distribution(m, E; volume)`,
+    `transport_integrals(m, mu; beta, volume)`,
+    `thermoelectric(m, mu; beta, volume)` → `ThermoelectricResult`,
+    `seebeck_uVK`
 
 - Moment / KPM core:
   - `kpm_1d`, `kpm_1d!`
