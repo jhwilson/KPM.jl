@@ -2,6 +2,7 @@ using Test
 using Random
 using SparseArrays
 using LinearAlgebra
+using Logging
 using KPM
 
 NH = 64
@@ -132,4 +133,55 @@ end
     @test isapprox(integral, 1.0; rtol=0.15)
     @test occursin("DosMoments", string(moments))
     @test occursin("RescaledHamiltonian", string(h))
+end
+
+@testset "typed thermoelectric reconstruction parity" begin
+    psi = KPM.random_phase_vectors(Xoshiro(31), NH, NR)
+    # The file fixture Jx is Hermitian (velocity-like); thermoelectric uses
+    # the package current J=i*v, which is anti-Hermitian and gives L0 > 0.
+    Jte = im .* Jx
+    m2 = KPM.cond_moments(h, Jte, Jte; NC=32, psi_in=copy(psi))
+    mu2_ref = KPM.kpm_2d(h.H, Jte, Jte, 32, NR, NH; psi_in=copy(psi))
+    energies = [-0.2, 0.0, 0.2]
+
+    @test delegates_exactly(
+        KPM.transport_distribution(m2, energies; volume=1.0),
+        KPM.transport_distribution(mu2_ref, h.a, energies;
+                                   b=h.b, NH=NH, volume=1.0))
+    @test delegates_exactly(
+        KPM.transport_distribution(m2, 0.1; volume=1.0),
+        KPM.transport_distribution(mu2_ref, h.a, 0.1;
+                                   b=h.b, NH=NH, volume=1.0))
+
+    typed_integrals, raw_integrals = Logging.with_logger(Logging.NullLogger()) do
+        typed = KPM.transport_integrals(m2, 0.1; beta=5.0, volume=1.0)
+        raw = KPM.transport_integrals(mu2_ref, h.a, 0.1;
+                                      beta=5.0, b=h.b, NH=NH, volume=1.0)
+        typed, raw
+    end
+    @test delegates_exactly(typed_integrals.L0, raw_integrals.L0)
+    @test delegates_exactly(typed_integrals.L1, raw_integrals.L1)
+    @test delegates_exactly(typed_integrals.L2, raw_integrals.L2)
+    @test delegates_exactly(typed_integrals.neg_weight, raw_integrals.neg_weight)
+
+    typed_result, raw_result = Logging.with_logger(Logging.NullLogger()) do
+        typed = KPM.thermoelectric(m2, 0.1; beta=5.0, volume=1.0)
+        raw = KPM.thermoelectric(mu2_ref, h.a, 0.1;
+                                beta=5.0, b=h.b, NH=NH, volume=1.0)
+        typed, raw
+    end
+    @test isfinite(typed_result.S_over_kB_over_e)
+    @test isfinite(raw_result.S_over_kB_over_e)
+    @test delegates_exactly(typed_result.L0, raw_result.L0)
+    @test delegates_exactly(typed_result.L1, raw_result.L1)
+    @test delegates_exactly(typed_result.L2, raw_result.L2)
+    @test delegates_exactly(typed_result.S_over_kB_over_e,
+                            raw_result.S_over_kB_over_e)
+
+    @test_throws ArgumentError KPM.transport_distribution(m2, [0.1]; volume=1.0, b=0.0)
+    @test_throws ArgumentError KPM.transport_distribution(m2, [0.1]; volume=1.0, NH=NH)
+    @test_throws ArgumentError KPM.transport_integrals(m2, 0.1; beta=5.0, volume=1.0, b=0.0)
+    @test_throws ArgumentError KPM.transport_integrals(m2, 0.1; beta=5.0, volume=1.0, NH=NH)
+    @test_throws ArgumentError KPM.thermoelectric(m2, 0.1; beta=5.0, volume=1.0, b=0.0)
+    @test_throws ArgumentError KPM.thermoelectric(m2, 0.1; beta=5.0, volume=1.0, NH=NH)
 end

@@ -34,7 +34,7 @@ end
     include("kubo_bastin_test.jl")
 end
 
-@testset "thermoelectric (applications/thermoelectric.jl)" begin
+@testset "thermoelectric vs exact diagonalization" begin
     include("thermoelectric_test.jl")
 end
 

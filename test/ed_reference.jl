@@ -8,12 +8,14 @@
 module EDReference
 
 using LinearAlgebra
+using Random
 using SparseArrays
 
 export haldane_model, haldane_bloch, chern_number_fhs,
        ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0,
        ring_model, flux_ring_model, bdg_matrix, bdg_matrix_singlet,
-       ed_two_energy_response, ed_diamagnetic, ed_bdg_free_energy
+       ed_two_energy_response, ed_diamagnetic, ed_bdg_free_energy,
+       cubic_model, ed_transport_distribution, ed_transport_integrals
 
 """
     haldane_model(Lx, Ly; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
@@ -208,6 +210,110 @@ function ed_kubo_bastin_broadened(H, Jα, Jβ, area; Ef::Real, eta::Real,
         acc += f(ε) * (t1 - t2) * dε
     end
     return 2π * real(im * acc / area)
+end
+
+"""
+    cubic_model(L; t=1.0, W=0.0, rng=Xoshiro(1))
+        -> (H, Jx, Jy, Jz, volume)
+
+Periodic simple-cubic `L×L×L` tight-binding model with unit lattice constant,
+nearest-neighbor hopping `-t`, and onsite disorder uniform on `[-W/2, W/2]`.
+The sparse bond-current operators use minimum-image torus displacements, and
+`volume = L^3`.
+"""
+function cubic_model(L::Int; t::Real=1.0, W::Real=0.0, rng=Xoshiro(1))
+    L > 0 || throw(ArgumentError("cubic_model: L must be positive"))
+    W >= 0 || throw(ArgumentError("cubic_model: W must be nonnegative"))
+    site(x, y, z) = mod1(x, L) + L * (mod1(y, L) - 1) +
+                    L^2 * (mod1(z, L) - 1)
+    N = L^3
+    I_, J_, V_ = Int[], Int[], ComplexF64[]
+    Vx_, Vy_, Vz_ = ComplexF64[], ComplexF64[], ComplexF64[]
+
+    # Add the directed hop j -> i and its Hermitian conjugate. The supplied
+    # displacement is already the minimum-image r_i-r_j on the torus.
+    function addhop!(i, j, amp, dx, dy, dz)
+        push!(I_, i); push!(J_, j); push!(V_, amp)
+        push!(Vx_, amp * dx); push!(Vy_, amp * dy); push!(Vz_, amp * dz)
+        push!(I_, j); push!(J_, i); push!(V_, conj(amp))
+        push!(Vx_, -conj(amp) * dx)
+        push!(Vy_, -conj(amp) * dy)
+        push!(Vz_, -conj(amp) * dz)
+        return nothing
+    end
+
+    for z in 1:L, y in 1:L, x in 1:L
+        j = site(x, y, z)
+        addhop!(site(x + 1, y, z), j, -t + 0im, 1.0, 0.0, 0.0)
+        addhop!(site(x, y + 1, z), j, -t + 0im, 0.0, 1.0, 0.0)
+        addhop!(site(x, y, z + 1), j, -t + 0im, 0.0, 0.0, 1.0)
+
+        onsite = W * (rand(rng) - 0.5)
+        push!(I_, j); push!(J_, j); push!(V_, onsite + 0im)
+        push!(Vx_, 0); push!(Vy_, 0); push!(Vz_, 0)
+    end
+
+    H = sparse(I_, J_, V_, N, N)
+    Jx = sparse(I_, J_, Vx_, N, N)
+    Jy = sparse(I_, J_, Vy_, N, N)
+    Jz = sparse(I_, J_, Vz_, N, N)
+    return H, Jx, Jy, Jz, Float64(N)
+end
+
+function _ed_transport_from_eigen(ev, U, Ja, Jb, volume, energies, eta)
+    Ja_e = U' * Matrix(Ja) * U
+    Jb_e = U' * Matrix(Jb) * U
+    W = Ja_e .* transpose(Jb_e)
+    prefactor = -(2π^2 / volume)
+    sigma = Vector{Float64}(undef, length(energies))
+    for (i, E) in pairs(energies)
+        Lv = @. (eta / π) / ((E - ev)^2 + eta^2)
+        sigma[i] = prefactor * real(transpose(Lv) * W * Lv)
+    end
+    return sigma
+end
+
+"""
+    ed_transport_distribution(H, Ja, Jb, volume; E, eta)
+
+Two-Lorentzian-product exact-diagonalization reference for the equal-energy
+Kubo–Greenwood transport distribution in `e^2/h` units. `Ja` and `Jb` are the
+package currents `J = iℏv`; they are not divided by `i`. A scalar `E` returns a
+scalar and a vector `E` returns a vector.
+"""
+function ed_transport_distribution(H, Ja, Jb, volume; E, eta::Real)
+    ev, U = eigen(Hermitian(Matrix(H)))
+    energies = E isa Real ? [E] : E
+    sigma = _ed_transport_from_eigen(ev, U, Ja, Jb, volume, energies, eta)
+    return E isa Real ? only(sigma) : sigma
+end
+
+"""
+    ed_transport_integrals(H, Ja, Jb, volume;
+                           mu_chem, beta, eta, grid_N=4000)
+        -> (L0, L1, L2)
+
+Exact-diagonalization CTKG integrals of the two-Lorentzian-product transport
+distribution. The uniform energy grid covers the intersection of the padded
+spectrum and the `mu_chem ± 40/beta` thermal window and resolves each
+Lorentzian width with at least 20 points.
+"""
+function ed_transport_integrals(H, Ja, Jb, volume; mu_chem::Real, beta::Real,
+                                eta::Real, grid_N::Int=4000)
+    ev, U = eigen(Hermitian(Matrix(H)))
+    lo = max(minimum(ev) - 20 * eta, mu_chem - 40 / beta)
+    hi = min(maximum(ev) + 20 * eta, mu_chem + 40 / beta)
+    grid_N = max(grid_N, ceil(Int, 20 * (hi - lo) / eta))
+    energies = range(lo, hi; length=grid_N)
+    dE = step(energies)
+    sigma = _ed_transport_from_eigen(ev, U, Ja, Jb, volume, energies, eta)
+    f = @. 1 / (exp(beta * (energies - mu_chem)) + 1)
+    thermal = @. beta * f * (1 - f)
+    delta = energies .- mu_chem
+    L0 = sum(thermal .* sigma) * dE
+    L1 = sum(delta .* thermal .* sigma) * dE
+    L2 = sum(delta .^ 2 .* thermal .* sigma) * dE
+    return (L0=Float64(L0), L1=Float64(L1), L2=Float64(L2))
 end
 
 """

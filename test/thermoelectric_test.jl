@@ -5,6 +5,9 @@ using Random
 using Logging
 using KPM
 
+isdefined(@__MODULE__, :EDReference) || include("ed_reference.jl")
+using .EDReference
+
 # Thermoelectric reconstruction pins: Kubo–Greenwood normalization, CTKG
 # quadrature, particle-hole/sign conventions, insulating-window guards, and
 # the tensor left-solve policy.
@@ -238,4 +241,277 @@ end
         @test kb / kg ≈ 1 atol=0.1
         @test kg > 0
     end
+end
+
+@testset "identity-probe kpm_2d vs recurrence-built kernel delta operators" begin
+    rng_local = Xoshiro(101)
+    N_local = 16
+    A_local = randn(rng_local, ComplexF64, N_local, N_local)
+    H_local = sparse(Matrix(Hermitian(A_local + A_local')))
+    positions = randn(rng_local, N_local)
+    J_local = sparse(ComplexF64[
+        H_local[i, j] * (positions[i] - positions[j])
+        for i in 1:N_local, j in 1:N_local
+    ])
+    a_local, b_local, H_norm = KPM.normalizeH(H_local; center=true)
+    NC_local = 32
+    psi_local = Matrix{ComplexF64}(I, N_local, N_local)
+    mu_local = KPM.kpm_2d(H_norm, J_local, J_local, NC_local,
+                          N_local, N_local; psi_in=psi_local)
+
+    Ht = Matrix((H_local - b_local * I) / a_local)
+    Tm = Vector{Matrix{ComplexF64}}(undef, NC_local)
+    Tm[1] = Matrix{ComplexF64}(I, N_local, N_local)
+    Tm[2] = Ht
+    for n in 3:NC_local
+        Tm[n] = 2 * Ht * Tm[n - 1] - Tm[n - 2]
+    end
+    kernel_weights = [KPM.JacksonKernel(n, NC_local) for n in 0:(NC_local - 1)]
+    function recurrence_delta(E)
+        x = (E - b_local) / a_local
+        tx = Vector{Float64}(undef, NC_local)
+        tx[1] = 1.0
+        tx[2] = x
+        for n in 3:NC_local
+            tx[n] = 2x * tx[n - 1] - tx[n - 2]
+        end
+        delta = zeros(ComplexF64, N_local, N_local)
+        for n in 1:NC_local
+            hn = n == 1 ? 1.0 : 2.0
+            delta .+= hn * kernel_weights[n] * tx[n] .* Tm[n]
+        end
+        return delta / (a_local * π * sqrt(1 - x^2))
+    end
+
+    volume_local = 2.9
+    gJ_local = 2.0
+    energies = b_local .+ a_local .* [-0.65, -0.35, 0.0, 0.3, 0.65]
+    sigma_direct = [
+        -(2π^2 * gJ_local / volume_local) *
+        real(tr(J_local * recurrence_delta(E) * J_local * recurrence_delta(E)))
+        for E in energies
+    ]
+    sigma_kpm = KPM.transport_distribution(
+        mu_local, a_local, energies; b=b_local, NH=N_local,
+        volume=volume_local, g_J=gJ_local, NC=NC_local)
+
+    # The recurrence and KPM routes contract the identical finite Jackson
+    # expansion; the observed maximum elementwise relative error is 4.3e-13.
+    @test all(isapprox.(sigma_kpm, sigma_direct; rtol=1e-12))
+end
+
+@testset "disordered cubic thermoelectric integrals vs matched-broadening ED" begin
+    H3, Jx3, Jy3, Jz3, volume3 = cubic_model(
+        4; t=1.0, W=2.0, rng=Xoshiro(1))
+    N3 = size(H3, 1)
+    a3, b3, H3_norm = KPM.normalizeH(H3; center=true)
+    NC3 = 128
+    psi3 = Matrix{ComplexF64}(I, N3, N3)
+    mu3 = KPM.kpm_2d(H3_norm, Jx3, Jx3, NC3, N3, N3; psi_in=psi3)
+    lambda = 4.0
+    lorentz = KPM.LorentzKernels(lambda)
+
+    energies = b3 .+ a3 .* [-0.55, -0.25, 0.05, 0.3]
+    sigma_kpm = KPM.transport_distribution(
+        mu3, a3, energies; b=b3, NH=N3, volume=volume3,
+        kernel=lorentz, NC=NC3)
+    sigma_ed = [
+        ed_transport_distribution(
+            H3, Jx3, Jx3, volume3; E=E,
+            eta=a3 * lambda * sqrt(1 - ((E - b3) / a3)^2) / NC3)
+        for E in energies
+    ]
+    # The maximum observed pointwise relative error is below 5%; 15% is a
+    # threefold broadening-match margin, not a stochastic tolerance.
+    @test all(isapprox.(sigma_kpm, sigma_ed; rtol=0.15))
+
+    mu_chem3 = b3 - 0.25a3
+    beta3 = 10.0
+    xmu = (mu_chem3 - b3) / a3
+    eta = a3 * lambda * sqrt(1 - xmu^2) / NC3
+    kpm_integrals = Logging.with_logger(Logging.NullLogger()) do
+        KPM.transport_integrals(
+            mu3, a3, mu_chem3; beta=beta3, b=b3, NH=N3,
+            volume=volume3, kernel=lorentz, NC=NC3)
+    end
+    ed_integrals = ed_transport_integrals(
+        H3, Jx3, Jx3, volume3; mu_chem=mu_chem3, beta=beta3, eta=eta)
+    S_kpm = -beta3 * kpm_integrals.L1 / kpm_integrals.L0
+    S_ed = -beta3 * ed_integrals.L1 / ed_integrals.L0
+    # Relative errors are 0.42%, 0.42%, and 0.84% for L0, L1, and S;
+    # 3% leaves more than a threefold deterministic broadening-match margin.
+    @test kpm_integrals.L0 ≈ ed_integrals.L0 rtol=0.03
+    @test kpm_integrals.L1 ≈ ed_integrals.L1 rtol=0.03
+    @test S_kpm ≈ S_ed rtol=0.03
+end
+
+@testset "thermoelectric energy-scale covariance" begin
+    scale = 2.7
+    beta_local = 4.0
+    mu_chem = b + 0.1a
+    base_integrals, scaled_integrals, base_result, scaled_result =
+        Logging.with_logger(Logging.NullLogger()) do
+            base_i = KPM.transport_integrals(
+                mu2D, a, mu_chem; beta=beta_local, b=b, NH=N,
+                volume=vol, g_J=gJ, NC=NC)
+            scaled_i = KPM.transport_integrals(
+                mu2D .* scale^2, scale * a, scale * mu_chem;
+                beta=beta_local / scale, b=scale * b, NH=N,
+                volume=vol, g_J=gJ, NC=NC)
+            base_r = KPM.thermoelectric(
+                mu2D, a, mu_chem; beta=beta_local, b=b, NH=N,
+                volume=vol, g_J=gJ, NC=NC)
+            scaled_r = KPM.thermoelectric(
+                mu2D .* scale^2, scale * a, scale * mu_chem;
+                beta=beta_local / scale, b=scale * b, NH=N,
+                volume=vol, g_J=gJ, NC=NC)
+            base_i, scaled_i, base_r, scaled_r
+        end
+    @test scaled_integrals.L0 ≈ base_integrals.L0 rtol=1e-12
+    @test scaled_integrals.L1 ≈ scale * base_integrals.L1 rtol=1e-12
+    @test scaled_integrals.L2 ≈ scale^2 * base_integrals.L2 rtol=1e-12
+    @test scaled_result.S_over_kB_over_e ≈ base_result.S_over_kB_over_e rtol=1e-12
+end
+
+@testset "low-temperature Mott relation" begin
+    Nr = 64
+    Hr = spzeros(ComplexF64, Nr, Nr)
+    Jr = spzeros(ComplexF64, Nr, Nr)
+    for i in 1:Nr
+        j = mod1(i + 1, Nr)
+        Hr[i, j] = -1.0
+        Hr[j, i] = -1.0
+        Jr[i, j] = Hr[i, j] * (-1.0)
+        Jr[j, i] = Hr[j, i] * (1.0)
+    end
+    ar, br, Hrn = KPM.normalizeH(Hr; center=true)
+    NCr = 128
+    mur = KPM.kpm_2d(
+        Hrn, Jr, Jr, NCr, Nr, Nr;
+        psi_in=Matrix{ComplexF64}(I, Nr, Nr))
+    # Strong Lorentz damping makes the finite-ring transport distribution
+    # smooth on both thermal scales, which is the hypothesis of the Mott
+    # expansion rather than an NC-resolution convergence claim.
+    mu_chem = -1.35
+    smooth_kernel = KPM.LorentzKernels(20.0)
+    dE = 1e-4 * ar
+    sigma_minus = KPM.transport_distribution(
+        mur, ar, mu_chem - dE; b=br, NH=Nr, volume=Float64(Nr), NC=NCr,
+        kernel=smooth_kernel)
+    sigma_plus = KPM.transport_distribution(
+        mur, ar, mu_chem + dE; b=br, NH=Nr, volume=Float64(Nr), NC=NCr,
+        kernel=smooth_kernel)
+    dlnsigma = (log(sigma_plus) - log(sigma_minus)) / (2dE)
+
+    deviations = Float64[]
+    for beta_local in (40.0, 80.0)
+        result = Logging.with_logger(Logging.NullLogger()) do
+            KPM.thermoelectric(
+                mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
+                volume=Float64(Nr), NC=NCr, kernel=smooth_kernel,
+                sigma_min=0.0)
+        end
+        mott = -(π^2 / (3beta_local)) * dlnsigma
+        push!(deviations, abs(result.S_over_kB_over_e - mott))
+        # Relative deviations are about 0.63% and 0.32% at beta=40 and 80.
+        @test result.S_over_kB_over_e ≈ mott rtol=0.02
+    end
+    # The leading Sommerfeld correction decreases as beta doubles.
+    @test deviations[2] < deviations[1]
+end
+
+@testset "thermoelectric volume routing" begin
+    beta_local = 4.0
+    mu_chem = b + 0.1a
+    result_v, result_2v = Logging.with_logger(Logging.NullLogger()) do
+        rv = KPM.thermoelectric(
+            mu2D, a, mu_chem; beta=beta_local, b=b, NH=N,
+            volume=vol, g_J=gJ, NC=NC)
+        r2v = KPM.thermoelectric(
+            mu2D, a, mu_chem; beta=beta_local, b=b, NH=N,
+            volume=2vol, g_J=gJ, NC=NC)
+        rv, r2v
+    end
+    @test result_2v.L0 ≈ result_v.L0 / 2 rtol=1e-12
+    @test result_2v.L1 ≈ result_v.L1 / 2 rtol=1e-12
+    @test result_2v.L2 ≈ result_v.L2 / 2 rtol=1e-12
+    @test result_2v.S_over_kB_over_e ≈ result_v.S_over_kB_over_e rtol=1e-12
+end
+
+@testset "quadrature, expansion-order, and kernel convergence" begin
+    Nr = 64
+    Hr = spzeros(ComplexF64, Nr, Nr)
+    Jr = spzeros(ComplexF64, Nr, Nr)
+    for i in 1:Nr
+        j = mod1(i + 1, Nr)
+        Hr[i, j] = -1.0
+        Hr[j, i] = -1.0
+        Jr[i, j] = Hr[i, j] * (-1.0)
+        Jr[j, i] = Hr[j, i] * (1.0)
+    end
+    ar, br, Hrn = KPM.normalizeH(Hr; center=true)
+    NCmax = 256
+    mur = KPM.kpm_2d(
+        Hrn, Jr, Jr, NCmax, Nr, Nr;
+        psi_in=Matrix{ComplexF64}(I, Nr, Nr))
+    mu_chem = -1.0
+    beta_local = 8.0
+    lorentz = KPM.LorentzKernels(4.0)
+
+    quad_default, quad_fine = Logging.with_logger(Logging.NullLogger()) do
+        q1 = KPM.transport_integrals(
+            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
+            volume=Float64(Nr), kernel=lorentz, NC=128, quad_N=8 * 128)
+        q2 = KPM.transport_integrals(
+            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
+            volume=Float64(Nr), kernel=lorentz, NC=128, quad_N=16 * 128)
+        q1, q2
+    end
+    @test quad_default.L0 ≈ quad_fine.L0 rtol=1e-10
+    @test quad_default.L1 ≈ quad_fine.L1 rtol=1e-10
+    @test quad_default.L2 ≈ quad_fine.L2 rtol=1e-10
+
+    jackson128, jackson256, lorentz256 = Logging.with_logger(Logging.NullLogger()) do
+        r128 = KPM.thermoelectric(
+            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
+            volume=Float64(Nr), NC=128, sigma_min=0.0)
+        r256 = KPM.thermoelectric(
+            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
+            volume=Float64(Nr), NC=256, sigma_min=0.0)
+        rl = KPM.thermoelectric(
+            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
+            volume=Float64(Nr), kernel=lorentz, NC=256, sigma_min=0.0)
+        r128, r256, rl
+    end
+    # Observed S values (Jackson-128, Jackson-256, Lorentz-256) are
+    # (-0.025771, -0.025898, -0.025718), differing by 0.49% and 0.70%.
+    @test jackson128.S_over_kB_over_e ≈ jackson256.S_over_kB_over_e rtol=0.05
+    @test lorentz256.S_over_kB_over_e ≈ jackson256.S_over_kB_over_e rtol=0.1
+end
+
+@testset "Haldane equal-energy KG excludes antisymmetric Hall response" begin
+    Hh, Jxh, Jyh, area_h = haldane_model(
+        6, 6; t=1.0, t2=0.2, ϕ=π / 2, m=0.0)
+    Dh = size(Hh, 1)
+    ah, bh, Hh_norm = KPM.normalizeH(Hh; center=true)
+    NCh = 96
+    psih = Matrix{ComplexF64}(I, Dh, Dh)
+    muh_xy = KPM.kpm_2d(Hh_norm, Jxh, Jyh, NCh, Dh, Dh; psi_in=psih)
+
+    sigma_xy = KPM.kubo_bastin_cond(
+        muh_xy, ah, 0.0; b=bh, NH=Dh, area=area_h)
+    @test abs(sigma_xy) ≈ 1.0 atol=0.05
+
+    ti = Logging.with_logger(Logging.NullLogger()) do
+        KPM.transport_integrals(
+            muh_xy, ah, 0.0; beta=20.0, b=bh, NH=Dh,
+            volume=area_h, NC=NCh)
+    end
+    sigma_kg = KPM.transport_distribution(
+        muh_xy, ah, 0.0; b=bh, NH=Dh, volume=area_h, NC=NCh)
+    # The Fermi-sea Bastin antisymmetric response is invisible to the
+    # equal-energy KG contraction by design: KG reconstructs only the
+    # symmetric part and therefore vanishes in the insulating gap.
+    @test abs(ti.L0) < 0.1
+    @test abs(sigma_kg) < 0.1
 end
