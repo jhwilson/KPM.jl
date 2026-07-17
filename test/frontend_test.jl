@@ -26,16 +26,24 @@ h = KPM.rescale(H)
     @test h_fixed.b == 0.0
 end
 
+# Typed wrappers must delegate exactly: bitwise on the CPU. GPU kernels are
+# not run-to-run bitwise-deterministic (two identical same-seed kpm_1d calls
+# differ at ulps), so with the GPU device active the same delegation is
+# asserted at ulp-level tolerance instead.
+delegates_exactly(x, y) = KPM.whichcore() ?
+    isapprox(x, y; rtol=1e-9, atol=1e-12) : x == y
+delegates_exactly(x::Tuple, y::Tuple) = all(map(delegates_exactly, x, y))
+
 @testset "typed DOS moments and reconstruction" begin
     rng = Xoshiro(11)
     psi = exp.(rand(rng, Float64, NH, NR) .* (2im * pi))
     KPM.normalize_by_col(psi, NR)
     m = KPM.dos_moments(h; NC=64, psi_in=copy(psi))
     mu_ref = KPM.kpm_1d(h.H, 64, NR; psi_in=copy(psi))
-    @test m.mu == mu_ref
-    @test KPM.dos(m) == KPM.dos(mu_ref, h.a; b=h.b)
-    @test KPM.dos0(m) == KPM.dos0(mu_ref, h.a)
-    @test KPM.dos0(m; dE_order=2) == KPM.dos0(mu_ref, h.a; dE_order=2)
+    @test delegates_exactly(m.mu, mu_ref)
+    @test delegates_exactly(KPM.dos(m), KPM.dos(mu_ref, h.a; b=h.b))
+    @test delegates_exactly(KPM.dos0(m), KPM.dos0(mu_ref, h.a))
+    @test delegates_exactly(KPM.dos0(m; dE_order=2), KPM.dos0(mu_ref, h.a; dE_order=2))
 
     grid = collect(range(-1.5, 1.5, length=101))
     E, rho = KPM.dos(m; E_grid=grid)
@@ -57,14 +65,14 @@ end
     KPM.normalize_by_col(psi, NR)
     m2 = KPM.cond_moments(h, Jx, Jy; NC=32, psi_in=copy(psi))
     mu2_ref = KPM.kpm_2d(h.H, Jx, Jy, 32, NR, size(h.H, 1); psi_in=copy(psi))
-    @test m2.mu == mu2_ref
-    @test KPM.kubo_bastin_cond(m2, 0.1; area=1.0) == KPM.kubo_bastin_cond(mu2_ref, h.a, 0.1; b=h.b, NH=size(h.H, 1), area=1.0)
-    @test KPM.dc_cond_single(m2, 0.1) == KPM.dc_cond_single(mu2_ref, h.a, 0.1; b=h.b)
-    @test KPM.dc_cond0(m2) == KPM.dc_cond0(mu2_ref, h.a)
-    @test KPM.d_dc_cond(m2, [0.0, 0.1]) == KPM.d_dc_cond(mu2_ref, h.a, [0.0, 0.1]; b=h.b)
+    @test delegates_exactly(m2.mu, mu2_ref)
+    @test delegates_exactly(KPM.kubo_bastin_cond(m2, 0.1; area=1.0), KPM.kubo_bastin_cond(mu2_ref, h.a, 0.1; b=h.b, NH=size(h.H, 1), area=1.0))
+    @test delegates_exactly(KPM.dc_cond_single(m2, 0.1), KPM.dc_cond_single(mu2_ref, h.a, 0.1; b=h.b))
+    @test delegates_exactly(KPM.dc_cond0(m2), KPM.dc_cond0(mu2_ref, h.a))
+    @test delegates_exactly(KPM.d_dc_cond(m2, [0.0, 0.1]), KPM.d_dc_cond(mu2_ref, h.a, [0.0, 0.1]; b=h.b))
     @test KPM.d_dc_cond(m2, 0.0:0.05:0.2) == KPM.d_dc_cond(m2, collect(0.0:0.05:0.2))
     @test KPM.d_dc_cond(m2, 0.1) isa Real
-    @test KPM.d_dc_cond(m2, 0.1) == only(KPM.d_dc_cond(mu2_ref, h.a, [0.1]; b=h.b))
+    @test delegates_exactly(KPM.d_dc_cond(m2, 0.1), only(KPM.d_dc_cond(mu2_ref, h.a, [0.1]; b=h.b)))
 
     @test_throws ArgumentError KPM.kubo_bastin_cond(m2, 0.1; area=1.0, NH=10)
     @test_throws ArgumentError KPM.ConductivityMoments(zeros(ComplexF64, 3, 2), 1.0, 0.0, NH, 1)
@@ -80,24 +88,24 @@ end
 
     mc = KPM.dos_moments(hc; NC=64, psi_in=copy(psi))
     mu_ref = KPM.kpm_1d(hc.H, 64, NR; psi_in=copy(psi))
-    @test mc.mu == mu_ref
-    @test KPM.dos(mc) == KPM.dos(mu_ref, hc.a; b=hc.b)
+    @test delegates_exactly(mc.mu, mu_ref)
+    @test delegates_exactly(KPM.dos(mc), KPM.dos(mu_ref, hc.a; b=hc.b))
     grid = collect(range(hc.b - 0.5, hc.b + 0.5, length=21))
-    @test KPM.dos(mc; E_grid=grid)[2] == KPM.dos(mu_ref, hc.a; b=hc.b, E_grid=grid)[2]
+    @test delegates_exactly(KPM.dos(mc; E_grid=grid)[2], KPM.dos(mu_ref, hc.a; b=hc.b, E_grid=grid)[2])
 
     m2c = KPM.cond_moments(hc, Jx, Jy; NC=32, psi_in=copy(psi))
     mu2_ref = KPM.kpm_2d(hc.H, Jx, Jy, 32, NR, NH; psi_in=copy(psi))
-    @test KPM.kubo_bastin_cond(m2c, 0.3; area=1.0) == KPM.kubo_bastin_cond(mu2_ref, hc.a, 0.3; b=hc.b, NH=NH, area=1.0)
-    @test KPM.dc_cond_single(m2c, 0.3) == KPM.dc_cond_single(mu2_ref, hc.a, 0.3; b=hc.b)
-    @test KPM.d_dc_cond(m2c, [0.3, 0.9]) == KPM.d_dc_cond(mu2_ref, hc.a, [0.3, 0.9]; b=hc.b)
+    @test delegates_exactly(KPM.kubo_bastin_cond(m2c, 0.3; area=1.0), KPM.kubo_bastin_cond(mu2_ref, hc.a, 0.3; b=hc.b, NH=NH, area=1.0))
+    @test delegates_exactly(KPM.dc_cond_single(m2c, 0.3), KPM.dc_cond_single(mu2_ref, hc.a, 0.3; b=hc.b))
+    @test delegates_exactly(KPM.d_dc_cond(m2c, [0.3, 0.9]), KPM.d_dc_cond(mu2_ref, hc.a, [0.3, 0.9]; b=hc.b))
 end
 
 @testset "typed front-end validation and reproducibility" begin
     m1 = KPM.dos_moments(h; NC=64, NR=4, rng=Xoshiro(42))
     m2 = KPM.dos_moments(h; NC=64, NR=4, rng=Xoshiro(42))
     m3 = KPM.dos_moments(h; NC=64, NR=4, rng=Xoshiro(43))
-    @test m1.mu == m2.mu
-    @test m1.mu != m3.mu
+    @test delegates_exactly(m1.mu, m2.mu)   # equal seeds reproduce (bitwise on CPU)
+    @test !(m1.mu ≈ m3.mu)
     # unit-norm probes give mu_0 = 1 exactly as in the default random path
     @test m1.mu[1] ≈ 1.0
 

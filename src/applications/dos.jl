@@ -122,7 +122,11 @@ function dos(
         denom = @. (a * pi * sqrt(1 - x_grid_inrange^2))
         rhoE ./= denom
     else
-        f(E) = _dos_single(μtilde, a, b, E, NC)
+        # The ForwardDiff/Zygote derivative path evaluates one dual-typed
+        # energy at a time; run it on host moments (same pattern as the
+        # documented d_dc_cond GPU limitation, but with a working fallback).
+        μtilde_host = maybe_to_host(μtilde)
+        f(E) = _dos_single(μtilde_host, a, b, E, NC)
         g(E) = real(Zygote.forwarddiff(f, E))
         @assert (dE_order <= 1) "There is a Zygote support problem for higher order derivative. You can use `KPM.dos0(; dE_order=2)` for second derivative at the band center temporarily."
         for dE_order_i = 1:dE_order

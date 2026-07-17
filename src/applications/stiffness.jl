@@ -251,7 +251,11 @@ in `bdg_update`.
 
 The primary entry point is `superfluid_stiffness(...;
 include_diamagnetic=true)`, which evaluates superconducting and normal terms
-with common probes and a common scale.
+with common probes and a common scale (and passes its already device-resident
+scaled operator via the internal `Hs` keyword; when supplied, `Hs.a` must
+equal the requested scale). With a CUDA GPU active, an operator that cannot
+be assembled to the device (matrix-free or dense blocks) throws rather than
+mixing host and device residences.
 """
 function diamagnetic_term(op::BdGOperator,
                           pos::AbstractMatrix{<:Real};
@@ -260,7 +264,8 @@ function diamagnetic_term(op::BdGOperator,
                           psi_in=nothing, volume::Real, g_J::Real=1.0,
                           kernel=JacksonKernel, Np::Integer=2 * NC,
                           rescale_eps::Real=0.2,
-                          a::Union{Nothing,Real}=nothing)
+                          a::Union{Nothing,Real}=nothing,
+                          Hs=nothing)
     op.h isa AbstractMatrix ||
         throw(ArgumentError("diamagnetic_term needs an assembled sparse h to build the vertex"))
     size(pos, 1) == op.N ||
@@ -279,7 +284,16 @@ function diamagnetic_term(op::BdGOperator,
     scale = a === nothing ? rescale(op; eps=Float64(rescale_eps)).a : Float64(a)
     isfinite(scale) && scale > 0 ||
         throw(ArgumentError("diamagnetic_term: a must be finite and positive (got $scale)"))
-    Hs = ScaledOperator(op, scale, 0.0)
+    # On GPU, the assembled BdG matrix moves to the device once here; the
+    # kpm_1d_current workspaces and vertex transfer follow the active device
+    # (a non-device-assemblable operator throws rather than mix residences).
+    # Internal callers pass an already-resident `Hs` to avoid a re-upload.
+    if Hs === nothing
+        Hs = ScaledOperator(_device_operator(op, "diamagnetic_term"), scale, 0.0)
+    else
+        Hs.a == scale ||
+            throw(ArgumentError("diamagnetic_term: supplied Hs has a=$(Hs.a) but the requested scale is $scale"))
+    end
 
     NH = 2 * op.N
     NC_int = Int(NC)
@@ -374,6 +388,14 @@ scan several commensurate wavevectors for extrapolation. Choose `eta` between
 the finite-size level spacing and the gap, and as a resolution rule use
 `eta >= 5*a_common*pi/NC`. Vertices are always built from the unrescaled
 assembled hopping.
+
+With a CUDA GPU active, both moment computations (and the optional
+diamagnetic traces) run on the device: the assembled BdG matrices, vertices,
+probes, and Chebyshev workspaces are moved automatically, while scale
+estimation and the spectral reconstruction stay on the host. Operators that
+cannot be assembled to the device (matrix-free or dense blocks) throw an
+`ArgumentError` here rather than mixing host and device residences —
+sparsify/assemble the blocks or run without the GPU device.
 """
 function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
                               q::AbstractVector{<:Real};
@@ -409,8 +431,11 @@ function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
     rh_sc = rescale(op; eps=Float64(rescale_eps))
     rh_n = rescale(op_n; eps=Float64(rescale_eps))
     a_common = max(rh_sc.a, rh_n.a)
-    Hs_sc = ScaledOperator(op, a_common, 0.0)
-    Hs_n = ScaledOperator(op_n, a_common, 0.0)
+    # Scale estimation runs on the host (deterministic, one-time); the moment
+    # recurrences run wherever the active device puts the assembled operator.
+    # A non-device-assemblable operator throws rather than mix residences.
+    Hs_sc = ScaledOperator(_device_operator(op, "superfluid_stiffness"), a_common, 0.0)
+    Hs_n = ScaledOperator(_device_operator(op_n, "superfluid_stiffness"), a_common, 0.0)
 
     NH = 2 * op.N
     NR_int = Int(NR)
@@ -460,11 +485,11 @@ function superfluid_stiffness(op::BdGOperator, pos::AbstractMatrix{<:Real},
         Dia_SC = diamagnetic_term(
             op, pos; dir=dir, disp=disp, beta=beta, NC=NC_int, NR=NR_int,
             psi_in=psi_in, volume=volume, g_J=g_J, kernel=kernel,
-            Np=Np_int, rescale_eps=rescale_eps, a=a_common)
+            Np=Np_int, rescale_eps=rescale_eps, a=a_common, Hs=Hs_sc)
         Dia_N = diamagnetic_term(
             op_n, pos; dir=dir, disp=disp, beta=beta, NC=NC_int, NR=NR_int,
             psi_in=psi_in, volume=volume, g_J=g_J, kernel=kernel,
-            Np=Np_int, rescale_eps=rescale_eps, a=a_common)
+            Np=Np_int, rescale_eps=rescale_eps, a=a_common, Hs=Hs_n)
         return merge(result,
                      (Dia_SC=Dia_SC, Dia_N=Dia_N,
                       Ds_over_pi_complete=result.Ds_over_pi + Dia_SC - Dia_N))

@@ -59,3 +59,17 @@ device_rand(::CPUDevice, args...) = rand(args...)
 
 on_host_rand(args...) = rand(args...)
 on_host_zeros(args...) = zeros(args...)
+
+"""
+    to_device_of(ref, x)
+    device_zeros_of(ref, T, dims...)
+
+Residence-following helpers: place `x` (or a fresh zeros array) on the same
+device as the operator/array `ref`, regardless of the globally active device.
+Host references leave host arrays untouched; the CUDA extension adds methods
+for device-resident references. Used by the BdG paths, where the caller
+decides device residence once (by converting the operator) and every
+workspace follows it.
+"""
+to_device_of(ref, x) = x
+device_zeros_of(ref, T::Type, dims...) = zeros(T, dims...)

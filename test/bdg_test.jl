@@ -46,6 +46,57 @@ const BdG_Hd = bdg_matrix(BdG_h, BdG_mu, BdG_U, BdG_n, BdG_Delta)
     Y = randn(rng, ComplexF64, 2BdG_N, 3)
     @test mul!(copy(Y), BdG_op, X, α, β) ≈ α * BdG_Hd * X + β * Y atol=1e-12
     @test BdG_Hd ≈ BdG_Hd'
+
+    # bdg_assemble is the operator the GPU path runs on: it must reproduce
+    # the matrix-free action exactly, including a general sparse pairing block.
+    H_asm = KPM.bdg_assemble(BdG_op)
+    @test H_asm isa SparseMatrixCSC{ComplexF64, Int}
+    @test Matrix(H_asm) ≈ BdG_Hd atol=1e-12
+    @test ishermitian(H_asm)
+
+    bonds = [(1, 2), (3, 4)]
+    channel = KPM.PairingChannel(bonds, 1.0, 1.0, :even)
+    D_bond = KPM.pairing_matrix(BdG_N, [channel]; amplitude=0.25 + 0.1im)
+    op_bond = KPM.BdGOperator(BdG_h; mu=BdG_mu, U=BdG_U, n=BdG_n, D=D_bond,
+                              hole_convention=:conjugate)
+    H_bond = KPM.bdg_assemble(op_bond)
+    Hmf_bond = zeros(ComplexF64, 2BdG_N, 2BdG_N)
+    for j in axes(Hmf_bond, 2)
+        e_j = zeros(ComplexF64, 2BdG_N)
+        e_j[j] = 1
+        mul!(view(Hmf_bond, :, j), op_bond, e_j)
+    end
+    @test Matrix(H_bond) ≈ Hmf_bond atol=1e-12
+
+    op_free = KPM.BdGOperator(KPM.ScaledOperator(BdG_h, 1.0, 0.0);
+                              mu=BdG_mu, U=BdG_U, n=BdG_n, Delta=BdG_Delta,
+                              h_hole=KPM.ScaledOperator(conj(BdG_h), 1.0, 0.0),
+                              hole_convention=:conjugate)
+    @test_throws ArgumentError KPM.bdg_assemble(op_free)
+
+    # Remaining block combinations: dense h, Hermitian-wrapped sparse h, and
+    # complex intervalley (assume_intervalley) must all assemble to the same
+    # matrix as the matrix-free action.
+    action_matrix(o) = begin
+        M = zeros(ComplexF64, 2o.N, 2o.N)
+        e = zeros(ComplexF64, 2o.N)
+        for j in axes(M, 2)
+            fill!(e, 0); e[j] = 1
+            mul!(view(M, :, j), o, e)
+        end
+        M
+    end
+    op_dense = KPM.BdGOperator(Matrix(BdG_h); mu=BdG_mu, U=BdG_U, n=BdG_n,
+                               Delta=BdG_Delta)
+    @test Matrix(KPM.bdg_assemble(op_dense)) ≈ action_matrix(op_dense) atol=1e-12
+    op_herm = KPM.BdGOperator(Hermitian(sparse(BdG_h)); mu=BdG_mu, U=BdG_U,
+                              n=BdG_n, Delta=BdG_Delta)
+    @test Matrix(KPM.bdg_assemble(op_herm)) ≈ action_matrix(op_herm) atol=1e-12
+    h_iv = sparse(ComplexF64[0 im; -im 0])
+    op_iv = KPM.BdGOperator(h_iv; mu=0.2, U=0.0, n=zeros(2),
+                            Delta=ComplexF64[0.3 + 0.1im, 0.2 - 0.4im],
+                            assume_intervalley=true)
+    @test Matrix(KPM.bdg_assemble(op_iv)) ≈ action_matrix(op_iv) atol=1e-12
 end
 
 @testset "complex hopping intervalley opt-in and sparse constructor scaling" begin
@@ -179,8 +230,18 @@ end
         op_c = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
         KPM.bdg_solve!(op_c; beta=beta, NC=512, mix=0.3,
                        tol_delta=1e-14, tol_n=1e-14, maxiter=14)
-        @test op_b_restart.Δ == op_c.Δ
-        @test op_b_restart.n == op_c.n
+        if KPM.whichcore()
+            # GPU kernels are not guaranteed bitwise-deterministic; the
+            # bitwise checkpoint/restart contract holds on the CPU path.
+            # atol=1e-10 bounds run-to-run kernel accumulation drift over the
+            # restarted iterations (fields are O(1)); tighten if measured GPU
+            # discrepancies come in lower.
+            @test op_b_restart.Δ ≈ op_c.Δ atol=1e-10 rtol=0
+            @test op_b_restart.n ≈ op_c.n atol=1e-10 rtol=0
+        else
+            @test op_b_restart.Δ == op_c.Δ
+            @test op_b_restart.n == op_c.n
+        end
     end
 
     op_filling = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
@@ -472,9 +533,15 @@ end
                              tol_delta=1e-9, tol_n=1e-9, maxiter=400)
     @test res_lin.converged
 
+    # Tightened safeguards (delay=10, max_step=20): with the loose defaults
+    # this small-seed fixture is basin-marginal — ulp-level GPU kernel
+    # nondeterminism was enough to send the Newton-like step to the unstable
+    # Delta=0 root. The test pins "same fixed point, fewer iterations", not
+    # basin robustness of the default safeguards.
     op_and = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
     res_and = KPM.bdg_solve!(op_and; beta=beta, NC=512, mix=0.3,
                              mixing=:anderson, anderson_history=6,
+                             anderson_delay=10, anderson_max_step=20.0,
                              tol_delta=1e-9, tol_n=1e-9, maxiter=400)
     println("mixing iterations: linear=$(res_lin.iterations), anderson=$(res_and.iterations)")
     @test res_and.converged
@@ -486,6 +553,7 @@ end
     op_and_nd = KPM.BdGOperator(h; mu=mu, U=U, n=n_initial, Delta=Delta_initial)
     res_and_nd = KPM.bdg_solve!(op_and_nd; beta=beta, NC=512, mix=0.3,
                                 mixing=:anderson, update_density=false,
+                                anderson_delay=10, anderson_max_step=20.0,
                                 tol_delta=1e-9, maxiter=400)
     @test res_and_nd.converged
 

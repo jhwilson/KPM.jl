@@ -7,7 +7,9 @@
 #   2. DoS reconstruction on the device
 #   3. kpm_2d moments + kubo_bastin_cond: quantized Hall plateau from GPU moments
 #   4. dc_long
-#   5. a timing comparison on a larger chain (informational)
+#   5. BdG: assembled device operator, onsite + pairing-channel SCF, and
+#      superfluid stiffness, each GPU vs CPU
+#   6. timing comparisons (informational)
 
 using Test
 using LinearAlgebra
@@ -92,6 +94,154 @@ end
     c_gpu = KPM.dc_long(H, Jx, 1.0, [64, 128], 4, NH; psi_in=copy(psi_in))
     c_cpu = on_cpu(() -> KPM.dc_long(H, Jx, 1.0, [64, 128], 4, NH; psi_in=copy(psi_in)))
     @test c_gpu ≈ c_cpu atol = 1e-6
+end
+
+square_site(ix, iy, Lx, Ly) = mod1(ix, Lx) + (mod1(iy, Ly) - 1) * Lx
+
+@testset "BdG operator moves to the device as an assembled matrix" begin
+    h, pos, disp = square_model(4, 4)
+    op = KPM.BdGOperator(h; mu=-0.4, U=2.0, n=fill(0.5, 16),
+                         Delta=fill(0.3 + 0.1im, 16),
+                         hole_convention=:conjugate)
+    op_dev = KPM.maybe_to_device(op)
+    @test !(op_dev isa KPM.BdGOperator)          # assembled + moved
+    x = randn(Xoshiro(5), ComplexF64, 32)
+    y_dev = Array(op_dev * CuArray(x))
+    y_host = zeros(ComplexF64, 32)
+    mul!(y_host, op, x)
+    @test y_dev ≈ y_host atol=1e-10
+
+    rad_g, _ = KPM.spectral_radius(op_dev)
+    rad_c, _ = KPM.spectral_radius(op)
+    @test rad_g ≈ rad_c rtol=1e-6
+end
+
+@testset "bdg_channel_moments: raw GPU moments == CPU (nonuniform, partial batch)" begin
+    rng = Xoshiro(21)
+    N = 45
+    A = sprandn(rng, ComplexF64, N, N, 0.15)
+    h = (A + A') / 2
+    op = KPM.BdGOperator(h; mu=0.17, U=1.3, n=rand(rng, N),
+                         Delta=0.3 .* randn(rng, ComplexF64, N),
+                         hole_convention=:conjugate)
+    # Shuffled partial site set: 31 sites with batch_size=16 exercises the
+    # final-partial-batch buffer reallocation; the bond list mixes onsite
+    # bonds, several targets per source, and both directed orders.
+    sites = Random.shuffle(rng, collect(1:N))[1:31]
+    directed = Tuple{Int, Int}[]
+    for k in 1:8
+        i, j = sites[k], sites[k + 1]
+        push!(directed, (i, i))
+        push!(directed, (i, j))
+        push!(directed, (j, i))
+        push!(directed, (i, sites[k + 2]))
+    end
+    unique!(directed)
+    a = 2 * first(KPM.spectral_radius(op)) / (2 - 0.2)
+    NC = 64
+
+    Hs_g = KPM.ScaledOperator(KPM.maybe_to_device(op), a, 0.0)
+    rho_g, F_g = KPM.bdg_channel_moments(Hs_g, N, sites, directed, NC;
+                                         batch_size=16)
+    Hs_c = KPM.ScaledOperator(op, a, 0.0)
+    rho_c, F_c = KPM.bdg_channel_moments(Hs_c, N, sites, directed, NC;
+                                         batch_size=16)
+    @test rho_g ≈ rho_c atol=1e-9 rtol=0
+    @test F_g ≈ F_c atol=1e-9 rtol=0
+end
+
+@testset "BdG onsite SCF: GPU fixed point == CPU fixed point" begin
+    Lx, Ly = 8, 8
+    N = Lx * Ly
+    h, pos, disp = square_model(Lx, Ly)
+    make_op() = KPM.BdGOperator(h; mu=-0.4, U=2.5, n=fill(0.5, N),
+                                Delta=fill(0.3 + 0.0im, N),
+                                hole_convention=:conjugate)
+    kw = (beta=20.0, NC=256, mix=0.4, tol_delta=1e-8, tol_n=1e-8, maxiter=300)
+
+    op_g = make_op()
+    res_g = KPM.bdg_solve!(op_g; kw...)
+    op_c = make_op()
+    res_c = on_cpu(() -> KPM.bdg_solve!(op_c; kw...))
+
+    @test res_g.converged
+    @test res_c.converged
+    @test op_g.Δ ≈ op_c.Δ rtol=1e-5 atol=1e-7
+    @test op_g.n ≈ op_c.n rtol=1e-5 atol=1e-7
+    println("onsite SCF: GPU $(res_g.iterations) iters, CPU $(res_c.iterations) iters, ",
+            "max|Δ| = $(round(maximum(abs, op_g.Δ), digits=6))")
+end
+
+@testset "BdG pairing-channel SCF: GPU == CPU" begin
+    Lx, Ly = 6, 6
+    N = Lx * Ly
+    h, pos, disp = square_model(Lx, Ly)
+    xbonds = [(square_site(ix, iy, Lx, Ly), square_site(ix + 1, iy, Lx, Ly))
+              for iy in 1:Ly for ix in 1:Lx]
+    channel = KPM.PairingChannel(xbonds, 1.0, 2.0, :even)
+    make_op() = KPM.BdGOperator(
+        h; mu=-0.3, U=0.0, n=fill(0.4, N),
+        D=KPM.pairing_matrix(N, [channel]; amplitude=0.2),
+        hole_convention=:conjugate)
+    kw = (beta=15.0, NC=256, mix=0.4, tol_delta=1e-8, tol_n=1e-8, maxiter=400)
+
+    op_g = make_op()
+    res_g = KPM.bdg_solve!(op_g, [channel]; kw...)
+    op_c = make_op()
+    res_c = on_cpu(() -> KPM.bdg_solve!(op_c, [channel]; kw...))
+
+    @test res_g.converged
+    @test res_c.converged
+    @test nonzeros(op_g.D) ≈ nonzeros(op_c.D) rtol=1e-5 atol=1e-7
+    @test op_g.n ≈ op_c.n rtol=1e-5 atol=1e-7
+end
+
+@testset "superfluid stiffness: GPU == CPU (same probes)" begin
+    Lx, Ly = 8, 8
+    N = Lx * Ly
+    h, pos, disp = square_model(Lx, Ly)
+    op = KPM.BdGOperator(h; mu=-0.5, U=0.0, n=zeros(N),
+                         Delta=fill(0.4 + 0.0im, N),
+                         hole_convention=:conjugate)
+    q = [0.0, 2pi / Ly]
+    psi_in = KPM.random_phase_vectors(Xoshiro(3), 2N, 6)
+    kw = (beta=20.0, eta=0.2, dir=1, disp=disp, NC=128, volume=Float64(N),
+          include_diamagnetic=true)
+
+    res_g = KPM.superfluid_stiffness(op, pos, q; psi_in=copy(psi_in), kw...)
+    res_c = on_cpu(() -> KPM.superfluid_stiffness(op, pos, q; psi_in=copy(psi_in), kw...))
+
+    @test res_g.Pi_SC ≈ res_c.Pi_SC rtol=1e-5
+    @test res_g.Pi_N ≈ res_c.Pi_N rtol=1e-5
+    @test res_g.Dia_SC ≈ res_c.Dia_SC rtol=1e-5
+    @test res_g.Dia_N ≈ res_c.Dia_N rtol=1e-5
+    # Compare the subtracted stiffness directly (not scaled by the large
+    # unsubtracted responses, which would slacken the cancellation check).
+    @test res_g.Ds_over_pi ≈ res_c.Ds_over_pi rtol=1e-4 atol=1e-8
+    @test res_g.Ds_over_pi_complete ≈ res_c.Ds_over_pi_complete rtol=1e-4 atol=1e-8
+    println("stiffness: Ds/π = $(round(res_g.Ds_over_pi_complete, digits=6)) ",
+            "(GPU) vs $(round(res_c.Ds_over_pi_complete, digits=6)) (CPU)")
+end
+
+println("\n== timing: BdG moments, 64x64 square lattice, NC = 256 ==")
+let
+    Lx, Ly = 64, 64
+    N = Lx * Ly
+    h, pos, disp = square_model(Lx, Ly)
+    op = KPM.BdGOperator(h; mu=-0.4, U=2.5, n=fill(0.5, N),
+                         Delta=fill(0.3 + 0.0im, N),
+                         hole_convention=:conjugate)
+    NC = 256
+    a = 2 * first(KPM.spectral_radius(op)) / (2 - 0.2)
+
+    Hs_g = KPM.ScaledOperator(KPM.maybe_to_device(op), a, 0.0)
+    KPM.bdg_site_moments(Hs_g, N, 1:128, NC)                      # warm-up
+    t_gpu = @elapsed KPM.bdg_site_moments(Hs_g, N, 1:N, NC)
+    Hs_c = KPM.ScaledOperator(op, a, 0.0)
+    on_cpu(() -> KPM.bdg_site_moments(Hs_c, N, 1:128, NC))        # warm-up
+    t_cpu = @elapsed on_cpu(() -> KPM.bdg_site_moments(Hs_c, N, 1:N, NC))
+    println("bdg_site_moments: GPU $(round(t_gpu, digits=2)) s | CPU $(round(t_cpu, digits=2)) s ",
+            "| speedup ×$(round(t_cpu / t_gpu, digits=1))")
 end
 
 println("\n== timing: 1D chain, NH = 2^17, NC = 1024, NR = 8 ==")

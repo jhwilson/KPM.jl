@@ -25,6 +25,10 @@ end
 LinearAlgebra.mul!(Y::AbstractVecOrMat, S::ScaledOperator, X::AbstractVecOrMat) =
     mul!(Y, S, X, true, false)
 
+# Workspaces follow the residence of the wrapped operator.
+to_device_of(S::ScaledOperator, x) = to_device_of(S.op, x)
+device_zeros_of(S::ScaledOperator, T::Type, dims...) = device_zeros_of(S.op, T, dims...)
+
 """
     spectral_radius(op; tol=1e-4, maxiter=300, miniter=32, restarts=2,
                     rng=Xoshiro(0), v0=nothing) -> (radius, v)
@@ -37,6 +41,11 @@ primary run. No run exits for convergence before `miniter`, and `restarts`
 additional runs use fresh random vectors. The maximum estimate and its vector
 are returned. This remains a lower estimate; see [`rescale(::BdGOperator)`](@ref)
 for certified bounds and runtime guards.
+
+`op` may be device-resident (e.g. the assembled BdG matrix moved to GPU); the
+iteration then runs on the device. `v0` must always be a host vector, and the
+returned vector lives on the operator's device (`maybe_to_host` it before
+serializing).
 """
 function spectral_radius(op; tol=1e-4, maxiter=300, miniter::Integer=32,
                          restarts::Integer=2, rng=Xoshiro(0), v0=nothing)
@@ -47,7 +56,9 @@ function spectral_radius(op; tol=1e-4, maxiter=300, miniter::Integer=32,
     restarts >= 0 || throw(ArgumentError("spectral_radius: restarts must be nonnegative (got $restarts)"))
 
     function power_run(v_start)
-        v = collect(ComplexF64, v_start)
+        # `to_device_of` keeps the iteration vector on the operator's device;
+        # `v_start` itself is always a host vector (driver and RNG contract).
+        v = to_device_of(op, collect(ComplexF64, v_start))
         length(v) == N || throw(ArgumentError("spectral_radius: v0 has length $(length(v)); expected $N"))
         nv = norm(v)
         iszero(nv) && throw(ArgumentError("spectral_radius: v0 must be nonzero"))
@@ -98,8 +109,12 @@ with `ξ = h - μ I - Diagonal(U n / 2)`.
 Here `U > 0` is attractive, with `H_int = -U Σ n↑n↓`, Hartree shift
 `-(U/2)n`. A matrix-free `D` must support `size` and five-argument `mul!` for
 both `D` and `adjoint(D)`; the `Delta` keyword remains as an onsite
-compatibility shorthand and constructs `Diagonal(Delta)`. This CPU-only
-reduced convention supports two hole-block conventions:
+compatibility shorthand and constructs `Diagonal(Delta)`. The matrix-free
+action itself is host-only; with a CUDA GPU active, the BdG compute paths
+instead run on the assembled sparse matrix ([`bdg_assemble`](@ref)) moved to
+the device, which requires assembled matrix blocks — operators with
+matrix-free blocks stay on the host. This reduced convention supports two
+hole-block conventions:
 
   * `hole_convention=:intervalley` (the default) uses `hole = -ξ`, hence the
     same `h` in both blocks, and presumes `h_{-K}^* = h_K`. For matrix inputs a
@@ -245,6 +260,59 @@ end
 
 LinearAlgebra.mul!(Y::AbstractVecOrMat, B::BdGOperator, X::AbstractVecOrMat) =
     mul!(Y, B, X, true, false)
+
+# An operator is assemblable when every block is an actual matrix.
+_bdg_assemblable(op::BdGOperator) =
+    getfield(op, :h) isa AbstractMatrix &&
+    getfield(op, :h_hole) isa AbstractMatrix &&
+    getfield(op, :D) isa AbstractMatrix
+
+_as_sparse_cplx(x::SparseMatrixCSC{ComplexF64, Int}) = x
+_as_sparse_cplx(x) = SparseMatrixCSC{ComplexF64, Int}(sparse(x))
+
+"""
+    bdg_assemble(op::BdGOperator) -> SparseMatrixCSC{ComplexF64, Int}
+
+Assemble the full `2N x 2N` sparse BdG matrix realized by the matrix-free
+action of `op`:
+
+    H_BdG = [ h - (mu + U n / 2) I    D                            ]
+            [ adjoint(D)              -(h_hole - (mu + U n / 2) I) ]
+
+Requires assembled matrix blocks (`h`, `h_hole`, `D`); matrix-free blocks
+throw. This is the operator the CUDA extension moves to the device: the GPU
+BdG paths run standard sparse `mul!` on the assembled matrix rather than the
+blockwise matrix-free action.
+"""
+function bdg_assemble(op::BdGOperator)
+    _bdg_assemblable(op) ||
+        throw(ArgumentError("bdg_assemble: requires assembled matrix blocks h, h_hole, and D (matrix-free blocks cannot be assembled)"))
+    onsite = spdiagm(0 => ComplexF64.(op.μ .+ (op.U ./ 2) .* op.n))
+    xi = _as_sparse_cplx(op.h) - onsite
+    hole = -(_as_sparse_cplx(op.h_hole) - onsite)
+    D = _as_sparse_cplx(op.D)
+    return [xi D; _as_sparse_cplx(adjoint(D)) hole]
+end
+
+"""
+    _device_operator(op::BdGOperator, caller) -> op or device operator
+
+Move `op` to the active device, but *error* instead of silently mixing
+residences: the two-point KPM routines (`kpm_2d!`, `kpm_1d_current!`)
+allocate their workspaces from the globally active device, so a host
+operator cannot flow through them while a GPU is active. The SCF path does
+not use this guard — its workspaces follow the operator's residence, so the
+silent host fallback there is consistent. Note the device conversion uses
+32-bit sparse indices (CUSPARSE `Cint`), so dimensions and nnz must stay
+below `typemax(Int32)`.
+"""
+function _device_operator(op::BdGOperator, caller::AbstractString)
+    op_dev = maybe_to_device(op)
+    if whichcore() && op_dev === op
+        throw(ArgumentError("$caller: the active GPU device requires a device-assemblable operator (sparse matrix h and matrix D blocks); matrix-free or dense blocks would mix host and device residences here — sparsify/assemble the blocks or deactivate the GPU"))
+    end
+    return op_dev
+end
 
 """
     PairingChannel(bonds, weights, V, parity)
@@ -452,15 +520,8 @@ function gershgorin_bound(op::BdGOperator)
 end
 
 function _check_chebyshev_columns(slot::AbstractMatrix, iteration::Integer)
-    max_norm2 = 0.0
-    @inbounds for c in axes(slot, 2)
-        norm2 = 0.0
-        for i in axes(slot, 1)
-            norm2 += abs2(slot[i, c])
-        end
-        max_norm2 = max(max_norm2, norm2)
-    end
-    max_norm = sqrt(max_norm2)
+    # Columnwise norms as a reduction so the check runs on device arrays too.
+    max_norm = sqrt(maximum(sum(abs2, slot; dims=1)))
     if !(max_norm <= 1.5)
         error("Chebyshev recurrence is unstable at iteration $iteration (maximum column norm $max_norm > 1.5); use rescale(...; bound=:gershgorin) or a larger eps.")
     end
@@ -476,6 +537,11 @@ directed bond `(i, j)`. Each bond is extracted from the recurrence seeded by
 the particle unit vector at `i` as
 `mu_F[m, b] = conj(T_{m-1}(Hs)[j + N, i])`; consequently every bond source
 must occur in `sites`.
+
+Workspaces and the gather-based moment extraction follow the residence of
+`Hs`: pass a host operator for CPU execution or a device-resident assembled
+operator (`ScaledOperator(maybe_to_device(op), a, 0.0)`) to run the recurrence
+on the GPU. The returned moment matrices are always host arrays.
 """
 function bdg_channel_moments(Hs, N::Integer,
                              sites::AbstractVector{<:Integer},
@@ -507,49 +573,72 @@ function bdg_channel_moments(Hs, N::Integer,
     mu_F = zeros(dt_cplx, NC, length(directed_bonds))
     iszero(ns) && return mu_rho, mu_F
 
+    twoN = 2Int(N)
     batch_capacity = min(Int(batch_size), ns)
-    psi = zeros(dt_cplx, 2Int(N), batch_capacity, 2)
+    # All batch workspaces live where the operator lives (host, or device for
+    # an assembled GPU operator); extraction is gather/scatter-based so the
+    # same code path serves both. Plain 2D slot buffers keep every device
+    # operation on unwrapped arrays; they are reallocated only when the batch
+    # width changes (at most once, for a final partial batch).
+    psi_slots = (device_zeros_of(Hs, dt_cplx, twoN, batch_capacity),
+                 device_zeros_of(Hs, dt_cplx, twoN, batch_capacity))
     batch_starts = 1:batch_capacity:ns
     verbose >= 1 && println("NC = $(NC), sites = $(ns), batch_size = $(batch_capacity)")
 
     for first_site in batch_starts
         last_site = min(first_site + batch_capacity - 1, ns)
         B = last_site - first_site + 1
-        psi_active = view(psi, :, 1:B, :)
-        fill!(psi_active, zero(dt_cplx))
-        psi_views = map(i -> view(psi_active, :, :, i), 1:2)
-
-        for (c, cg) in enumerate(first_site:last_site)
-            psi_active[sites[cg], c, 1] = one(dt_cplx)
+        if B != size(psi_slots[1], 2)
+            psi_slots = (device_zeros_of(Hs, dt_cplx, twoN, B),
+                         device_zeros_of(Hs, dt_cplx, twoN, B))
+        else
+            foreach(slot -> fill!(slot, zero(dt_cplx)), psi_slots)
         end
 
-        function extract_moment!(m, slot)
-            for (c, cg) in enumerate(first_site:last_site)
-                i = sites[cg]
-                mu_rho[m, cg] = real(slot[i, c])
-                for (j, bond_index) in extraction[cg]
-                    mu_F[m, bond_index] = conj(slot[j + N, c])
-                end
+        # Linear indices into a (2N, B) slot: seeds double as density gathers.
+        rho_idx_host = [(c - 1) * twoN + Int(sites[cg])
+                        for (c, cg) in enumerate(first_site:last_site)]
+        bond_idx_host = Int[]
+        bond_cols = Int[]
+        for (c, cg) in enumerate(first_site:last_site)
+            for (j, bond_index) in extraction[cg]
+                push!(bond_idx_host, (c - 1) * twoN + j + Int(N))
+                push!(bond_cols, bond_index)
             end
+        end
+        nb = length(bond_idx_host)
+        rho_idx = to_device_of(Hs, rho_idx_host)
+        bond_idx = to_device_of(Hs, bond_idx_host)
+        rho_work = device_zeros_of(Hs, dt_cplx, B, NC)
+        F_work = device_zeros_of(Hs, dt_cplx, nb, NC)
+
+        psi_slots[1][rho_idx] = to_device_of(Hs, fill(one(dt_cplx), B))
+
+        function extract_moment!(m, slot)
+            rho_work[:, m] = slot[rho_idx]
+            nb == 0 || (F_work[:, m] = slot[bond_idx])
             return nothing
         end
 
-        extract_moment!(1, psi_views[1])
-        mul!(psi_views[2], Hs, psi_views[1])
-        extract_moment!(2, psi_views[2])
-        NC == 2 && _check_chebyshev_columns(psi_views[2], 1)
+        extract_moment!(1, psi_slots[1])
+        mul!(psi_slots[2], Hs, psi_slots[1])
+        extract_moment!(2, psi_slots[2])
+        NC == 2 && _check_chebyshev_columns(psi_slots[2], 1)
 
         ip = 2
         ipp = 1
         for m in 3:NC
-            chebyshev_iter_single(Hs, psi_views[ipp], psi_views[ip])
-            extract_moment!(m, psi_views[ipp])
+            chebyshev_iter_single(Hs, psi_slots[ipp], psi_slots[ip])
+            extract_moment!(m, psi_slots[ipp])
             iteration = m - 1
             (iteration % 16 == 0 || m == NC) &&
-                _check_chebyshev_columns(psi_views[ipp], iteration)
+                _check_chebyshev_columns(psi_slots[ipp], iteration)
             ip = 3 - ip
             ipp = 3 - ipp
         end
+
+        mu_rho[:, first_site:last_site] .= transpose(real.(maybe_to_host(rho_work)))
+        nb == 0 || (mu_F[:, bond_cols] .= conj.(transpose(maybe_to_host(F_work))))
     end
 
     return mu_rho, mu_F
@@ -583,7 +672,7 @@ function chebyshev_stability_probe(Hs, NH::Integer, NC::Integer; rng=Xoshiro(1))
         throw(ArgumentError("chebyshev_stability_probe: Hs has size $(size(Hs)); expected ($NH, $NH)"))
     NC > 0 || throw(ArgumentError("chebyshev_stability_probe: NC must be positive (got $NC)"))
 
-    previous = randn(rng, ComplexF64, NH)
+    previous = to_device_of(Hs, randn(rng, ComplexF64, NH))
     previous ./= norm(previous)
     max_norm = 1.0
     NC == 1 && return max_norm
@@ -962,11 +1051,15 @@ function _bdg_scf_driver!(op::BdGOperator;
             if v_power !== nothing
                 v_power .+= 0.1 .* randn(Xoshiro(iter), ComplexF64, length(v_power))
             end
-            rad, v_power_new = spectral_radius(op; v0=v_power)
+            # With a GPU active, the fields updated last iteration are baked
+            # into a fresh assembled device operator; power iteration and the
+            # moment recurrence both run on it. On CPU this is `op` itself.
+            op_run = maybe_to_device(op)
+            rad, v_power_new = spectral_radius(op_run; v0=v_power)
             rad > 0 || throw(ArgumentError("bdg_solve!: BdG operator has zero spectral radius"))
-            v_power = v_power_new
+            v_power = maybe_to_host(v_power_new)
             a = 2rad / (2 - rescale_eps)
-            Hs = ScaledOperator(op, a, 0.0)
+            Hs = ScaledOperator(op_run, a, 0.0)
             update = compute_update(Hs, a)
 
             res_d_abs, res_d_rel, res_n_abs, res_n_rel = residuals(update)
@@ -1098,6 +1191,13 @@ the full spin-singlet site density used by the Hartree term. On restart,
 solver-parameter differences are warned about but allowed. Restart cannot be
 combined with `target_filling` because the outer bisection state is not
 checkpointed.
+
+With a CUDA GPU active and a sparse `h` with matrix `D` blocks, each
+iteration bakes the current fields into a fresh assembled device operator
+([`bdg_assemble`](@ref)) and runs the power iteration and moment recurrence
+on the GPU; fields, mixing, and checkpoints stay on the host. Operators that
+cannot be assembled to the device (matrix-free or dense blocks) run entirely
+on the host.
 """
 function bdg_solve!(op::BdGOperator; beta::Real, NC::Integer=512,
                     g_rho::Real=2.0, mix::Real=0.1,

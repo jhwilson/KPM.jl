@@ -25,7 +25,7 @@ end
 # to `expect_eltype` so mul! against the complex Chebyshev vectors is supported.
 KPM.to_device(::CUDADevice, x::SparseMatrixCSC, expect_eltype) = CuSparseMatrixCSR{expect_eltype}(x)
 KPM.to_device(::CUDADevice, x::Array, expect_eltype) = CuArray{expect_eltype}(x)
-KPM.to_device(::CUDADevice, x::AbstractCuSparseMatrix, expect_eltype) = x
+KPM.to_device(::CUDADevice, x::Union{AbstractCuSparseMatrix, CuSparseMatrixCSR, CuSparseMatrixCSC}, expect_eltype) = x
 KPM.to_device(::CUDADevice, x::CuArray, expect_eltype) = x
 
 KPM.maybe_to_host(x::CuArray) = Array(x)
@@ -34,6 +34,33 @@ KPM.maybe_to_host(x::CuSparseMatrixCSC) = SparseMatrixCSC(x)
 
 KPM.device_zeros(::CUDADevice, args...) = CUDA.zeros(args...)
 KPM.device_rand(::CUDADevice, args...) = CUDA.rand(args...)
+
+# --- BdG operators -----------------------------------------------------------
+
+# The GPU path for BdG runs on the assembled sparse matrix: blockwise
+# matrix-free mul! would need strided CUSPARSE views, so instead the operator
+# is materialized (cheap, O(nnz)) and moved as one CSR matrix. Matrix-free
+# blocks cannot be assembled, and a dense h would blow up into a near-full
+# sparse matrix rebuilt every SCF iteration — both stay on the host, and
+# every workspace follows them there via to_device_of/device_zeros_of.
+function KPM.to_device(dev::CUDADevice, op::KPM.BdGOperator, expect_eltype)
+    (KPM._bdg_assemblable(op) &&
+     getfield(op, :h) isa SparseArrays.AbstractSparseMatrix) || return op
+    return KPM.to_device(dev, KPM.bdg_assemble(op), expect_eltype)
+end
+
+KPM.to_device(dev::CUDADevice, S::KPM.ScaledOperator, expect_eltype) =
+    KPM.ScaledOperator(KPM.to_device(dev, S.op, expect_eltype), S.a, S.b)
+
+# Residence-following workspace helpers keyed on device-resident references.
+# CUDA.jl >= 5.11 rebases the CUSPARSE matrix types onto GPUArrays abstract
+# sparse types, so CuSparseMatrixCSR is no longer <: AbstractCuSparseMatrix;
+# list the concrete formats alongside the legacy abstract type.
+const _CuOpRef = Union{AbstractCuSparseMatrix, CuSparseMatrixCSR,
+                       CuSparseMatrixCSC, CuArray}
+KPM.to_device_of(::_CuOpRef, x::Array) = CuArray(x)
+KPM.to_device_of(::_CuOpRef, x::CuArray) = x
+KPM.device_zeros_of(::_CuOpRef, T::Type, dims...) = CUDA.zeros(T, dims...)
 
 # --- Chebyshev three-term recurrence ---------------------------------------
 

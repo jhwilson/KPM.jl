@@ -16,7 +16,9 @@ for kernel in [
                # add here when any new kernel is implemented
               ]
 
-    mu_1d_tilde = KPM.muND_apply_kernel_and_h(mu_1d, NC, kernel; dims=[1])
+    # Kernel-dressed moments live on the active device by contract; bring
+    # them to the host before the scalar-indexing assertions below.
+    mu_1d_tilde = KPM.maybe_to_host(KPM.muND_apply_kernel_and_h(mu_1d, NC, kernel; dims=[1]))
     @test all(imag(mu_1d_tilde) .≈ 0) # stays real
     mu_1d_tilde = real(mu_1d_tilde)
     @test mu_1d_tilde[1] == 1 < mu_1d_tilde[2] # first term should be 1, and second term (after applying hn) should be larger than first 
@@ -24,7 +26,7 @@ for kernel in [
     @test all(mu_1d_tilde[2:end-1].>mu_1d_tilde[3:end]) # kernel should be damping by NC.
 
 
-    mu_3d_tilde = KPM.muND_apply_kernel_and_h(mu_3d, NC, KPM.JacksonKernel; dims=[1,2,3])
+    mu_3d_tilde = KPM.maybe_to_host(KPM.muND_apply_kernel_and_h(mu_3d, NC, KPM.JacksonKernel; dims=[1,2,3]))
     @test all(imag(mu_3d_tilde) .≈ 0) # stays real
     mu_3d_tilde = real(mu_3d_tilde)
     @test all(mu_3d_tilde[1,:,:] .== mu_3d_tilde[:,1,:] .== mu_3d_tilde[:,:,1]) # should be symmetric
