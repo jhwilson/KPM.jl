@@ -15,7 +15,23 @@ export haldane_model, haldane_bloch, chern_number_fhs,
        ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0,
        ring_model, flux_ring_model, bdg_matrix, bdg_matrix_singlet,
        ed_two_energy_response, ed_diamagnetic, ed_bdg_free_energy,
-       cubic_model, ed_transport_distribution, ed_transport_integrals
+       cubic_model, ed_transport_distribution, ed_transport_integrals,
+       ed_greens
+
+"""
+    ed_greens(H, u, v, E; eta, branch=:retarded) -> ComplexF64
+
+Dense Lehmann-sum resolvent reference,
+`G^{R/A}_uv(E) = Σ_m ⟨u|m⟩⟨m|v⟩ / (E - ε_m ± iη)`.
+`E` may be a number or an array (broadcast over energies).
+"""
+function ed_greens(H, u, v, E; eta::Real, branch::Symbol=:retarded)
+    s = branch === :retarded ? 1 : -1
+    F = eigen(Hermitian(Matrix(H)))
+    w = conj.(F.vectors' * u) .* (F.vectors' * v)
+    G(e) = sum(w ./ (e .- F.values .+ im * s * eta))
+    return E isa Number ? ComplexF64(G(E)) : ComplexF64.(G.(E))
+end
 
 """
     haldane_model(Lx, Ly; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
