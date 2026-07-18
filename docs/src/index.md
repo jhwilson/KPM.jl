@@ -535,6 +535,52 @@ scatter!(ωs*t*a, σyyreal, label="real",markerstrokewidth=0.0)
 scatter!(ωs*t*a, σyyimag, label="imag",markerstrokewidth=0.0)
 ```
 
+## Unitary time evolution
+
+For a time-independent Hamiltonian rescaled as ``H = a\,H_{\mathrm{norm}} + b\,I``,
+[`evolve`](@ref) propagates states by the Chebyshev/Bessel expansion
+(Tal-Ezer & Kosloff),
+
+```math
+e^{-iHt}|\psi_0\rangle = e^{-ibt}\left[J_0(at)\,T_0(H_{\mathrm{norm}})
+ + 2\sum_{n\ge 1}(-i)^n J_n(at)\,T_n(H_{\mathrm{norm}})\right]|\psi_0\rangle .
+```
+
+```julia
+using KPM
+
+h  = KPM.rescale(H; center=true)
+ψt = KPM.evolve(h, ψ0, 2.5)                  # one state, one time
+Ψt = KPM.evolve(h, Ψ0, [0.5, 1.0, -1.0])     # NH×NR block × time grid
+```
+
+Key properties, pinned by the test suite against dense `exp(-iHt)`:
+
+- **No kernel damping.** The converged series is unitary; Jackson/Lorentz
+  kernels are never applied on this path (they would lose norm). Norm
+  conservation, reversibility (`t < 0` is valid), and the group property hold
+  to the truncation tolerance.
+- **Adaptive order.** By default `NC` is chosen from the superexponential
+  Bessel tail ``|J_n(at)|`` via [`evolution_order`](@ref) (tolerance `tol`,
+  default `1e-12`); a caller-fixed `NC` that truncates too early triggers an
+  "evolution series tail" warning.
+- **Multi-time memory trade.** A vector of times shares one Chebyshev
+  recurrence with one accumulator per time (extra memory `NH × NR` per time);
+  loop over scalar calls instead when memory is the binding constraint.
+- **Stability guard.** Propagation is rejected (an error, not silent decay)
+  if the recurrence detects a rescaled spectrum outside the Chebyshev domain.
+
+The evolution front end is built on the internal coefficient-accumulating
+matrix-function action ``f(H)|V\rangle = \sum_n c_n T_n(H_{\mathrm{norm}})|V\rangle``
+(`KPM.chebyshev_action!`), shared with forthcoming projector and filter
+applications; public APIs expose the physical operation, not the accumulator.
+
+```@docs; canonical=false
+evolve
+evolve!
+evolution_order
+```
+
 # Moment calculation
 
 The first step in KPM is calculating moments using Hamiltonians (and current operators for conductivity, etc.).
@@ -604,6 +650,9 @@ Below is a concise list of the main public APIs provided by the package.
 - DOS / LDOS:
   - `dos`, `dos0`
   - `ldos_mu`
+
+- Unitary evolution:
+  - `evolve` (typed; adaptive `NC` via `evolution_order`)
 
 - Conductivity (DC / optical):
   - `kubo_bastin_cond` (absolute units, e²/h; ED-validated)

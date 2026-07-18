@@ -86,6 +86,10 @@ end
     include("greens_test.jl")
 end
 
+@testset "unitary evolution (applications/evolution.jl)" begin
+    include("evolution_test.jl")
+end
+
 @testset "optional CUDA extension migration" begin
     include("optional_cuda_test.jl")
 end

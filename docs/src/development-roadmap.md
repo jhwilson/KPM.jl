@@ -18,7 +18,7 @@ BdG self-consistency machinery.
 
 | Rank (easiest first) | Feature | Status | Difficulty | What the package can reuse | Main new work |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Unitary evolution | open | Low | Rescaling, two-slot recurrence, block-vector and device paths | Complex Bessel coefficients, adaptive truncation, time-grid API |
+| 1 | Unitary evolution | **delivered** | Low | Rescaling, two-slot recurrence, block-vector and device paths | Complex Bessel coefficients, adaptive truncation, time-grid API |
 | 2 | Spectral function, LDOS, and full real-space Green function | **delivered** | Low--medium | `ldos_mu`, `dos`, kernels, typed moment metadata | Complex off-diagonal moments and a causal reconstruction returning both real and imaginary parts |
 | 3 | Local Chern markers | open | Medium | Matrix-function recurrence, stochastic probes, existing Haldane/quantized-Hall tests | Fermi-projector action, explicit geometry/region normalization, boundary-safe marker evaluation |
 | 4 | Eigenstate filtering (filter-and-shake) | open | High | DOS estimates, rescaling, block recurrences, `Arpack` for comparisons | Band-pass filters, rank-revealing orthogonalization, Rayleigh--Ritz/locking, completeness diagnostics |
@@ -26,16 +26,24 @@ BdG self-consistency machinery.
 
 The recommended delivery order is **spectral/Green-function foundation →
 unitary evolution → Chern markers → eigenstate filtering → Hartree--Fock**.
-The first item — now delivered, tested against exact diagonalization on CPU
-and validated with the CUDA device active — provides the matrix-element
-machinery used by the later topology and mean-field work. **The next step is
-the shared matrix-function action below, delivered together with
-time-independent unitary evolution as its small, contained validation**: the
-action (not evolution itself) is the load-bearing piece, reused by the Fermi
-projector of the Chern-marker milestone, the window filters of the
-eigensolver, and the Fermi-operator density updates of Hartree--Fock.
+The first two items are now delivered, tested against exact diagonalization
+on CPU: the spectral/Green milestone (also validated with the CUDA device
+active) provides the matrix-element machinery, and the shared
+matrix-function action below (`KPM.chebyshev_action!`) has been delivered
+together with time-independent unitary evolution as its small, contained
+validation. The action (not evolution itself) is the load-bearing piece,
+reused by the Fermi projector of the Chern-marker milestone, the window
+filters of the eigensolver, and the Fermi-operator density updates of
+Hartree--Fock. **The next step is the Fermi projector and local Chern
+marker, consuming the delivered action.**
 
 ## Shared prerequisite: a general matrix-function action
+
+**Delivered** as the internal primitive `KPM.chebyshev_action!` (with an
+allocating `chebyshev_action` form): coefficient-verbatim accumulation over
+the two-slot recurrence for one probe block and `K` coefficient columns,
+residence-following workspaces, and a relative-growth stability guard.
+Unitary evolution below is its first consumer and validation.
 
 Most of this roadmap needs the same operation,
 
@@ -322,6 +330,21 @@ coefficients](https://doi.org/10.1098/rsos.191809).
 
 ## 4. Unitary evolution with Chebyshev methods
 
+### Current status
+
+**Implemented** (delivered together with the shared matrix-function action).
+`KPM.evolve` propagates one state or a block through the Bessel/Chebyshev
+series with the center-shift phase folded into the coefficients
+(`evolution_coefficients`), adaptive order from the superexponential Bessel
+tail (`evolution_order`, with a tail warning for caller-fixed `NC`), a
+shared-recurrence multi-time path (one accumulator per requested time), and
+rejection via the relative-growth recurrence guard. No kernel is applied
+anywhere on the path. Tested against dense `exp(-iHt)` at `1e-10`
+(real-symmetric shifted ring with a live `e^{-ibt}` phase, complex flux
+ring), plus norm conservation, reversibility, the group property, `t = 0`,
+block states, and `|at| ≈ 200` with adaptive order. `SpecialFunctions` is
+now a direct dependency for stable `J_n`.
+
 ### Target and scope
 
 For a time-independent Hermitian Hamiltonian already rescaled as
@@ -442,21 +465,19 @@ tests before a higher-level solver depends on it.
 
 1. **Matrix elements and matrix-function action:** complex independent
    bra/ket moments, batched coefficient accumulation, typed provenance, and
-   CPU/GPU tests. *Moments and typed provenance are delivered and
-   GPU-validated (see the spectral-function milestone status above); the
-   coefficient-accumulating matrix-function action `f(H)|V⟩` remains open
-   and is the current critical path — three of the four remaining milestones
-   consume it.*
+   CPU/GPU tests. *Delivered: moments and typed provenance (GPU-validated,
+   see the spectral-function milestone status above) and the
+   coefficient-accumulating action `KPM.chebyshev_action!`, consumed by the
+   three remaining milestones.*
 2. **Spectral and propagation APIs:** complete LDOS/full complex Green function
    (Lorentz and direct-CPGF choices) — *delivered and GPU-validated* —
-   followed by time-independent unitary evolution. **← next: implement the
-   matrix-function action and validate it with unitary evolution**, whose
-   exact accuracy targets (norm conservation, reversibility, the group
-   property, dense `exp(-iHt)` comparisons) exercise the accumulator far more
+   followed by time-independent unitary evolution — *delivered*: its exact
+   accuracy targets (norm conservation, reversibility, the group property,
+   dense `exp(-iHt)` comparisons) exercise the accumulator far more
    stringently than a smoothed projector would.
 3. **Fermi projector and Chern marker:** deterministic local maps plus stochastic
    regional averages, pinned to the existing Haldane sign convention. Consumes
-   the matrix-function action (sharp/smoothed Fermi projector).
+   the matrix-function action (sharp/smoothed Fermi projector). **← next.**
 4. **Filtered interior eigensolver:** ChebFD baseline, then a documented
    filter-and-shake refresh strategy. Consumes the matrix-function action
    (window filters) plus new subspace linear algebra.

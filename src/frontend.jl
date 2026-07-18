@@ -348,6 +348,56 @@ as the sum-rule reference for a reconstructed spectral function.
 spectral_weights(m::GreenMoments) = m.mu[1, :]
 
 """
+    evolve(h::RescaledHamiltonian, psi0, t::Real; NC=0, tol=1e-12, check_every=16, verbose=0)
+    evolve(h::RescaledHamiltonian, psi0, ts::AbstractVector{<:Real}; ...)
+
+Unitary time evolution ``e^{-iHt}\\,ψ_0`` for the time-independent
+``H = a\\,H_{\\rm norm} + b\\,I`` by Chebyshev propagation,
+
+```math
+e^{-iHt}|ψ_0\\rangle = e^{-ibt}\\Big[J_0(at)\\,T_0(H_{\\rm norm})
+    + 2\\sum_{n\\ge 1}(-i)^n J_n(at)\\,T_n(H_{\\rm norm})\\Big]|ψ_0\\rangle .
+```
+
+No Jackson or Lorentz kernel is applied — the converged series is unitary,
+and the tests pin norm conservation, reversibility (`t < 0` is valid), and
+the group property. By default the order is chosen adaptively from the
+superexponential Bessel tail ([`evolution_order`](@ref), tolerance `tol`);
+a caller-fixed `NC` that truncates too early triggers a tail warning.
+
+`psi0` is a host vector or `NH × NR` block; times may be a scalar or a
+vector. Returns a plain host array of states, dropping singleton axes:
+`NH`, `NH × NR`, `NH × NT`, or `NH × NR × NT`. All requested times share one
+Chebyshev recurrence with `NT` accumulators (`NT` extra state blocks of
+memory; loop over scalar calls instead if that is the binding constraint).
+The recurrence runs on the active device and is protected by the relative
+stability guard of [`chebyshev_action!`](@ref), which rejects propagation
+when the rescaled spectrum escapes the Chebyshev domain.
+"""
+function evolve(h::RescaledHamiltonian, psi0::AbstractVecOrMat,
+                ts::AbstractVector{<:Real};
+                NC::Integer=0, tol::Real=1e-12, check_every::Integer=16,
+                verbose::Integer=0)
+    NH = size(h.H, 1)
+    size(psi0, 1) == NH ||
+        throw(ArgumentError("psi0 has $(size(psi0, 1)) rows; expected NH = $NH"))
+    isempty(ts) && throw(ArgumentError("ts must not be empty"))
+    psi_mat = psi0 isa AbstractVector ? reshape(psi0, :, 1) : psi0
+    Hd = maybe_to_device(h.H, dt_cplx)
+    out = device_zeros_of(Hd, dt_cplx, NH, size(psi_mat, 2), length(ts))
+    evolve!(out, Hd, h.a, h.b, psi_mat, ts;
+            NC=NC, tol=tol, check_every=check_every, verbose=verbose)
+    out_host = maybe_to_host(out)
+    return psi0 isa AbstractVector ? dropdims(out_host; dims=2) : out_host
+end
+
+function evolve(h::RescaledHamiltonian, psi0::AbstractVecOrMat, t::Real;
+                kwargs...)
+    out = evolve(h, psi0, [t]; kwargs...)
+    return dropdims(out; dims=ndims(out))
+end
+
+"""
     dos(m::DosMoments; kwargs...)
 
 Reconstruct the DOS from typed moments at physical energies. The center shift

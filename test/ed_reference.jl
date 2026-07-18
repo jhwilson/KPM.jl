@@ -16,7 +16,7 @@ export haldane_model, haldane_bloch, chern_number_fhs,
        ring_model, flux_ring_model, bdg_matrix, bdg_matrix_singlet,
        ed_two_energy_response, ed_diamagnetic, ed_bdg_free_energy,
        cubic_model, ed_transport_distribution, ed_transport_integrals,
-       ed_greens
+       ed_greens, ed_evolve
 
 """
     ed_greens(H, u, v, E; eta, branch=:retarded) -> ComplexF64
@@ -31,6 +31,17 @@ function ed_greens(H, u, v, E; eta::Real, branch::Symbol=:retarded)
     w = conj.(F.vectors' * u) .* (F.vectors' * v)
     G(e) = sum(w ./ (e .- F.values .+ im * s * eta))
     return E isa Number ? ComplexF64(G(E)) : ComplexF64.(G.(E))
+end
+
+"""
+    ed_evolve(H, psi, t) -> Vector/Matrix
+
+Dense eigendecomposition propagation reference,
+`e^{-iHt} ψ = U e^{-i λ t} U' ψ` (broadcast over the columns of `psi`).
+"""
+function ed_evolve(H, psi, t)
+    F = eigen(Hermitian(Matrix(H)))
+    return F.vectors * (cis.(-t .* F.values) .* (F.vectors' * psi))
 end
 
 """
