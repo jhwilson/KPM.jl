@@ -78,6 +78,10 @@ end
     include("frontend_test.jl")
 end
 
+@testset "Green functions (applications/greens.jl)" begin
+    include("greens_test.jl")
+end
+
 @testset "optional CUDA extension migration" begin
     include("optional_cuda_test.jl")
 end

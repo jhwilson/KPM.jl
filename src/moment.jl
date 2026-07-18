@@ -18,9 +18,17 @@ Calculate the moments μ defined in KPM. Output is saved in `mu`.
 
 - `NH`          -- Integer. the size of hamiltonian.
 
-- `mu_all`          -- Array. Output for each random vector. Size (NR, NC). 
+- `mu_all`          -- Array. Output for each random vector. Size (NR, NC).
 
 - `psi_in`      -- Array (optional). Input array on the right side. A ket.
+
+- `psi_in_l`, `psi_in_r` -- Arrays (optional, together). Independent bra/ket
+  probe blocks, size (NH, NR) each; column i of `psi_in_l` pairs with column i
+  of `psi_in_r` and yields complex matrix-element moments
+  μ_n[i] = ⟨ψl_i|T_n(H)|ψr_i⟩ (`dot` conjugates the bra). This path cannot use
+  moment doubling: it runs the full NC-step recurrence (2x the matvecs of the
+  equal-vector path) and accepts odd NC. The equal-vector method requires even
+  NC.
 
 """
 function kpm_1d! end
@@ -45,6 +53,9 @@ The simple version of 1D KPM that returns the moment.
 - `verbose`     -- Integer. Default is 0. Enables progress bar if set `verbose=1`.
 
 - `avg_output`  -- Boolean. Default is true. Whether to output averaged μ (hence size NC) or separate μs (size NR x NC).
+  The averaged output is real for the equal-vector path (`psi_in` or random
+  probes) and complex when `psi_in_l`/`psi_in_r` are given, since
+  ⟨ψl|T_n|ψr⟩ between independent bra/ket has no reality constraint.
 
 """
 function kpm_1d end
@@ -313,9 +324,11 @@ function kpm_1d(
     
   
     mu_all = on_host_zeros(dt_cplx, NR, NC) # this mu is never large enough to be worth putting on GPU
+    lr_mode = false
     if isnothing(psi_in)
         if (!isnothing(psi_in_l) | !isnothing(psi_in_r))
             @assert (!isnothing(psi_in_l) & !isnothing(psi_in_r)) "must set both `psi_in_l` and `psi_in_r` or neither."
+            lr_mode = true
             if force_norm
                 normalize_by_col(psi_in_l, NR)
                 normalize_by_col(psi_in_r, NR)
@@ -351,11 +364,10 @@ function kpm_1d(
     end
 
     if avg_output
-        return maybe_to_host(real.(
-                                   dropdims(sum(mu_all, dims=1),
-                                            dims=1)./NR
-                                  )
-                            )
+        avg = dropdims(sum(mu_all, dims=1), dims=1) ./ NR
+        # ⟨ψl|T_n|ψr⟩ between independent bra/ket is complex; only the
+        # equal-vector trace estimate is real.
+        return maybe_to_host(lr_mode ? avg : real.(avg))
     end
 
     return mu_all
@@ -441,12 +453,54 @@ function kpm_1d!(
 end
 function kpm_1d!(
                  H, NC::Int64, NR::Int64, NH::Int64,
-                 mu,
+                 mu_all,
                  psi_in_l, psi_in_r;
-                 kwargs...
+                 verbose=0,
+                 # working arrays
+                 α_all = maybe_on_device_zeros(dt_cplx, NH, NR, 2),
+                 ψl = maybe_on_device_zeros(dt_cplx, NH, NR),
                 )
-    # with different left and right.
-    throw("unimplemented.")
+    @assert size(mu_all) == (NR, NC)
+    @assert NC >= 2 "Invalid NC: NC should be at least 2."
+    H = maybe_to_device(H, eltype(α_all))
+
+    @assert (size(psi_in_l) == (NH, NR)) "Invalid `psi_in_l` with size $(size(psi_in_l)). Expecting ($(NH), $(NR))"
+    @assert (size(psi_in_r) == (NH, NR)) "Invalid `psi_in_r` with size $(size(psi_in_r)). Expecting ($(NH), $(NR))"
+
+    # Moment doubling folds T_m T_n products of one and the same ket; with an
+    # independent bra it does not apply, so this path runs the full NC-step
+    # recurrence (2x the matvecs of the equal-vector path) and the moments
+    # μ_n[i] = ⟨ψl_i|T_n(H)|ψr_i⟩ stay complex. NC need not be even here.
+    ψl .= maybe_to_device(psi_in_l)
+    α_all[:, :, 1] = maybe_to_device(psi_in_r)
+    mul!((@view α_all[:, :, 2]), H, (@view α_all[:, :, 1]))
+
+    ψl_views = map(i -> view(ψl, :, i), 1:NR)
+    α_views = [view(α_all, :, :, 1), view(α_all, :, :, 2)]
+    split_views = x -> (map(i -> view(x, :, i), 1:NR))
+    α_view_views = map(split_views, α_views)
+    mu_all_views = map(i -> view(mu_all, :, i), 1:NC)
+
+    broadcast_dot_1d_1d!(mu_all_views[1], ψl_views, α_view_views[1])
+    broadcast_dot_1d_1d!(mu_all_views[2], ψl_views, α_view_views[2])
+
+    ip = 2
+    ipp = 1
+
+    n_enum = 3:NC
+    if verbose >= 1
+        println("NC = $(NC)")
+        n_enum = ProgressBar(n_enum)
+    end
+
+    for n = n_enum
+        chebyshev_iter_single(H, α_views[ipp], α_views[ip])
+        broadcast_dot_1d_1d!(mu_all_views[n], ψl_views, α_view_views[ipp])
+        ip = 3 - ip
+        ipp = 3 - ipp
+    end
+
+    return nothing
 end
 
 kpm_1d_current(H, Jα, NC::Int64, NR::Int64; kwargs...) = kpm_1d_current(H, Jα, NC, NR, size(H)[1]; kwargs...)
