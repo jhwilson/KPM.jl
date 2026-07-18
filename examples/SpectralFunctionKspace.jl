@@ -11,12 +11,15 @@ resolvent at E + i*eta), so Re G is the Kramers-Kronig partner of A(k, E) by
 construction — analytically in Chebyshev space, with no numerical Hilbert
 transform.
 
-From the same G(k, E) the script extracts the quasiparticle dispersion E(k)
-(peak of A), the residue Z(k) = [d Re G^{-1}/dE at E(k)]^{-1}, and the
-linewidth gamma(k) = Z(k)/|Im G(k, E(k))|, and compares E(k) with the clean
-dispersion -2t*cos(k). For weak disorder gamma(k) is set by the Born rate
-~ (W^2/12) * rho(E_k) per unit hopping, giving sharp peaks near the band
-center that broaden toward the band edges; eta only regularizes the tail.
+From the same G(k, E) the script extracts the quasiparticle parameters in
+the standard pole form G ~ Z/(E - E(k) + i*gamma): E(k) is the root of
+Re G^{-1} nearest the peak of A, Z(k) = [d Re G^{-1}/dE]^{-1} there, and
+gamma(k) = Z(k) * Im G^{-1}(k, E(k)). E(k) is compared with the clean
+dispersion -2t*cos(k). For weak disorder the intrinsic width is the Born
+rate ~ (W^2/12) * rho(E_k) per unit hopping — sharp near the band center,
+broader toward the band edges — and the imposed eta adds to it
+(Lorentzian-on-Lorentzian), so eta is an explicit floor on the extracted
+gamma, marked in the linewidth panel.
 
 Plots.jl is an example-only dependency. If missing, activate the intended
 environment and run `import Pkg; Pkg.add("Plots")`.
@@ -107,18 +110,34 @@ function main()
     G = KPM.greens(m_avg, E; eta = ETA)
     A = -imag.(G) ./ pi
 
-    # quasiparticle extraction from the pole form G ~ Z/(E - E_k + i*gamma)
+    # quasiparticle extraction from the pole form G ~ Z/(E - E_k + i*gamma):
+    # at a root of Re G^{-1}, Z = [d Re G^{-1}/dE]^{-1} and gamma = Z*Im G^{-1}
+    # (evaluating gamma = Z/|Im G| away from that root would overcount by
+    # 1 + (Re G/Im G)^2). The root is bracketed by the sign change of
+    # Re G^{-1} nearest the peak of A and located by linear interpolation.
     dE = E[2] - E[1]
     Ek = similar(ks)
     Zk = similar(ks)
     γk = similar(ks)
     for p in eachindex(ks)
-        ipk = argmax(view(A, :, p))
-        Ek[p] = E[ipk]
         invG = 1 ./ G[:, p]
-        dReinvG = (real(invG[ipk + 1]) - real(invG[ipk - 1])) / (2 * dE)
-        Zk[p] = 1 / dReinvG
-        γk[p] = Zk[p] / abs(imag(G[ipk, p]))
+        ipk = argmax(view(A, :, p))
+        i0 = 0
+        for d in 0:(length(E) - 1)
+            for i in (ipk - d, ipk + d)
+                if 1 <= i < length(E) && real(invG[i]) * real(invG[i + 1]) <= 0
+                    i0 = i
+                    break
+                end
+            end
+            i0 != 0 && break
+        end
+        i0 == 0 && error("no root of Re G^{-1} found for k index $p")
+        f0, f1 = real(invG[i0]), real(invG[i0 + 1])
+        w = f0 / (f0 - f1)
+        Ek[p] = E[i0] + w * dE
+        Zk[p] = dE / (f1 - f0)
+        γk[p] = Zk[p] * ((1 - w) * imag(invG[i0]) + w * imag(invG[i0 + 1]))
     end
 
     println("Disorder-averaged quasiparticles (N=$N, W=$W, NC=$NC, eta=$ETA, $N_DIS samples):")
@@ -159,7 +178,7 @@ function main()
                     lw = 1.0, grid = false, legend = false,
                     xlabel = "k / π", ylabel = "E / t", title = "dispersion")
     Plots.scatter!(p3, ks ./ pi, Ek; color = C_GREEN, markerstrokewidth = 0, ms = 4)
-    Plots.annotate!(p3, [(0.32, 1.15, Plots.text("E(k) from peak of A", 9, :left, Plots.RGB(0 / 255, 158 / 255, 115 / 255))),
+    Plots.annotate!(p3, [(0.28, 1.15, Plots.text("E(k) from Re G⁻¹ = 0", 9, :left, Plots.RGB(0 / 255, 158 / 255, 115 / 255))),
                          (0.55, -1.6, Plots.text("-2t cos k", 9, :left, :gray))])
 
     p4 = Plots.scatter(ks ./ pi, γk; color = C_ORANGE, markerstrokewidth = 0, ms = 4,

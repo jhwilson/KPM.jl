@@ -78,6 +78,9 @@ struct GreenMoments{M<:AbstractMatrix{<:Complex}} <: AbstractMoments
     NH::Int
     function GreenMoments(mu::M, a, b, NH) where {M<:AbstractMatrix{<:Complex}}
         NH > 0 || throw(ArgumentError("GreenMoments: NH must be positive (got NH=$NH)"))
+        size(mu, 1) >= 1 || throw(ArgumentError("GreenMoments: mu must contain at least one moment (got size $(size(mu)))"))
+        (isfinite(a) && a > 0) || throw(ArgumentError("GreenMoments: a must be finite and positive (got a=$a)"))
+        isfinite(b) || throw(ArgumentError("GreenMoments: b must be finite (got b=$b)"))
         new{M}(mu, a, b, NH)
     end
 end
@@ -234,6 +237,7 @@ Vectors are accepted as single-pair blocks. Returns [`GreenMoments`](@ref).
 """
 function green_moments(h::RescaledHamiltonian, psi_l::AbstractVecOrMat, psi_r::AbstractVecOrMat;
                        NC::Integer=1024, verbose=0)
+    NC >= 2 || throw(ArgumentError("NC must be at least 2 (got $NC)"))
     NH = size(h.H, 1)
     ψl = psi_l isa AbstractVector ? reshape(psi_l, :, 1) : psi_l
     ψr = psi_r isa AbstractVector ? reshape(psi_r, :, 1) : psi_r
@@ -255,6 +259,7 @@ Hermitian operator. Returns [`GreenMoments`](@ref).
 """
 function green_moments(h::RescaledHamiltonian, psi::AbstractVecOrMat;
                        NC::Integer=1024, verbose=0)
+    NC >= 2 || throw(ArgumentError("NC must be at least 2 (got $NC)"))
     iseven(NC) || throw(ArgumentError("kpm_1d computes NC moments from NC/2 recurrence steps; NC must be even"))
     NH = size(h.H, 1)
     ψ = psi isa AbstractVector ? reshape(psi, :, 1) : psi
@@ -276,6 +281,7 @@ the caller's Hilbert-space basis; no lattice structure is inferred.
 """
 function ldos_moments(h::RescaledHamiltonian; sites::AbstractVector{<:Integer},
                       NC::Integer=1024, batch_size::Integer=64, verbose=0)
+    NC >= 2 || throw(ArgumentError("NC must be at least 2 (got $NC)"))
     iseven(NC) || throw(ArgumentError("kpm_1d computes NC moments from NC/2 recurrence steps; NC must be even"))
     batch_size > 0 || throw(ArgumentError("batch_size must be positive (got $batch_size)"))
     NH = size(h.H, 1)

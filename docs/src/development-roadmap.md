@@ -45,7 +45,9 @@ should:
 - accumulate a vector result with real or complex coefficients without storing
   every Chebyshev vector;
 - optionally extract complex matrix elements for independent left and right
-  probes (the different-left/right `kpm_1d!` methods currently throw);
+  probes (the different-left/right `kpm_1d!` methods are now implemented for
+  the 1D path — see the spectral-function milestone status — but the
+  coefficient-accumulating action itself is still open);
 - batch deterministic basis probes and arbitrary user-supplied probes;
 - follow the operator's device residence and retain recurrence stability checks;
 - carry `(a, b, NC)` provenance in typed value objects.
@@ -226,8 +228,10 @@ remains as a thin, metadata-free alternative.
    of ``\delta(E-H)``, complex for independent bra/ket pairs — rather than as
    a separate moment engine. Only the diagonal reduces to
    ``A_{uu}=-\mathrm{Im}\,G^R_{uu}/\pi \ge 0``, which is the LDOS.
-3. Offer diagonal `ldos`, general `green_function`, and
-   `projected_spectral_function` APIs. Momentum and orbital content remain user
+3. Offer diagonal `ldos`, general `greens`, and `spectral_function` APIs
+   (the delivered names; a separate projected variant proved unnecessary —
+   arbitrary probe pairs already cover projected spectral functions).
+   Momentum and orbital content remain user
    data: an ``A(k,E)`` calculation supplies its own Fourier/orbital probe matrix
    instead of asking KPM.jl to infer positions, reciprocal vectors, or bands.
 4. Support batches of sites, bonds, or arbitrary probes and energy grids;
@@ -235,12 +239,15 @@ remains as a thin, metadata-free alternative.
 
 ### Lorentz kernel and the real part
 
-The Lorentz kernel is the correct **KPM default when finite-order damping is
-intended to represent Lorentzian lifetime broadening**. With order `NC` and
-parameter ``\lambda``, the damping is uniform in ``\tilde\theta =
-\arccos\tilde x``, so the equivalent physical broadening is position
-dependent, ``\eta(E)\approx (a\lambda/N_C)\sqrt{1-\tilde x^2}`` (of order
-``a\lambda/N_C`` at the band center). The real and imaginary parts must be
+The Lorentz kernel is the right **kernel-route choice when finite-order
+damping is intended to represent Lorentzian lifetime broadening** (`greens`
+has no default route: exactly one of `kernel` or `eta` must be chosen). With
+order `NC` and parameter ``\lambda``, the damping is uniform in
+``\tilde\theta = \arccos\tilde x``, so the equivalent physical broadening is
+position dependent, ``\eta(E)\approx (a\lambda/N_C)\sqrt{1-\tilde x^2}`` (of
+order ``a\lambda/N_C`` at the band center); the correspondence requires the
+kernel's reflected ``e^{-2\lambda}`` term to be negligible, i.e.
+``\lambda\gtrsim 2``, with few-percent accuracy only by ``\lambda\approx 4``. The real and imaginary parts must be
 reconstructed as one retarded/advanced analytic object; independently damping
 only the spectral part would not define a controlled causal Green function.
 
@@ -266,8 +273,11 @@ complex ``\arccos`` places the series on the decaying side for either sign of
   resolution; and
 - a direct CPGF route (``g_n = 1``, complex energy ``E + is\eta``),
   preferable when the caller specifies a physical broadening ``\eta`` and
-  needs the most direct causal resolvent — exact up to the series tail
-  ``\sim e^{-N_C\eta/(a\sqrt{1-\tilde x^2})}``.
+  needs the most direct causal resolvent — exact up to the series tail,
+  ``\sim e^{-N_C\eta/(a\sqrt{1-\tilde x^2})}`` strictly in band (for
+  ``\eta/a \ll 1-\tilde x^2``), softening to ``\sim e^{-N_C\sqrt{2\eta/a}}``
+  at the band edges; the implementation's tail warning uses the exact
+  complex ``\arccos`` and covers all regimes.
 
 Jackson remains useful for positive spectral densities with near-Gaussian
 resolution, but it should not be presented as equivalent to a constant

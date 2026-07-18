@@ -33,12 +33,16 @@ Exactly one of the two broadening routes must be chosen:
   `LorentzKernels(λ)` when the truncation should act as a Lorentzian lifetime
   broadening; the damping is uniform in θ̃, so the equivalent half-width is
   position dependent, η(E) ≈ (a λ / NC) √(1-x̃²) (≈ a λ / NC at band center).
+  That correspondence holds where the kernel's reflected `e^{-2λ}` term is
+  negligible — use λ ≳ 2, and expect few-percent accuracy only by λ ≈ 4.
   `JacksonKernel` gives near-Gaussian resolution (positive spectral weight,
   but *not* a constant imaginary self-energy).
 - `eta` (> 0, physical units): direct Chebyshev-polynomial Green function
   (CPGF) at the complex energy E ± iη with undamped coefficients (gₙ = 1).
-  The series tail decays like exp(-n η̃ / √|1-x̃²|) with η̃ = η/a; a warning
-  is emitted when the truncation tail at NC is not negligible.
+  Strictly in band with η̃ = η/a ≪ 1-x̃², the series tail decays like
+  exp(-n η̃ / √(1-x̃²)); at the band edges the decay softens to
+  exp(-n √(2η̃)). The emitted warning uses the exact complex `acos`, so it
+  covers all regimes: heed it by increasing `NC` or `eta`.
 
 - `b` : center shift of the rescaling (default 0). `NC` : truncate to the
   first NC moments (default: all).
@@ -70,6 +74,8 @@ function greens(
         throw(ArgumentError("`branch` must be :retarded or :advanced; got $(branch)."))
 
     mu_mat = mu isa AbstractVector ? reshape(mu, :, 1) : mu
+    NC >= 0 || throw(ArgumentError("NC must be nonnegative (0 = use all moments); got $(NC)."))
+    size(mu_mat, 1) >= 1 || throw(ArgumentError("mu must contain at least one moment."))
     if NC == 0
         NC = size(mu_mat, 1)
     else
@@ -78,7 +84,6 @@ function greens(
         end
         NC = min(NC, size(mu_mat, 1))
     end
-    @assert NC >= 1
 
     g = kernel === nothing ? ones(dt_real, NC) : kernel.(0:(NC - 1), NC)
     μtilde = mu_mat[1:NC, :] .* (hn.(0:(NC - 1)) .* g)
@@ -131,6 +136,7 @@ complex. With unit site probes and the per-state DOS convention, summing
 over all sites gives NH times the [`dos`](@ref) reconstruction.
 """
 function ldos(mu::AbstractVecOrMat, H_rescale_factor::Real, E; kwargs...)
+    :branch in keys(kwargs) && throw(ArgumentError("ldos is -Im G^R/π by definition; `branch` cannot be chosen"))
     G = greens(mu, H_rescale_factor, E; kwargs..., branch=:retarded)
     return -imag.(G) ./ pi
 end
@@ -150,6 +156,7 @@ zeroth moment ⟨u|v⟩. Both branches are reconstructed from the same moments �
 no extra Chebyshev recurrences.
 """
 function spectral_function(mu::AbstractVecOrMat, H_rescale_factor::Real, E; kwargs...)
+    :branch in keys(kwargs) && throw(ArgumentError("spectral_function uses both branches; `branch` cannot be chosen"))
     GR = greens(mu, H_rescale_factor, E; kwargs..., branch=:retarded)
     GA = greens(mu, H_rescale_factor, E; kwargs..., branch=:advanced)
     return (im / (2 * pi)) .* (GR .- GA)

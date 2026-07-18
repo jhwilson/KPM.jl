@@ -466,12 +466,17 @@ function kpm_1d!(
 
     @assert (size(psi_in_l) == (NH, NR)) "Invalid `psi_in_l` with size $(size(psi_in_l)). Expecting ($(NH), $(NR))"
     @assert (size(psi_in_r) == (NH, NR)) "Invalid `psi_in_r` with size $(size(psi_in_r)). Expecting ($(NH), $(NR))"
+    # the bra is loaded into ψl before the ket seeds α_all; an aliased ψl
+    # would be overwritten and corrupt every moment silently
+    Base.mightalias(ψl, α_all) && throw(ArgumentError("ψl workspace must not alias α_all"))
 
     # Moment doubling folds T_m T_n products of one and the same ket; with an
     # independent bra it does not apply, so this path runs the full NC-step
     # recurrence (2x the matvecs of the equal-vector path) and the moments
     # μ_n[i] = ⟨ψl_i|T_n(H)|ψr_i⟩ stay complex. NC need not be even here.
-    ψl .= maybe_to_device(psi_in_l)
+    # (indexed assignment, not broadcast: the equal-vector path's validated
+    # GPU idiom for copying host probes into a device workspace)
+    ψl[:, :] = maybe_to_device(psi_in_l)
     α_all[:, :, 1] = maybe_to_device(psi_in_r)
     mul!((@view α_all[:, :, 2]), H, (@view α_all[:, :, 1]))
 

@@ -368,6 +368,53 @@ end
     @test m_eq.mu ≈ m_lr.mu atol = 1e-12
 end
 
+@testset "adversarial-review regressions" begin
+    rng = Xoshiro(149)
+    NH = 24
+    A = randn(rng, ComplexF64, NH, NH)
+    Hd = Matrix((A + A') / 2)
+    Hd ./= maximum(abs, eigvals(Hermitian(Hd))) / 0.9
+    h = KPM.rescale(sparse(Hd))
+    u = randn(rng, ComplexF64, NH); u ./= norm(u)
+    v = randn(rng, ComplexF64, NH); v ./= norm(v)
+    m = KPM.green_moments(h, u, v; NC = 64)
+
+    # an aliased ψl workspace would let the ket overwrite the bra and corrupt
+    # every moment silently — must throw instead
+    α_all = zeros(ComplexF64, NH, 1, 2)
+    mu_buf = zeros(ComplexF64, 1, 8)
+    @test_throws ArgumentError KPM.kpm_1d!(h.H, 8, 1, NH, mu_buf,
+                                           reshape(u, NH, 1), reshape(v, NH, 1);
+                                           α_all = α_all, ψl = view(α_all, :, :, 1))
+
+    # branch cannot be smuggled into the fixed-branch reconstructions
+    @test_throws ArgumentError KPM.ldos(m.mu, m.a, [0.0]; eta = 0.1, branch = :advanced)
+    @test_throws ArgumentError KPM.spectral_function(m.mu, m.a, [0.0]; eta = 0.1, branch = :advanced)
+    @test_throws ArgumentError KPM.ldos(m, [0.0]; eta = 0.1, branch = :advanced)
+    @test_throws ArgumentError KPM.spectral_function(m, [0.0]; eta = 0.1, branch = :advanced)
+
+    # order and metadata contracts fail fast with ArgumentError
+    @test_throws ArgumentError KPM.green_moments(h, u, v; NC = 1)
+    @test_throws ArgumentError KPM.green_moments(h, u; NC = 0)
+    @test_throws ArgumentError KPM.ldos_moments(h; sites = [1], NC = 0)
+    @test_throws ArgumentError KPM.greens(m.mu, m.a, [0.0]; eta = 0.1, NC = -1)
+    @test_throws ArgumentError KPM.greens(zeros(ComplexF64, 0, 1), m.a, [0.0]; eta = 0.1)
+    @test_throws ArgumentError KPM.GreenMoments(m.mu, 0.0, 0.0, NH)
+    @test_throws ArgumentError KPM.GreenMoments(m.mu, Inf, 0.0, NH)
+    @test_throws ArgumentError KPM.GreenMoments(m.mu, 1.0, NaN, NH)
+    @test_throws ArgumentError KPM.GreenMoments(zeros(ComplexF64, 0, 2), 1.0, 0.0, NH)
+
+    # Lorentz kernel: λ must be positive (λ = 0 is NaN, and small λ breaks
+    # the Lorentzian-broadening correspondence documented in greens)
+    @test_throws ArgumentError KPM.LorentzKernels(0.0)
+    @test_throws ArgumentError KPM.LorentzKernels(-1.0)
+
+    # the CPGF tail warning fires when NC·η̃ is insufficient (in-band check;
+    # the warning uses the exact complex acos, so no edge blind spot)
+    @test_logs (:warn, r"CPGF series tail") KPM.greens(m.mu, m.a, [0.0];
+                                                       eta = 1e-4 * m.a)
+end
+
 @testset "momentum-space G(k, E) on the clean chain (probes are user data)" begin
     # Periodic tight-binding chain, ε_k = -2t cos k. The momentum content is
     # entirely in the caller-built Fourier probe u_k[j] = e^{ikj}/√N — KPM.jl
