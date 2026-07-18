@@ -358,7 +358,7 @@ version = "1.4.0"
     ArrowTypes = "31f734f8-188a-4ce0-8406-c8a06bd891cd"
 
 [[deps.KPM]]
-deps = ["Arpack", "DocStringExtensions", "FastGaussQuadrature", "LinearAlgebra", "Logging", "LoopVectorization", "Polynomials", "ProgressBars", "QuadGK", "Random", "Serialization", "SparseArrays", "Statistics", "Zygote"]
+deps = ["Arpack", "DocStringExtensions", "FastGaussQuadrature", "LinearAlgebra", "Logging", "LoopVectorization", "Polynomials", "ProgressBars", "QuadGK", "Random", "Serialization", "SparseArrays", "SpecialFunctions", "Statistics", "Zygote"]
 path = ".."
 uuid = "479eba37-df18-4d3d-9d60-66182c7f1954"
 version = "0.2.0"
