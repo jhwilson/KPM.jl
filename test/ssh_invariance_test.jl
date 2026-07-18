@@ -78,7 +78,10 @@ end
     r1b = @test_logs (:warn, r"longitudinal") match_mode=:any stiffness(SSH_POS_A, SSH_DISP_A)
     r2 = @test_logs (:warn, r"longitudinal") match_mode=:any stiffness(SSH_POS_B, SSH_DISP_B)
     println("SSH stiffness: split=$(r1.Ds_over_pi_complete), colocated=$(r2.Ds_over_pi_complete), Dia_SC=($(r1.Dia_SC), $(r2.Dia_SC))")
-    @test r1.Ds_over_pi_complete == r1b.Ds_over_pi_complete
+    # rtol, not ==: identical inputs (same Xoshiro(7) probes) must give the
+    # same response, but GPU reductions are not run-to-run bit-deterministic
+    # (CUSPARSE/CUBLAS ordering), so bit-exactness only holds on CPU
+    @test r1.Ds_over_pi_complete ≈ r1b.Ds_over_pi_complete rtol = 1e-12
     @test abs(r1.Ds_over_pi_complete - r2.Ds_over_pi_complete) > 1e-3
     @test abs(r1.Dia_SC - r2.Dia_SC) > 1e-3
 end
