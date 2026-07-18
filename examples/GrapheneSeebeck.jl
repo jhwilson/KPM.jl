@@ -53,7 +53,7 @@ end
 
 include(joinpath(@__DIR__, "GrapheneModel.jl"))
 
-# Provisional fast parameters from examples/GRAPHENE_SEEBECK_PLAN.md.
+# Fast benchmark parameters (see the header docstring for what they trade off).
 const Nx = 48
 const Ny = 48
 const t = 1.0
@@ -422,7 +422,10 @@ function main()
 
     S_reference = DiracReference.seebeck_uVK.(eta_values)
     zero_index = findfirst(iszero, eta_values)
-    println("\nKPM particle-hole diagnostics (exact bipartite projection; raw stochastic residual reported above):")
+    println("\nKPM particle-hole diagnostics: after the exact projection, S-oddness and")
+    println("S(0)=0 hold by construction — these lines are consistency checks of the")
+    println("reconstruction, not independent evidence; the raw stochastic odd-moment")
+    println("residual reported above is the unprojected measurement.")
     for kBT in kBT_values
         oddness = maximum(abs.(S_values[kBT] .+ reverse(S_values[kBT])))
         @printf("  kBT=%.2f: S(0)=% .6f uV/K; max |S(eta)+S(-eta)|=% .6f uV/K\n",
@@ -523,6 +526,7 @@ function main()
     @printf("  [%s] max |S_NC384-S_NC512| < 5 uV/K on full kBT=0.04 accepted grid: %.6f uV/K\n",
             passfail(nc_max_change < 5.0), nc_max_change)
     println("Load-bearing qualification: the clean absolute L0 is a kernel-regularized Drude weight, not a physical bulk DC conductivity; S is the benchmarked observable.")
+    println("Scope: the six gates share one twist-averaged moment matrix, one probe stream, and one (kernel, mesh) setting — correlated diagnostics of a finite-kernel benchmark at fixed resolution, not six independent anchors or a regulator-independence claim.")
 
     reconstruction_seconds = time() - reconstruction_start
 

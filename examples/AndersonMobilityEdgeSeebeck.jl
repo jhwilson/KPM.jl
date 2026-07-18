@@ -15,18 +15,23 @@ finite periodic cube, the DC, infinite-size, and vanishing-kernel-width limits
 do not commute; a critical study needs much larger sizes, more disorder, and
 joint scaling in size and broadening.
 
-The z-mapping and reference curve are anchored at Ec = 8.155, the KPM
-transport edge measured by the companion cluster ensemble (invariant over
-L = 16-24, NC = 256-1024; see notebook/2026-07-17_anderson-ensemble-
-convergence.md and scripts/anderson_seebeck_manifest.toml). Because KPM
-broadening lets localized states conduct, that value is an upper bound on the
-thermodynamic mobility edge — transfer-matrix results place it near 7.8
+The z-mapping and reference curve are anchored at Ec = 8.155, the effective
+KPM transport edge. Provenance (corrected after adversarial review): the free
+power-law edge fit is ill-conditioned at accessible scales — its optimum
+tracks the fit-window boundary — and is NOT the anchor's support; the anchor
+is localized by the window-free anchor-sensitivity of the two-temperature
+collapse, whose minimum sits at Ec = 8.15 (collapse < 5% only for
+Ec in [8.10, 8.15] at this example's scale; see
+notebook/2026-07-17_anderson-ensemble-convergence.md correction and
+adversarial/reanalysis-collapse-sensitivity.jl). Because KPM broadening lets
+localized states conduct, that value is an upper bound on the thermodynamic
+mobility edge — transfer-matrix results place it near 7.8
 (Bulka-Schreiber-Kramer 1987) — and the historical multifractal estimate
 Ec = 7.5 (Grussbach-Schreiber 1995) used by Villagonzalo et al. is a
 finite-size underestimate by its authors' own account. The accessible scales
 resolve a crossover edge exponent x_eff ~ 0.5-0.6 rather than the critical
 x = 1.5 of the reference curve, so the universal-curve target can fail
-honestly even with the measured anchor.
+honestly even with a well-placed anchor.
 
 The fast defaults are intended to take roughly 2--4 minutes on a laptop CPU.
 (The plan's provisional L=10, NR=4, two-pair setting ran in ~15 s but was
@@ -69,7 +74,7 @@ catch err
     rethrow(err)
 end
 
-# Fast default from examples/AndersonSeebeckBenchmarkPlan.md.
+# Fast defaults for the local benchmark run.
 const L = 14
 const W = 12.0
 const t = 1.0
@@ -81,9 +86,11 @@ const a = 12.25
 const b = 0.0
 const kBT_values = (0.25, 0.35)
 # Transport-edge anchor for the z-mapping and the reference curve. 8.155 is
-# the KPM transport edge measured by the cluster ensemble study (free-(Ec,x)
-# fit of the disorder-averaged Sigma(E), invariant over L=16-24 and
-# NC=256-1024; notebook/2026-07-17_anderson-ensemble-convergence.md). KPM
+# the effective KPM transport edge, localized by the anchor-sensitivity of
+# the two-temperature collapse (minimum at 8.15; < 5% only on [8.10, 8.15] at
+# L=14/NC=384 — adversarial/reanalysis-collapse-sensitivity.jl). The free
+# power-law fit is boundary-pinned/ill-conditioned and is not the provenance
+# (notebook/2026-07-17_anderson-ensemble-convergence.md, correction). KPM
 # broadening lets localized states conduct, so this is an upper bound on the
 # thermodynamic mobility edge: transfer-matrix results place that near 7.8
 # (Bulka-Schreiber-Kramer, Z. Phys. B 66, 21 (1987); trajectory reproduced in
@@ -327,7 +334,7 @@ function main()
             L, NH, W, t, NC, NR, n_disorder_pairs)
     @printf("fixed a=%.2f, b=%.1f, pi*a/NC=%.6f; kBT=%s\n",
             a, b, pi * a / NC, string(kBT_values))
-    @printf("Ec=%.3f (measured transport edge; historical critical estimate %.1f), x_ref=%.1f\n",
+    @printf("Ec=%.3f (collapse-localized effective transport edge; historical critical estimate %.1f), x_ref=%.1f\n",
             Ec, Ec_hist, x_ref)
     @printf("seed_base=%d; per-pair seeds are seed_base + pair_index\n", seed_base)
     println("NR counts stochastic probes per realization; disorder-pair count is separate.")
@@ -583,11 +590,12 @@ function main()
     @printf("Metallic-window Seebeck sign check: minimum S = %.6f uV/K (%s).\n",
             metallic_S_min, passfail(metallic_S_min > 0))
     println("Honesty statement: this example does not measure the critical exponent, and")
-    println("the anchor Ec=8.155 is a measured KPM transport edge (an upper bound on the")
-    println("thermodynamic mobility edge), not a critical-point determination.")
+    println("the anchor Ec=8.155 is an effective KPM transport edge localized by the")
+    println("two-temperature collapse (an upper bound on the thermodynamic mobility")
+    println("edge), not a critical-point determination.")
     println("""
         Interpretation of any failing targets at the fast defaults: the z-mapping is
-        anchored at the measured transport edge, so the edge-position error of the
+        anchored at the collapse-localized effective transport edge, so the edge-position error of the
         historical Ec=7.5 is removed; what remains is that the accessible (L, NC)
         window resolves only a crossover edge exponent x_eff ~ 0.5-0.6, not the
         critical x = 1.5 assumed by the reference curve (cluster ensemble,
@@ -630,7 +638,7 @@ function main()
                 linewidth=2, label=@sprintf("A(Ec-E)^1.5 fit, %.1f<=E<=%.1f",
                                             fit_window...))
     Plots.vline!(p1, [Ec]; color=:gray, linestyle=:dot,
-                 label=@sprintf("Ec=%.3f (measured)", Ec))
+                 label=@sprintf("Ec=%.3f (effective)", Ec))
     Plots.vline!(p1, [Ec_hist]; color=:gray, linestyle=:dashdot,
                  label=@sprintf("Ec=%.1f (historical)", Ec_hist))
 
