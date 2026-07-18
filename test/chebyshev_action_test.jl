@@ -158,6 +158,19 @@ end
     Vbig = 100 .* V
     @test KPM.chebyshev_action(Hs, Vbig, C) ≈
           100 .* KPM.chebyshev_action(Hs, V, C) atol = 1e-9
+
+    # scale invariance: the same relative growth must be rejected at every
+    # seed amplitude (the eps-floored version passed 1e-12 seeds)
+    Hn1 = sparse(reshape([1.1], 1, 1))   # T_15(1.1) ≈ 388: unstable
+    C15 = zeros(16)
+    C15[16] = 1.0
+    for amp in (1.0, 1e-8, 1e-12)
+        @test_throws ErrorException KPM.chebyshev_action(Hn1, reshape([amp + 0im], 1, 1),
+                                                         reshape(C15, :, 1))
+    end
+    # an exactly zero seed column stays exactly zero and must pass
+    @test KPM.chebyshev_action(Hn1, reshape([0.0 + 0im], 1, 1),
+                               reshape(C15, :, 1)) == zeros(ComplexF64, 1, 1, 1)
 end
 
 @testset "argument validation" begin
@@ -176,9 +189,21 @@ end
     @test_throws ArgumentError KPM.chebyshev_action(Hs, V, zeros(ComplexF64, 0, K))
     # negative guard cadence
     @test_throws ArgumentError KPM.chebyshev_action(Hs, V, C; check_every = -1)
+    # empty probe block / empty coefficient columns
+    @test_throws ArgumentError KPM.chebyshev_action(Hs, zeros(ComplexF64, NH, 0), C)
+    @test_throws ArgumentError KPM.chebyshev_action(Hs, V, zeros(ComplexF64, NC, 0))
     # aliased out/V
     Vc = randn(rng, ComplexF64, NH, NR)
     @test_throws ArgumentError KPM.chebyshev_action!(reshape(Vc, NH, NR, 1), Hs, Vc, C[:, 1:1])
+    # aliased out/Hn and slots/Hn (a dense Hn can share memory with out)
+    Hdense = Matrix(Hd)
+    @test_throws ArgumentError KPM.chebyshev_action!(reshape(Hdense, NH, NH, 1), Hdense,
+                                                     randn(rng, ComplexF64, NH, NH),
+                                                     C[:, 1:1])
+    @test_throws ArgumentError KPM.chebyshev_action!(zeros(ComplexF64, NH, NH, 1), Hdense,
+                                                     V[:, 1] * ones(1, NH),
+                                                     C[:, 1:1];
+                                                     slots = (Hdense, zeros(ComplexF64, NH, NH)))
     # aliased or malformed slots
     w = zeros(ComplexF64, NH, NR)
     @test_throws ArgumentError KPM.chebyshev_action!(zeros(ComplexF64, NH, NR, 1), Hs, V,
