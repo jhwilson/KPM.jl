@@ -367,3 +367,36 @@ end
     m_lr = KPM.green_moments(h, u, u; NC = 32)
     @test m_eq.mu ≈ m_lr.mu atol = 1e-12
 end
+
+@testset "momentum-space G(k, E) on the clean chain (probes are user data)" begin
+    # Periodic tight-binding chain, ε_k = -2t cos k. The momentum content is
+    # entirely in the caller-built Fourier probe u_k[j] = e^{ikj}/√N — KPM.jl
+    # infers no positions or reciprocal vectors. For the clean chain u_k is an
+    # exact eigenvector, so the CPGF route must reproduce the free resolvent
+    # G(k, E) = 1/(E - ε_k + iη) to series-tail accuracy.
+    N = 64
+    t = 1.0
+    H = spdiagm(1 => fill(-t, N - 1), -1 => fill(-t, N - 1))
+    H[1, N] = -t
+    H[N, 1] = -t
+    h = KPM.rescale(H)
+
+    ks = 2 * pi .* [3, 11, 23] ./ N
+    probes = hcat([exp.(im .* k .* (1:N)) ./ sqrt(N) for k in ks]...)
+    m = KPM.green_moments(h, probes; NC = 1024)
+
+    η = 0.1
+    E = collect(range(-1.5, 1.5; length = 41))
+    G = KPM.greens(m, E; eta = η)
+    for (p, k) in enumerate(ks)
+        εk = -2 * t * cos(k)
+        @test G[:, p] ≈ 1 ./ (E .- εk .+ im * η) atol = 1e-8
+    end
+
+    # A(k, E) is the Lorentzian of width η and Re G its Kramers–Kronig
+    # partner, both from the same moments
+    A = KPM.spectral_function(m, E; eta = η)
+    εk1 = -2 * t * cos(ks[1])
+    @test real.(A[:, 1]) ≈ (η / pi) ./ ((E .- εk1) .^ 2 .+ η^2) atol = 1e-8
+    @test real.(G[:, 1]) ≈ (E .- εk1) ./ ((E .- εk1) .^ 2 .+ η^2) atol = 1e-8
+end
