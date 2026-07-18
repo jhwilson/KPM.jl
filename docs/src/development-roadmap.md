@@ -16,19 +16,24 @@ Difficulty is relative to the present KPM.jl architecture, including its typed
 rescaling front end, two-slot Chebyshev recurrence, CPU/CUDA device helpers, and
 BdG self-consistency machinery.
 
-| Rank (easiest first) | Feature | Difficulty | What the package can reuse | Main new work |
-| --- | --- | --- | --- | --- |
-| 1 | Unitary evolution | Low | Rescaling, two-slot recurrence, block-vector and device paths | Complex Bessel coefficients, adaptive truncation, time-grid API |
-| 2 | Spectral function, LDOS, and full real-space Green function | Low--medium | `ldos_mu`, `dos`, kernels, typed moment metadata | Complex off-diagonal moments and a causal reconstruction returning both real and imaginary parts |
-| 3 | Local Chern markers | Medium | Matrix-function recurrence, stochastic probes, existing Haldane/quantized-Hall tests | Fermi-projector action, explicit geometry/region normalization, boundary-safe marker evaluation |
-| 4 | Eigenstate filtering (filter-and-shake) | High | DOS estimates, rescaling, block recurrences, `Arpack` for comparisons | Band-pass filters, rank-revealing orthogonalization, Rayleigh--Ritz/locking, completeness diagnostics |
-| 5 | Real-space Green-function Hartree--Fock | Very high | Local/bond moment extraction, SCF mixing and checkpoints from BdG | General interaction callback, selected density-matrix elements, filling control, nonlocal exchange, noisy nonlinear convergence |
+| Rank (easiest first) | Feature | Status | Difficulty | What the package can reuse | Main new work |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Unitary evolution | open | Low | Rescaling, two-slot recurrence, block-vector and device paths | Complex Bessel coefficients, adaptive truncation, time-grid API |
+| 2 | Spectral function, LDOS, and full real-space Green function | **delivered** | Low--medium | `ldos_mu`, `dos`, kernels, typed moment metadata | Complex off-diagonal moments and a causal reconstruction returning both real and imaginary parts |
+| 3 | Local Chern markers | open | Medium | Matrix-function recurrence, stochastic probes, existing Haldane/quantized-Hall tests | Fermi-projector action, explicit geometry/region normalization, boundary-safe marker evaluation |
+| 4 | Eigenstate filtering (filter-and-shake) | open | High | DOS estimates, rescaling, block recurrences, `Arpack` for comparisons | Band-pass filters, rank-revealing orthogonalization, Rayleigh--Ritz/locking, completeness diagnostics |
+| 5 | Real-space Green-function Hartree--Fock | open | Very high | Local/bond moment extraction, SCF mixing and checkpoints from BdG | General interaction callback, selected density-matrix elements, filling control, nonlocal exchange, noisy nonlinear convergence |
 
 The recommended delivery order is **spectral/Green-function foundation →
 unitary evolution → Chern markers → eigenstate filtering → Hartree--Fock**.
-The first item provides matrix-element and matrix-function machinery used by the
-later topology and mean-field work; unitary evolution is then a small, contained
-validation of the same matrix-function action.
+The first item — now delivered, tested against exact diagonalization on CPU
+and validated with the CUDA device active — provides the matrix-element
+machinery used by the later topology and mean-field work. **The next step is
+the shared matrix-function action below, delivered together with
+time-independent unitary evolution as its small, contained validation**: the
+action (not evolution itself) is the load-bearing piece, reused by the Fermi
+projector of the Chern-marker milestone, the window filters of the
+eigensolver, and the Fermi-operator density updates of Hartree--Fock.
 
 ## Shared prerequisite: a general matrix-function action
 
@@ -209,7 +214,12 @@ The typed layer provides `GreenMoments` with `green_moments` (independent
 pairs or equal-probe diagonal blocks) and `ldos_moments` (batched unit-site
 seeds), and reconstruction via `greens`, `ldos`, `spectral_function`, and the
 exact `spectral_weights` sum rule. The legacy `ldos_mu(H, NC, site)` raw path
-remains as a thin, metadata-free alternative.
+remains as a thin, metadata-free alternative. The milestone is tested against
+dense exact-diagonalization resolvents (the finite-``\eta`` CPGF route to
+``10^{-8}``), adversarially reviewed, and validated with the CUDA device
+active (GPU-vs-CPU moment equality plus the full suite in GPU mode);
+`examples/SpectralFunctionKspace.jl` demonstrates the momentum-resolved
+workflow with user-built Fourier probes.
 
 ### Rough implementation
 
@@ -432,18 +442,27 @@ tests before a higher-level solver depends on it.
 
 1. **Matrix elements and matrix-function action:** complex independent
    bra/ket moments, batched coefficient accumulation, typed provenance, and
-   CPU/GPU tests. *Moments and typed provenance are delivered (see the
-   spectral-function milestone status above); the coefficient-accumulating
-   matrix-function action `f(H)|V⟩` remains open for the projector and
-   evolution milestones.*
+   CPU/GPU tests. *Moments and typed provenance are delivered and
+   GPU-validated (see the spectral-function milestone status above); the
+   coefficient-accumulating matrix-function action `f(H)|V⟩` remains open
+   and is the current critical path — three of the four remaining milestones
+   consume it.*
 2. **Spectral and propagation APIs:** complete LDOS/full complex Green function
-   (Lorentz and direct-CPGF choices) — *delivered* — followed by
-   time-independent unitary evolution.
+   (Lorentz and direct-CPGF choices) — *delivered and GPU-validated* —
+   followed by time-independent unitary evolution. **← next: implement the
+   matrix-function action and validate it with unitary evolution**, whose
+   exact accuracy targets (norm conservation, reversibility, the group
+   property, dense `exp(-iHt)` comparisons) exercise the accumulator far more
+   stringently than a smoothed projector would.
 3. **Fermi projector and Chern marker:** deterministic local maps plus stochastic
-   regional averages, pinned to the existing Haldane sign convention.
+   regional averages, pinned to the existing Haldane sign convention. Consumes
+   the matrix-function action (sharp/smoothed Fermi projector).
 4. **Filtered interior eigensolver:** ChebFD baseline, then a documented
-   filter-and-shake refresh strategy.
+   filter-and-shake refresh strategy. Consumes the matrix-function action
+   (window filters) plus new subspace linear algebra.
 5. **General lattice Hartree--Fock:** selected density-matrix elements,
    interaction callback, fixed-`mu`/fixed-filling SCF, mixing, checkpoints, and
-   explicit energy conventions.
+   explicit energy conventions. Consumes the matrix-function action
+   (Fermi-operator density updates) and the delivered selected-matrix-element
+   machinery.
 
