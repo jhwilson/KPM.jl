@@ -42,8 +42,9 @@ marker, consuming the delivered action.**
 **Delivered** as the internal primitive `KPM.chebyshev_action!` (with an
 allocating `chebyshev_action` form): coefficient-verbatim accumulation over
 the two-slot recurrence for one probe block and `K` coefficient columns,
-residence-following workspaces, and a relative-growth stability guard.
-Unitary evolution below is its first consumer and validation.
+residence-following workspaces, and a relative-growth stability guard;
+GPU-validated together with unitary evolution below, its first consumer
+and validation.
 
 Most of this roadmap needs the same operation,
 
@@ -335,7 +336,10 @@ coefficients](https://doi.org/10.1098/rsos.191809).
 
 ### Current status
 
-**Implemented** (delivered together with the shared matrix-function action).
+**Implemented** (delivered together with the shared matrix-function action)
+and **validated with the CUDA device active** (GPU-vs-CPU equality for the
+action and for scalar/multi-time `evolve`, plus the full suite in GPU
+mode).
 `KPM.evolve` propagates one state or a block through the Bessel/Chebyshev
 series with the center-shift phase folded into the coefficients
 (`evolution_coefficients`), adaptive order from the superexponential Bessel
