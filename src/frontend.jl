@@ -370,9 +370,13 @@ vector. Returns a plain host array of states, dropping singleton axes:
 `NH`, `NH × NR`, `NH × NT`, or `NH × NR × NT`. All requested times share one
 Chebyshev recurrence with `NT` accumulators (`NT` extra state blocks of
 memory; loop over scalar calls instead if that is the binding constraint).
-The recurrence runs on the active device and is protected by the relative
-stability guard of [`chebyshev_action!`](@ref), which rejects propagation
-when the rescaled spectrum escapes the Chebyshev domain.
+For plain dense/sparse `h.H` the recurrence runs on the active device;
+operators without device-transfer methods (e.g. `Hermitian`/`Symmetric`
+wrappers) stay on the host, workspaces following the operator. Propagation
+is rejected by the relative stability guard of [`chebyshev_action!`](@ref)
+when the recurrence grows unstably in the propagated states (a symptom of a
+rescaled spectrum outside the Chebyshev domain; the guard sees only the
+probe subspace).
 """
 function evolve(h::RescaledHamiltonian, psi0::AbstractVecOrMat,
                 ts::AbstractVector{<:Real};

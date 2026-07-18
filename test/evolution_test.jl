@@ -140,8 +140,9 @@ end
     orders = [KPM.evolution_order(2.0, t) for t in (0.5, 2.0, 10.0, 50.0)]
     @test issorted(orders)
     @test KPM.evolution_order(2.0, 10.0; tol = 1e-6) <= KPM.evolution_order(2.0, 10.0)
-    # t = 0 hits the NC_min floor
-    @test KPM.evolution_order(2.0, 0.0) == 9
+    # t = 0 hits the NC_min floor (NC_min is the minimum *returned* order)
+    @test KPM.evolution_order(2.0, 0.0) == 8
+    @test KPM.evolution_order(2.0, 0.0; NC_min = 32) == 32
 
     # a deliberately truncated series warns and visibly loses norm
     rng = Xoshiro(227)
@@ -156,6 +157,50 @@ end
     @test maximum(tail) > 1e-12
     ψt = @test_logs (:warn, r"evolution series tail") KPM.evolve(h, ψ0, t; NC = 8)
     @test abs(norm(ψt) - 1) > 1e-3
+end
+
+@testset "truncation-tolerance contract (scalar oracle)" begin
+    # 1×1 H_norm = [x]: the exact evolution is the phase e^{-i(ax+b)t}, so the
+    # measured error is pure truncation + recurrence roundoff. The adaptive
+    # order must meet the default tol = 1e-12 outright (the tail sum is a
+    # rigorous bound; the adversarial review's counterexamples at x = 0 are
+    # included).
+    for (x, at) in ((0.0, 1995.4), (0.0, 2989.2), (0.3, 500.0), (-0.7, 3000.0))
+        a = 2.0
+        t = at / a
+        b = 0.4
+        hx = KPM.RescaledHamiltonian(sparse(reshape([x], 1, 1)), a, b)
+        exact = cis(-(a * x + b) * t)
+        @test abs(KPM.evolve(hx, ComplexF64[1.0], t)[1] - exact) <= 1e-12
+    end
+
+    # the reported tail is the full dropped sum and bounds the actual error
+    z = 1995.4
+    NC = KPM.evolution_order(1.0, z)
+    @test KPM.evolution_tail(z, NC) < 1e-12
+    @test KPM.evolution_tail(z, NC) >= 2 * abs(KPM.besselj(NC, z))
+end
+
+@testset "threshold-adjacent truncation warning" begin
+    # at NC = 3116, |at| = 2989.2 the two leading dropped terms alone are just
+    # below 1e-12 but the full tail is above it — the warning must still fire
+    # (the adversarial review's false-negative case)
+    @test_logs (:warn, r"evolution series tail") KPM.evolution_coefficients(1.0, 0.0, [2989.2]; NC = 3116)
+    # the adaptive order for the same time must be silent
+    NC_ok = KPM.evolution_order(1.0, 2989.2)
+    @test NC_ok > 3116
+    @test_logs KPM.evolution_coefficients(1.0, 0.0, [2989.2]; NC = NC_ok)
+end
+
+@testset "order cap and overflow safety" begin
+    # |at| beyond the cap (or overflowing to Inf) is an ArgumentError up
+    # front, never an InexactError from integer conversion
+    @test_throws ArgumentError KPM.evolution_order(1.0, 1e20)
+    @test_throws ArgumentError KPM.evolution_order(1e308, 2.0)
+    @test_throws ArgumentError KPM.evolution_order(1.0, 100.0; NC_cap = 50)
+    @test_throws ArgumentError KPM.evolution_order(1.0, 1.0; NC_min = 100, NC_cap = 10)
+    # NC_min == NC_cap is legal when the required order fits
+    @test KPM.evolution_order(1.0, 0.0; NC_min = 8, NC_cap = 8) == 8
 end
 
 @testset "stability-guard rejection" begin

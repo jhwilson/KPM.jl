@@ -104,12 +104,17 @@ end
 # Relative variant for arbitrary-norm probe columns (the two-arg form assumes
 # unit-norm seeds): |T_n(x)| ≤ 1 on [−1, 1], so for a valid rescaling every
 # column norm is bounded by its seed norm. `ref_sq` is the seed's columnwise
-# abs2-sum, `sum(abs2, seed; dims=1)`.
+# abs2-sum, `sum(abs2, seed; dims=1)`. The check is scale-invariant for every
+# nonzero seed column; an exactly zero seed column stays exactly zero under
+# the linear recurrence, so its ratio is taken against 1 (always passes).
+# It detects growth only in the propagated probe subspace — an unstable
+# eigenvector orthogonal to every seed column is invisible to it.
 function _check_chebyshev_columns(slot::AbstractMatrix, iteration::Integer,
                                   ref_sq::AbstractMatrix)
-    growth_sq = maximum(sum(abs2, slot; dims=1) ./ max.(ref_sq, eps(dt_real)))
+    denom = ifelse.(iszero.(ref_sq), one(dt_real), ref_sq)
+    growth_sq = maximum(sum(abs2, slot; dims=1) ./ denom)
     if !(growth_sq <= 1.5^2)
-        error("Chebyshev recurrence is unstable at iteration $iteration (maximum column growth $(sqrt(growth_sq)) > 1.5); use rescale(...; bound=:gershgorin) or a larger eps.")
+        error("Chebyshev recurrence is unstable at iteration $iteration (maximum column growth $(sqrt(growth_sq)) > 1.5); use a larger eps (rescaling safety margin) in rescale/normalizeH, or bound=:gershgorin for BdG operators.")
     end
     return nothing
 end

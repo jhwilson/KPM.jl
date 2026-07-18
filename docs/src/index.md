@@ -568,7 +568,9 @@ Key properties, pinned by the test suite against dense `exp(-iHt)`:
   recurrence with one accumulator per time (extra memory `NH × NR` per time);
   loop over scalar calls instead when memory is the binding constraint.
 - **Stability guard.** Propagation is rejected (an error, not silent decay)
-  if the recurrence detects a rescaled spectrum outside the Chebyshev domain.
+  when the recurrence grows unstably in the propagated states — the symptom
+  of a rescaled spectrum outside the Chebyshev domain. The guard watches the
+  propagated probe subspace, not the full spectrum.
 
 The evolution front end is built on the internal coefficient-accumulating
 matrix-function action ``f(H)|V\rangle = \sum_n c_n T_n(H_{\mathrm{norm}})|V\rangle``

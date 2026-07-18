@@ -52,18 +52,21 @@ f(H)|V\rangle \simeq \sum_{n=0}^{N_C-1} c_n T_n(H_{\mathrm{norm}})|V\rangle,
 ```
 
 for one vector or a block of vectors. The current recurrence already computes
-the Chebyshev vectors efficiently on CPU and CUDA. The missing reusable layer
-should:
+the Chebyshev vectors efficiently on CPU and CUDA. The delivered reusable
+layer:
 
-- accumulate a vector result with real or complex coefficients without storing
-  every Chebyshev vector;
-- optionally extract complex matrix elements for independent left and right
-  probes (the different-left/right `kpm_1d!` methods are now implemented for
-  the 1D path — see the spectral-function milestone status — but the
-  coefficient-accumulating action itself is still open);
-- batch deterministic basis probes and arbitrary user-supplied probes;
-- follow the operator's device residence and retain recurrence stability checks;
-- carry `(a, b, NC)` provenance in typed value objects.
+- accumulates a vector result with real or complex coefficients without
+  storing every Chebyshev vector (`K` coefficient columns share one
+  recurrence);
+- pairs with the complex matrix elements for independent left and right
+  probes (the different-left/right `kpm_1d!` methods of the
+  spectral-function milestone);
+- batches deterministic basis probes and arbitrary user-supplied probes;
+- follows the operator's device residence and retains a relative-growth
+  recurrence stability check (probe-subspace sensitive);
+- leaves `(a, b, NC)` provenance to the typed consumers (the propagated
+  state itself carries no reusable metadata — `RescaledHamiltonian` holds it
+  on the input side).
 
 This should be an internal primitive first. Public APIs should describe the
 physical operation (Green function, projector, evolution, filter), not expose a

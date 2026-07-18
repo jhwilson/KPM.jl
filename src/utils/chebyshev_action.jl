@@ -31,9 +31,10 @@ for real `Hn` and `V`.
 workspaces. Every `check_every` iterations (and at the last) the freshly
 written slot is checked by [`_check_chebyshev_columns`](@ref) against the
 seed column norms (`|T_n(x)| ≤ 1` on `[−1, 1]` makes every column
-non-expanding for a valid rescaling), throwing when the recurrence has left
-the stability region — the rescaling margin was too tight; `check_every=0`
-disables the guard.
+non-expanding for a valid rescaling), throwing when the recurrence grows
+unstably — the rescaling margin was too tight. The guard sees only the
+propagated probe subspace, not the full spectrum; `check_every=0` disables
+it.
 """
 function chebyshev_action!(out::AbstractArray{<:Complex, 3}, Hn, V::AbstractMatrix,
                            C::AbstractMatrix;
@@ -41,6 +42,8 @@ function chebyshev_action!(out::AbstractArray{<:Complex, 3}, Hn, V::AbstractMatr
     NH, NR = size(V)
     NC, K = size(C)
     NC >= 1 || throw(ArgumentError("C must have at least one coefficient row"))
+    NR >= 1 || throw(ArgumentError("V must have at least one column"))
+    K >= 1 || throw(ArgumentError("C must have at least one coefficient column"))
     size(Hn, 2) == NH ||
         throw(ArgumentError("size(Hn, 2) = $(size(Hn, 2)) must equal size(V, 1) = $NH"))
     size(out, 1) == NH && size(out, 2) == NR ||
@@ -49,6 +52,8 @@ function chebyshev_action!(out::AbstractArray{<:Complex, 3}, Hn, V::AbstractMatr
         throw(ArgumentError("size(out, 3) = $(size(out, 3)) must equal size(C, 2) = $K"))
     check_every >= 0 || throw(ArgumentError("check_every must be >= 0"))
     Base.mightalias(out, V) && throw(ArgumentError("out must not alias V"))
+    Hn isa AbstractArray && Base.mightalias(out, Hn) &&
+        throw(ArgumentError("out must not alias Hn"))
 
     if slots === nothing
         slots = (device_zeros_of(Hn, dt_cplx, NH, NR),
@@ -58,8 +63,9 @@ function chebyshev_action!(out::AbstractArray{<:Complex, 3}, Hn, V::AbstractMatr
         all(s -> size(s) == (NH, NR) && eltype(s) <: Complex, slots) ||
             throw(ArgumentError("slots must be two complex $NH × $NR workspaces"))
         (Base.mightalias(slots[1], slots[2]) ||
-         any(s -> Base.mightalias(s, out) || Base.mightalias(s, V), slots)) &&
-            throw(ArgumentError("slots must not alias each other, out, or V"))
+         any(s -> Base.mightalias(s, out) || Base.mightalias(s, V), slots) ||
+         (Hn isa AbstractArray && any(s -> Base.mightalias(s, Hn), slots))) &&
+            throw(ArgumentError("slots must not alias each other, out, V, or Hn"))
     end
 
     # K × NC transposed layout: each step's per-column coefficients are one
