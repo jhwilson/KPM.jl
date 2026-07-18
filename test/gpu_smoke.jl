@@ -7,9 +7,10 @@
 #   2. DoS reconstruction on the device
 #   3. kpm_2d moments + kubo_bastin_cond: quantized Hall plateau from GPU moments
 #   4. dc_long
-#   5. BdG: assembled device operator, onsite + pairing-channel SCF, and
+#   5. chebyshev_action + evolve (matrix-function action, unitary evolution)
+#   6. BdG: assembled device operator, onsite + pairing-channel SCF, and
 #      superfluid stiffness, each GPU vs CPU
-#   6. timing comparisons (informational)
+#   7. timing comparisons (informational)
 
 using Test
 using LinearAlgebra
@@ -132,6 +133,36 @@ end
     c_gpu = KPM.dc_long(H, Jx, 1.0, [64, 128], 4, NH; psi_in=copy(psi_in))
     c_cpu = on_cpu(() -> KPM.dc_long(H, Jx, 1.0, [64, 128], 4, NH; psi_in=copy(psi_in)))
     @test c_gpu ≈ c_cpu atol = 1e-6
+end
+
+@testset "chebyshev_action + evolve: GPU == CPU" begin
+    rng = Xoshiro(13)
+    NH = 4096
+    NC = 256
+    NR = 3
+    H = spdiagm(1 => fill(-0.45 + 0im, NH - 1), -1 => fill(-0.45 + 0im, NH - 1))
+    V = randn(rng, ComplexF64, NH, NR)
+    C = randn(rng, ComplexF64, NC, 3)
+
+    # the action follows the residence of Hn: device CSR vs host sparse
+    Hn_dev = KPM.maybe_to_device(H, ComplexF64)
+    act_gpu = Array(KPM.chebyshev_action(Hn_dev, V, C))
+    act_cpu = on_cpu(() -> KPM.chebyshev_action(H, V, C))
+    @test act_gpu ≈ act_cpu atol = 1e-8
+
+    # typed evolve: scalar time and shared-recurrence time grid
+    # (H's spectrum is ±0.9 cos k ⊂ (−1, 1), so it serves directly as H_norm)
+    h = KPM.RescaledHamiltonian(H, 2.0, 0.3)
+    ψ0 = randn(rng, ComplexF64, NH)
+    ψ0 ./= norm(ψ0)
+    ts = [1.0, 5.0, -3.0]
+    ev_gpu = KPM.evolve(h, ψ0, 5.0)
+    ev_cpu = on_cpu(() -> KPM.evolve(h, ψ0, 5.0))
+    @test ev_gpu ≈ ev_cpu atol = 1e-8
+    @test abs(norm(ev_gpu) - 1) < 1e-10
+    evs_gpu = KPM.evolve(h, ψ0, ts)
+    evs_cpu = on_cpu(() -> KPM.evolve(h, ψ0, ts))
+    @test evs_gpu ≈ evs_cpu atol = 1e-8
 end
 
 square_site(ix, iy, Lx, Ly) = mod1(ix, Lx) + (mod1(iy, Ly) - 1) * Lx
