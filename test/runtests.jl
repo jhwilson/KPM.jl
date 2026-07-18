@@ -22,6 +22,10 @@ end
     include("chebyshev_iteration_test.jl")
 end
 
+@testset "util/chebyshev_action.jl" begin
+    include("chebyshev_action_test.jl")
+end
+
 @testset "applications/dos.jl" begin
     include("dos_test.jl")
 end

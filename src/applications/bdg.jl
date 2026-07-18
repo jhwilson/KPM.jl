@@ -519,15 +519,6 @@ function gershgorin_bound(op::BdGOperator)
     return maximum(rowsums)
 end
 
-function _check_chebyshev_columns(slot::AbstractMatrix, iteration::Integer)
-    # Columnwise norms as a reduction so the check runs on device arrays too.
-    max_norm = sqrt(maximum(sum(abs2, slot; dims=1)))
-    if !(max_norm <= 1.5)
-        error("Chebyshev recurrence is unstable at iteration $iteration (maximum column norm $max_norm > 1.5); use rescale(...; bound=:gershgorin) or a larger eps.")
-    end
-    return nothing
-end
-
 """
     bdg_channel_moments(Hs, N, sites, directed_bonds, NC;
                         batch_size=64, verbose=0)

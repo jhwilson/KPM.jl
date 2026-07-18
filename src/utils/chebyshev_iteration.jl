@@ -85,6 +85,35 @@ function chebyshev_iter_single(H,
     return nothing
 end
 
+"""
+    _check_chebyshev_columns(slot, iteration)
+
+Throw when the recurrence has left the Chebyshev stability region (a column
+norm exceeding 1.5 means the rescaled spectrum escaped (−1, 1) and the
+three-term recurrence is growing exponentially).
+"""
+function _check_chebyshev_columns(slot::AbstractMatrix, iteration::Integer)
+    # Columnwise norms as a reduction so the check runs on device arrays too.
+    max_norm = sqrt(maximum(sum(abs2, slot; dims=1)))
+    if !(max_norm <= 1.5)
+        error("Chebyshev recurrence is unstable at iteration $iteration (maximum column norm $max_norm > 1.5); use rescale(...; bound=:gershgorin) or a larger eps.")
+    end
+    return nothing
+end
+
+# Relative variant for arbitrary-norm probe columns (the two-arg form assumes
+# unit-norm seeds): |T_n(x)| ≤ 1 on [−1, 1], so for a valid rescaling every
+# column norm is bounded by its seed norm. `ref_sq` is the seed's columnwise
+# abs2-sum, `sum(abs2, seed; dims=1)`.
+function _check_chebyshev_columns(slot::AbstractMatrix, iteration::Integer,
+                                  ref_sq::AbstractMatrix)
+    growth_sq = maximum(sum(abs2, slot; dims=1) ./ max.(ref_sq, eps(dt_real)))
+    if !(growth_sq <= 1.5^2)
+        error("Chebyshev recurrence is unstable at iteration $iteration (maximum column growth $(sqrt(growth_sq)) > 1.5); use rescale(...; bound=:gershgorin) or a larger eps.")
+    end
+    return nothing
+end
+
 # Three-address variants: (i_pp, i_p) -> i_out, leaving slot i_pp intact.
 function chebyshev_iter_single(H, V_all::Union{Array, SubArray}, i_pp_in::Int64, i_p_in::Int64, i_out::Int64)
     (@view V_all[:, :, i_out]) .= (@view V_all[:, :, i_pp_in])
