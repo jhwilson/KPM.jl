@@ -15,6 +15,7 @@ include("kernels/kernels.jl")
 include("moment.jl")
 
 include("applications/dos.jl")
+include("applications/greens.jl")
 include("applications/ldos_mu.jl")
 include("applications/conductivity.jl")
 include("applications/thermoelectric.jl")
