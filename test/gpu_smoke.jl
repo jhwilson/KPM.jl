@@ -50,6 +50,44 @@ end
     @test mu_gpu ≈ mu_cpu atol = 1e-8
 end
 
+@testset "kpm_1d left/right moments: GPU == CPU (incl. serial wrapper)" begin
+    rng = Xoshiro(43)
+    NH = 4096
+    NC = 257   # odd: the non-doubling left/right recurrence must accept it
+    NR = 4
+    H = spdiagm(1 => fill(-0.45 + 0im, NH - 1), -1 => fill(-0.45 + 0im, NH - 1))
+    ψl = exp.(2im * pi * rand(rng, NH, NR))
+    ψr = exp.(2im * pi * rand(rng, NH, NR))
+    KPM.normalize_by_col(ψl, NR)
+    KPM.normalize_by_col(ψr, NR)
+
+    mu_gpu = zeros(ComplexF64, NR, NC)
+    KPM.kpm_1d!(H, NC, NR, NH, mu_gpu, ψl, ψr)
+    mu_cpu = on_cpu(() -> begin
+        mu = zeros(ComplexF64, NR, NC)
+        KPM.kpm_1d!(H, NC, NR, NH, mu, ψl, ψr)
+        mu
+    end)
+    @test mu_gpu ≈ mu_cpu atol = 1e-8
+
+    # serial wrapper path feeds one-column host SubArrays into the device
+    # workspaces — the adversarial-review hazard; must match the batched path
+    mu_ser = KPM.kpm_1d(H, 32, NR; psi_in_l=copy(ψl), psi_in_r=copy(ψr),
+                        NR_parallel=false)
+    mu_par = KPM.kpm_1d(H, 32, NR; psi_in_l=copy(ψl), psi_in_r=copy(ψr))
+    @test mu_ser ≈ mu_par atol = 1e-10
+
+    # typed layer end to end on the device: site-diagonal LDOS moments and a
+    # greens reconstruction, GPU vs CPU
+    h = KPM.rescale(H)
+    sites = [1, 7, NH ÷ 2, NH]
+    m_gpu = KPM.ldos_moments(h; sites=sites, NC=256, batch_size=3)
+    m_cpu = on_cpu(() -> KPM.ldos_moments(h; sites=sites, NC=256, batch_size=3))
+    @test m_gpu.mu ≈ m_cpu.mu atol = 1e-8
+    E = collect(range(-0.8 * h.a, 0.8 * h.a; length = 21))
+    @test KPM.ldos(m_gpu, E; eta=0.05 * h.a) ≈ KPM.ldos(m_cpu, E; eta=0.05 * h.a) atol = 1e-8
+end
+
 @testset "dos: device reconstruction matches host" begin
     rng = Xoshiro(7)
     NH = 4096
