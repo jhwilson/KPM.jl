@@ -61,9 +61,32 @@ struct ConductivityMoments{M<:AbstractMatrix{<:Complex}} <: AbstractMoments
     end
 end
 
+"""
+    GreenMoments(mu, a, b, NH)
+
+Matrix-element moments `mu[n, p] = ⟨u_p|T_{n-1}(H_norm)|v_p⟩` (size
+NC × npairs, complex) for `(H_original - b I) / a`. Unlike `DosMoments`,
+these are deterministic matrix elements for caller-supplied probe pairs, not
+a stochastic trace, so there is no `NR`; which pair a column belongs to is
+the caller's bookkeeping (models are user data). Reconstruct with
+[`greens`](@ref), [`ldos`](@ref), or [`spectral_function`](@ref).
+"""
+struct GreenMoments{M<:AbstractMatrix{<:Complex}} <: AbstractMoments
+    mu::M
+    a::Float64
+    b::Float64
+    NH::Int
+    function GreenMoments(mu::M, a, b, NH) where {M<:AbstractMatrix{<:Complex}}
+        NH > 0 || throw(ArgumentError("GreenMoments: NH must be positive (got NH=$NH)"))
+        new{M}(mu, a, b, NH)
+    end
+end
+
 # number of Chebyshev moments (NC is derived from the stored moments, not stored)
 nc(m::DosMoments) = length(m.mu)
 nc(m::ConductivityMoments) = size(m.mu, 1)
+nc(m::GreenMoments) = size(m.mu, 1)
+npairs(m::GreenMoments) = size(m.mu, 2)
 
 Base.size(h::RescaledHamiltonian) = size(h.H)
 Base.size(h::RescaledHamiltonian, d) = size(h.H, d)
@@ -71,6 +94,7 @@ Base.size(h::RescaledHamiltonian, d) = size(h.H, d)
 Base.show(io::IO, h::RescaledHamiltonian) = print(io, "RescaledHamiltonian(NH=$(size(h.H, 1)), a=$(h.a), b=$(h.b))")
 Base.show(io::IO, m::DosMoments) = print(io, "DosMoments(NC=$(nc(m)), NR=$(m.NR), NH=$(m.NH), a=$(m.a), b=$(m.b))")
 Base.show(io::IO, m::ConductivityMoments) = print(io, "ConductivityMoments(NC=$(nc(m)), NR=$(m.NR), NH=$(m.NH), a=$(m.a), b=$(m.b))")
+Base.show(io::IO, m::GreenMoments) = print(io, "GreenMoments(NC=$(nc(m)), npairs=$(npairs(m)), NH=$(m.NH), a=$(m.a), b=$(m.b))")
 
 """
     rescale(H; center=false, eps=0.1, fixed_a=0.0)
@@ -198,6 +222,124 @@ function cond_moments(h::RescaledHamiltonian, Jα, Jβ;
          kpm_2d(h.H, Jα, Jβ, NC_int, NR_int, NH; psi_in=psi_in, kwargs...)
     return ConductivityMoments(mu, h.a, h.b, NH, NR_int)
 end
+
+"""
+    green_moments(h, psi_l, psi_r; NC=1024, verbose=0)
+
+Compute complex matrix-element moments `⟨u_p|T_n(H_norm)|v_p⟩` for
+independent bra/ket probe blocks: column p of `psi_l` pairs with column p of
+`psi_r`. This path cannot use moment doubling, so it runs the full NC-step
+recurrence (2x the matvecs of the equal-vector method) and accepts odd `NC`.
+Vectors are accepted as single-pair blocks. Returns [`GreenMoments`](@ref).
+"""
+function green_moments(h::RescaledHamiltonian, psi_l::AbstractVecOrMat, psi_r::AbstractVecOrMat;
+                       NC::Integer=1024, verbose=0)
+    NH = size(h.H, 1)
+    ψl = psi_l isa AbstractVector ? reshape(psi_l, :, 1) : psi_l
+    ψr = psi_r isa AbstractVector ? reshape(psi_r, :, 1) : psi_r
+    size(ψl, 1) == NH || throw(ArgumentError("psi_l has $(size(ψl, 1)) rows; expected $NH"))
+    size(ψl) == size(ψr) || throw(ArgumentError("psi_l and psi_r must have equal size (got $(size(ψl)) and $(size(ψr)))"))
+    M = size(ψl, 2)
+    mu_all = zeros(dt_cplx, M, Int(NC))
+    kpm_1d!(h.H, Int(NC), M, NH, mu_all, ψl, ψr; verbose=verbose)
+    return GreenMoments(permutedims(mu_all), h.a, h.b, NH)
+end
+
+"""
+    green_moments(h, psi; NC=1024, verbose=0)
+
+Equal-probe diagonal block: moments `⟨u_p|T_n(H_norm)|u_p⟩` for each column
+of `psi`, using the moment-doubling recurrence (`NC` must be even). The
+stored moments are complex with zero imaginary part to roundoff for a
+Hermitian operator. Returns [`GreenMoments`](@ref).
+"""
+function green_moments(h::RescaledHamiltonian, psi::AbstractVecOrMat;
+                       NC::Integer=1024, verbose=0)
+    iseven(NC) || throw(ArgumentError("kpm_1d computes NC moments from NC/2 recurrence steps; NC must be even"))
+    NH = size(h.H, 1)
+    ψ = psi isa AbstractVector ? reshape(psi, :, 1) : psi
+    size(ψ, 1) == NH || throw(ArgumentError("psi has $(size(ψ, 1)) rows; expected $NH"))
+    M = size(ψ, 2)
+    mu_all = zeros(dt_cplx, M, Int(NC))
+    kpm_1d!(h.H, Int(NC), M, NH, mu_all, ψ; verbose=verbose)
+    return GreenMoments(permutedims(mu_all), h.a, h.b, NH)
+end
+
+"""
+    ldos_moments(h; sites, NC=1024, batch_size=64, verbose=0)
+
+Site-diagonal moments `⟨i|T_n(H_norm)|i⟩` for the listed site indices, seeded
+with unit basis vectors in batches of `batch_size` columns (each batch is one
+doubling recurrence, so `NC` must be even). Returns [`GreenMoments`](@ref)
+with one column per site, in the order given. Site indices are positions in
+the caller's Hilbert-space basis; no lattice structure is inferred.
+"""
+function ldos_moments(h::RescaledHamiltonian; sites::AbstractVector{<:Integer},
+                      NC::Integer=1024, batch_size::Integer=64, verbose=0)
+    iseven(NC) || throw(ArgumentError("kpm_1d computes NC moments from NC/2 recurrence steps; NC must be even"))
+    batch_size > 0 || throw(ArgumentError("batch_size must be positive (got $batch_size)"))
+    NH = size(h.H, 1)
+    all(s -> 1 <= s <= NH, sites) || throw(ArgumentError("site indices must lie in 1:$NH"))
+    NC_int = Int(NC)
+    mu = zeros(dt_cplx, NC_int, length(sites))
+    for lo in 1:Int(batch_size):length(sites)
+        hi = min(lo + Int(batch_size) - 1, length(sites))
+        nb = hi - lo + 1
+        ψ = zeros(dt_cplx, NH, nb)
+        for (c, s) in enumerate(view(sites, lo:hi))
+            ψ[s, c] = 1
+        end
+        mu_batch = zeros(dt_cplx, nb, NC_int)
+        kpm_1d!(h.H, NC_int, nb, NH, mu_batch, ψ; verbose=verbose)
+        mu[:, lo:hi] .= permutedims(mu_batch)
+    end
+    return GreenMoments(mu, h.a, h.b, NH)
+end
+
+"""
+    greens(m::GreenMoments, E; kernel=..., eta=..., branch=:retarded, NC=...)
+
+Reconstruct the full complex retarded/advanced Green function at physical
+energies `E` from typed moments; see [`greens`](@ref) for the formula and the
+two broadening routes. The stored rescaling shift cannot be overridden.
+"""
+function greens(m::GreenMoments, E; kwargs...)
+    haskey(kwargs, :b) && throw(ArgumentError("b is stored in the moments object; do not pass it separately"))
+    return greens(m.mu, m.a, E; b=m.b, kwargs...)
+end
+
+"""
+    ldos(m::GreenMoments, E; kernel=..., eta=..., NC=...)
+
+Local density of states `-Im G^R/π` at physical energies `E` from typed
+site-diagonal moments (see [`ldos_moments`](@ref)); real output, one column
+per probe. The stored rescaling shift cannot be overridden.
+"""
+function ldos(m::GreenMoments, E; kwargs...)
+    haskey(kwargs, :b) && throw(ArgumentError("b is stored in the moments object; do not pass it separately"))
+    return ldos(m.mu, m.a, E; b=m.b, kwargs...)
+end
+
+"""
+    spectral_function(m::GreenMoments, E; kernel=..., eta=..., NC=...)
+
+Spectral function `A = (i/2π)(G^R - G^A)` at physical energies `E` from typed
+moments; complex for independent bra/ket pairs, real and nonnegative on
+diagonal pairs. The stored rescaling shift cannot be overridden.
+"""
+function spectral_function(m::GreenMoments, E; kwargs...)
+    haskey(kwargs, :b) && throw(ArgumentError("b is stored in the moments object; do not pass it separately"))
+    return spectral_function(m.mu, m.a, E; b=m.b, kwargs...)
+end
+
+"""
+    spectral_weights(m::GreenMoments)
+
+Integrated spectral weight per probe pair, `∫ A_uv(E) dE = μ₀ = ⟨u|v⟩`,
+exact by Chebyshev orthogonality (1 for a normalized diagonal probe). Use it
+as the sum-rule reference for a reconstructed spectral function.
+"""
+spectral_weights(m::GreenMoments) = m.mu[1, :]
 
 """
     dos(m::DosMoments; kwargs...)
