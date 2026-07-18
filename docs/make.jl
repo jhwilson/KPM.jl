@@ -6,7 +6,10 @@ using Documenter
 makedocs(
     sitename = "KPM",
     modules  = [KPM],
-    pages    = ["Home" => "index.md"],
+    pages    = [
+        "Home" => "index.md",
+        "Development roadmap" => "development-roadmap.md",
+    ],
     build    = joinpath("build", "dev"),
     # single-page docs: the BdG/pairing-channel API pushed index.html past
     # Documenter's 200 KiB default
