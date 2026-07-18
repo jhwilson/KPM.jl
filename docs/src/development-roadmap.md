@@ -198,13 +198,16 @@ random real-space Green functions and density matrices](https://arxiv.org/abs/23
 
 ### Current status
 
-LDOS is **partially implemented**. `ldos_mu(H, NC, site)` seeds a site basis
-vector and returns the diagonal Chebyshev moments
-``\langle i|T_n(H)|i\rangle``. It has no typed rescaling metadata and no LDOS
-reconstruction method of its own. More importantly, the general 1D path does
-not yet compute complex moments for different left and right vectors, which are
-needed for off-diagonal ``G_{ij}``, orbital matrices, and general projected
-spectral functions.
+**Implemented** (the first delivered milestone of this roadmap). The general
+1D path computes complex moments for independent left and right probe blocks
+(`kpm_1d!` with `psi_in_l`/`psi_in_r`; full ``N_C``-step recurrence, since
+moment doubling folds ``T_m T_n`` products of one and the same ket — twice
+the matrix--vector cost of the equal-vector path, which retains doubling).
+The typed layer provides `GreenMoments` with `green_moments` (independent
+pairs or equal-probe diagonal blocks) and `ldos_moments` (batched unit-site
+seeds), and reconstruction via `greens`, `ldos`, `spectral_function`, and the
+exact `spectral_weights` sum rule. The legacy `ldos_mu(H, NC, site)` raw path
+remains as a thin, metadata-free alternative.
 
 ### Rough implementation
 
@@ -218,9 +221,11 @@ spectral functions.
    G^{R/A}_{uv}(E)=\langle u|(E-H\pm i\eta)^{-1}|v\rangle
    ```
 
-   that returns the **full complex value**. Define spectral functions and LDOS
-   as ``A_{uv}(E)=-\mathrm{Im}\,G^R_{uv}(E)/\pi`` rather than as a separate
-   moment engine.
+   that returns the **full complex value**. Define spectral functions as
+   ``A_{uv}(E)=\tfrac{i}{2\pi}\left(G^R-G^A\right)_{uv}`` — the matrix element
+   of ``\delta(E-H)``, complex for independent bra/ket pairs — rather than as
+   a separate moment engine. Only the diagonal reduces to
+   ``A_{uu}=-\mathrm{Im}\,G^R_{uu}/\pi \ge 0``, which is the LDOS.
 3. Offer diagonal `ldos`, general `green_function`, and
    `projected_spectral_function` APIs. Momentum and orbital content remain user
    data: an ``A(k,E)`` calculation supplies its own Fourier/orbital probe matrix
@@ -232,28 +237,43 @@ spectral functions.
 
 The Lorentz kernel is the correct **KPM default when finite-order damping is
 intended to represent Lorentzian lifetime broadening**. With order `NC` and
-parameter ``\lambda``, its broadening is of order
-``\eta\sim a\lambda/N_C`` in physical energy units. The real and imaginary
-parts must be reconstructed as one retarded/advanced analytic object (or related
-by a Kramers--Kronig/Hilbert transform); independently damping only the spectral
-part would not define a controlled causal Green function.
+parameter ``\lambda``, the damping is uniform in ``\tilde\theta =
+\arccos\tilde x``, so the equivalent physical broadening is position
+dependent, ``\eta(E)\approx (a\lambda/N_C)\sqrt{1-\tilde x^2}`` (of order
+``a\lambda/N_C`` at the band center). The real and imaginary parts must be
+reconstructed as one retarded/advanced analytic object; independently damping
+only the spectral part would not define a controlled causal Green function.
 
-It is not, however, a strict mathematical requirement that every Green-function
-calculation call `LorentzKernels`. A direct Chebyshev-polynomial Green-function
-(CPGF) reconstruction evaluates the resolvent at the complex energy
-``z=(E-b+i\eta)/a`` with energy-dependent complex coefficients. It produces
-both real and imaginary parts with an explicit ``\eta`` and needs no separate
-kernel. The implementation should therefore expose two deliberate choices:
+The Kramers--Kronig transform that supplies the real part is **analytic in
+Chebyshev space** — no numerical Hilbert transform is involved. Both routes
+below are one closed-form expression for the resolvent
+[Pixley *et al.*, PRB **95**, 235101 (2017), Eq. (14)],
 
-- a Lorentz-kernel KPM route, convenient when `NC` and ``\lambda`` define the
-  desired Lorentzian resolution; and
-- a direct CPGF route, preferable when the caller specifies a physical
-  broadening ``\eta`` and needs the most direct causal resolvent.
+```math
+G^{R/A}(E) = \frac{-s\,i}{a\,\sin\tilde\theta}\Big[\mu_0 g_0
++ 2\sum_{n\ge 1}\mu_n g_n e^{-i s n\tilde\theta}\Big],\qquad
+\tilde\theta=\arccos\frac{E-b+is\eta}{a},\quad s=\pm 1,
+```
+
+differing only in ``(g_n, \operatorname{Im}\tilde z)``: real and imaginary
+parts of ``G`` come from the *same* moments. The principal branch of the
+complex ``\arccos`` places the series on the decaying side for either sign of
+``s``, and real energies outside the band continue to the correct purely real
+``G``. The two deliberate choices exposed by `greens` are:
+
+- a Lorentz-kernel KPM route (``g_n`` from `LorentzKernels`, real energies),
+  convenient when `NC` and ``\lambda`` define the desired Lorentzian
+  resolution; and
+- a direct CPGF route (``g_n = 1``, complex energy ``E + is\eta``),
+  preferable when the caller specifies a physical broadening ``\eta`` and
+  needs the most direct causal resolvent — exact up to the series tail
+  ``\sim e^{-N_C\eta/(a\sqrt{1-\tilde x^2})}``.
 
 Jackson remains useful for positive spectral densities with near-Gaussian
 resolution, but it should not be presented as equivalent to a constant
 imaginary self-energy. Whichever route is selected, `real(G)`, `imag(G)`, and
-``-\mathrm{Im}(G)/\pi`` must come from the same convention and broadening.
+``-\mathrm{Im}(G)/\pi`` come from the same convention and broadening by
+construction.
 
 ### Validation and risks
 
@@ -272,7 +292,10 @@ already close, but a correct full complex resolvent requires removing the
 current real/equal-vector assumptions and pinning analytic conventions.
 
 References: [Weiße *et al.*, KPM review, including the Lorentz
-kernel](https://doi.org/10.1103/RevModPhys.78.275); [João and Viana Parente
+kernel](https://doi.org/10.1103/RevModPhys.78.275); [Pixley *et al.*,
+momentum-resolved ``G(\mathbf{k},\omega)`` from KPM moments with the
+closed-form causal reconstruction](https://doi.org/10.1103/PhysRevB.95.235101);
+[João and Viana Parente
 Lopes, review of KPM and direct CPGF reconstruction](https://doi.org/10.1016/j.physrep.2020.10.001);
 [KITE implementation paper and comparison of Lorentz damping with exact CPGF
 coefficients](https://doi.org/10.1098/rsos.191809).
@@ -399,10 +422,13 @@ tests before a higher-level solver depends on it.
 
 1. **Matrix elements and matrix-function action:** complex independent
    bra/ket moments, batched coefficient accumulation, typed provenance, and
-   CPU/GPU tests.
+   CPU/GPU tests. *Moments and typed provenance are delivered (see the
+   spectral-function milestone status above); the coefficient-accumulating
+   matrix-function action `f(H)|V⟩` remains open for the projector and
+   evolution milestones.*
 2. **Spectral and propagation APIs:** complete LDOS/full complex Green function
-   (Lorentz and direct-CPGF choices), followed by time-independent unitary
-   evolution.
+   (Lorentz and direct-CPGF choices) — *delivered* — followed by
+   time-independent unitary evolution.
 3. **Fermi projector and Chern marker:** deterministic local maps plus stochastic
    regional averages, pinned to the existing Haldane sign convention.
 4. **Filtered interior eigensolver:** ChebFD baseline, then a documented
