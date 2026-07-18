@@ -1,3 +1,12 @@
+"""
+    ldos_mu(H, NC, site; kwargs...)
+
+Legacy raw path: real site-diagonal moments `⟨site|T_n(H)|site⟩` of an
+already-rescaled `H`, with no `(a, b)` provenance and no reconstruction.
+Prefer [`ldos_moments`](@ref) on a [`RescaledHamiltonian`](@ref), which
+batches sites, carries the rescaling metadata, and reconstructs via
+[`ldos`](@ref).
+"""
 function ldos_mu(
                  H, NC::Int64, site::Int64;
                  kwargs...

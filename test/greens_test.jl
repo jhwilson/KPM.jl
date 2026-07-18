@@ -275,3 +275,95 @@ end
     Gc = KPM.greens(fx.mu[:, 1], fx.a, E_out; b = fx.b, eta = η)
     @test Gc ≈ ed_greens(fx.H_phys, e_i, e_i, E_out; eta = η) atol = 1e-8
 end
+
+@testset "typed layer: LDOS sums to the DOS convention" begin
+    rng = Xoshiro(131)
+    NH = 32
+    NC = 128
+    A = randn(rng, ComplexF64, NH, NH)
+    H_phys = Matrix((A + A') / 2)
+    h = KPM.rescale(sparse(H_phys); center = true)
+
+    m = KPM.ldos_moments(h; sites = 1:NH, NC = NC, batch_size = 10)
+    @test KPM.nc(m) == NC
+    @test KPM.npairs(m) == NH
+
+    # Σ_sites ⟨i|T_n|i⟩ = Tr T_n(H_norm), against the ED eigenvalue sum
+    λ = eigvals(Hermitian(Matrix(h.H)))
+    tr_ed = [sum(cos.(n .* acos.(clamp.(λ, -1, 1)))) for n in 0:(NC - 1)]
+    @test vec(sum(real.(m.mu), dims = 2)) ≈ tr_ed atol = 1e-8
+    @test real.(KPM.spectral_weights(m)) ≈ ones(NH) atol = 1e-12
+
+    # site-summed LDOS reproduces the per-state DOS reconstruction:
+    # Σ_i ldos_i(E) = NH · ρ(E) with the same kernel and NC
+    E = collect(range(h.b - 0.9 * h.a, h.b + 0.9 * h.a; length = 101))
+    L = KPM.ldos(m, E; kernel = KPM.JacksonKernel)
+    mu_dos = vec(sum(real.(m.mu), dims = 2)) ./ NH
+    m_dos = KPM.DosMoments(mu_dos, h.a, h.b, NH, NH)
+    _, ρ = KPM.dos(m_dos; E_grid = E)
+    @test vec(sum(L, dims = 2)) ≈ NH .* ρ atol = 1e-10
+
+    # legacy raw path agrees with the typed site moments
+    mu_legacy = KPM.ldos_mu(h.H, NC, 5)
+    @test mu_legacy ≈ real.(m.mu[:, 5]) atol = 1e-12
+end
+
+@testset "typed layer: (a, b) plumbing under different rescalings" begin
+    rng = Xoshiro(137)
+    NH = 48
+    A = randn(rng, ComplexF64, NH, NH)
+    Hd = Matrix((A + A') / 2)
+    # keep the bandwidth ~O(1) so the CPGF tail at NC=1024 is < 1e-9 for η̃=η/a
+    Hd .*= 2.0 / maximum(abs, eigvals(Hermitian(Hd)))
+    H_phys = Hd .+ 0.4 .* Matrix(I, NH, NH)
+
+    h_c = KPM.rescale(sparse(H_phys); center = true)
+    h_p = KPM.rescale(sparse(H_phys))
+    @test h_c.a != h_p.a   # genuinely different rescalings
+
+    u = zeros(ComplexF64, NH); u[2] = 1
+    v = zeros(ComplexF64, NH); v[NH - 3] = 1
+    m_c = KPM.green_moments(h_c, u, v; NC = 1024)
+    m_p = KPM.green_moments(h_p, u, v; NC = 1024)
+
+    η = 0.15
+    E = collect(range(-1.0, 1.5; length = 21))
+    G_c = KPM.greens(m_c, E; eta = η)
+    G_p = KPM.greens(m_p, E; eta = η)
+    G_ed = ed_greens(H_phys, u, v, E; eta = η)
+    @test G_c ≈ reshape(G_ed, :, 1) atol = 1e-8
+    @test G_p ≈ reshape(G_ed, :, 1) atol = 1e-8
+end
+
+@testset "typed layer: contracts and shapes" begin
+    rng = Xoshiro(139)
+    NH = 24
+    A = randn(rng, ComplexF64, NH, NH)
+    h = KPM.rescale(sparse(Matrix((A + A') / 2)); center = true)
+    u = randn(rng, ComplexF64, NH); u ./= norm(u)
+    v = randn(rng, ComplexF64, NH); v ./= norm(v)
+
+    m = KPM.green_moments(h, u, v; NC = 33)   # odd NC legal for pairs
+    @test KPM.nc(m) == 33 && KPM.npairs(m) == 1
+    @test occursin("GreenMoments", sprint(show, m))
+    @test only(KPM.spectral_weights(m)) ≈ dot(u, v) atol = 1e-12
+
+    # stored b cannot be overridden
+    for f in (KPM.greens, KPM.ldos, KPM.spectral_function)
+        @test_throws ArgumentError f(m, [0.0]; eta = 0.1, b = 0.0)
+    end
+
+    # doubling constructors demand even NC; pair path validates shapes
+    @test_throws ArgumentError KPM.green_moments(h, u; NC = 33)
+    @test_throws ArgumentError KPM.ldos_moments(h; sites = [1], NC = 33)
+    @test_throws ArgumentError KPM.ldos_moments(h; sites = [0], NC = 32)
+    @test_throws ArgumentError KPM.ldos_moments(h; sites = [1], NC = 32, batch_size = 0)
+    @test_throws ArgumentError KPM.green_moments(h, u, randn(rng, ComplexF64, NH, 2); NC = 32)
+    @test_throws ArgumentError KPM.green_moments(h, randn(rng, ComplexF64, NH + 1, 1),
+                                                 randn(rng, ComplexF64, NH + 1, 1); NC = 32)
+
+    # equal-probe constructor matches the pair constructor at left == right
+    m_eq = KPM.green_moments(h, u; NC = 32)
+    m_lr = KPM.green_moments(h, u, u; NC = 32)
+    @test m_eq.mu ≈ m_lr.mu atol = 1e-12
+end
