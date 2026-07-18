@@ -1,5 +1,5 @@
-# Manifest for the Anderson mobility-edge Seebeck ensemble
-# (examples/AndersonSeebeckBenchmarkPlan.md, cluster stage). All compute
+# Manifest for the Anderson mobility-edge Seebeck ensemble (cluster stage of
+# the Anderson mobility-edge benchmark). All compute
 # parameters and seeds live here; scripts/anderson_seebeck_ensemble.jl reads
 # it and nothing is hardcoded in analysis. Task enumeration:
 # task = (size_index - 1) * pairs_per_size + pair_index, 36 tasks total.
@@ -28,11 +28,13 @@ pairs_per_size = 12
 [analysis]
 # Offline reconstruction reference values (not used by the compute script).
 kBT = [0.15, 0.25, 0.35]
-# Measured KPM transport edge (free-(Ec,x) fit, invariant over L=16-24 and
-# NC=256-1024; notebook/2026-07-17_anderson-ensemble-convergence.md). The
-# historical critical estimate 7.5 (Grussbach-Schreiber PRB 51, 663) is kept
-# for comparison; KPM broadening makes 8.155 an upper bound on the
-# thermodynamic edge.
+# Effective KPM transport edge, localized by the window-free two-temperature
+# collapse (minimum at 8.15, <5% only on [8.10, 8.15];
+# adversarial/reanalysis-collapse-sensitivity.jl). The free power-law fit is
+# boundary-pinned/ill-conditioned and is not the provenance
+# (notebook/2026-07-17_pre-pr-adversarial-review.md). The historical critical
+# estimate 7.5 (Grussbach-Schreiber PRB 51, 663) is kept for comparison; KPM
+# broadening makes 8.155 an upper bound on the thermodynamic edge.
 Ec_ref = 8.155
 Ec_hist = 7.5
 x_ref = 1.5

@@ -1,5 +1,6 @@
 # One antithetic disorder pair of the 3D Anderson mobility-edge Seebeck
-# ensemble (the cluster stage of examples/AndersonSeebeckBenchmarkPlan.md).
+# ensemble (the cluster stage of the
+# Anderson mobility-edge benchmark).
 #
 #   julia --project=<env with KPM + JLD2> scripts/anderson_seebeck_ensemble.jl \
 #       --manifest scripts/anderson_seebeck_manifest.toml --task N --outdir DIR
@@ -187,7 +188,9 @@ function main()
         "hostname" => gethostname(),
         "device" => device,
         "julia_version" => string(VERSION),
-        "git_sha" => isfile("GIT_SHA") ? strip(read("GIT_SHA", String)) : "unknown",
+        "git_sha" => something(
+            try readchomp(`git -C $(dirname(@__DIR__)) rev-parse HEAD`) catch; nothing end,
+            isfile("GIT_SHA") ? strip(read("GIT_SHA", String)) : "unknown"),
         "pair_residual" => pair_residual,
         "t_build" => t_build, "t_moments_plus" => t_plus,
         "t_moments_minus" => t_minus)
