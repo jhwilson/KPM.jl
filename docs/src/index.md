@@ -574,13 +574,92 @@ Key properties, pinned by the test suite against dense `exp(-iHt)`:
 
 The evolution front end is built on the internal coefficient-accumulating
 matrix-function action ``f(H)|V\rangle = \sum_n c_n T_n(H_{\mathrm{norm}})|V\rangle``
-(`KPM.chebyshev_action!`), shared with forthcoming projector and filter
-applications; public APIs expose the physical operation, not the accumulator.
+(`KPM.chebyshev_action!`), shared with the Fermi projector below and
+forthcoming filter applications; public APIs expose the physical operation,
+not the accumulator.
 
 ```@docs; canonical=false
 evolve
 evolve!
 evolution_order
+```
+
+## Fermi projector and local Chern marker
+
+[`fermi_projector`](@ref) applies the KPM Fermi operator
+``P = f_\beta(H - E_F)`` to a vector or block on the shared matrix-function
+action, with coefficients from [`fermi_coefficients`](@ref): the closed-form
+step series at ``\beta = \infty``, Gauss–Chebyshev quadrature of the smooth
+Fermi factor at finite ``\beta``, Jackson-damped by default (the step is not
+analytic — an undamped truncation Gibbs-rings the projector).
+
+Unlike the moment APIs there is **no default `NC`**: the step series has no
+rigorous tail bound, and a silent default could return a confidently wrong
+topological invariant. The Jackson-damped resolution is
+``\Delta E \approx \pi a/N_C``, which must sit well inside the spectral gap
+at ``E_F`` — choose ``N_C \gtrsim 4\pi a/\Delta_{\mathrm{gap}}`` and verify
+by doubling ``N_C``. Near a transition (or a band edge), finite ``\beta`` is
+the recommended regularizer; the effective smearing is
+``\max(\Delta E, \sim 4/\beta)``.
+
+On the projector, [`chern_marker`](@ref) evaluates the Bianco–Resta local
+Chern marker at requested basis indices,
+
+```math
+m_i = -4\pi\,\mathrm{Im}\,\langle i|\,P\,X\,Q\,Y\,P\,|i\rangle,
+\qquad Q = I - P,
+```
+
+using two projector actions per site batch (the ``Q`` term never
+materializes: for ``u = P e_i``,
+``\mathrm{Im}\langle u|XQY|u\rangle = -\mathrm{Im}\langle u|XPY|u\rangle``
+identically). The sign convention is anchored to the package's Hall
+conductivity: a bulk average over complete cells equals the same ``+C`` as
+``\sigma_{xy} = +C\,e^2/h`` (pinned by the Haldane/Fukui–Hatsugai–Suzuki
+test fixture).
+
+```julia
+using KPM
+
+h  = KPM.rescale(H; center=true)
+Pv = KPM.fermi_projector(h, v; Ef=0.0, NC=1024)
+
+# site-resolved markers at `sites`, coordinates x, y (caller data)
+m  = KPM.chern_marker(h, x, y; Ef=0.0, sites=sites, NC=1024)
+C  = KPM.chern_marker_average(m; area=n_cells * cell_area)
+
+# stochastic regional estimate: NR probes on a region, mean ± std/√NR
+est = KPM.chern_marker_region(h, x, y; Ef=0.0, region=region,
+                              rng=Xoshiro(1), NR=32, NC=1024)
+C ≈ KPM.chern_marker_average([sum(est)/length(est)]; area=region_area)
+```
+
+Semantics, pinned by the test suite against exact dense projectors:
+
+- **Geometry is user data.** Coordinates enter as plain vectors `x`, `y`
+  (diagonal position operators); site lists, cell groupings, and areas are
+  explicit inputs. The raw markers are per **orbital** with units of x·y;
+  [`chern_marker_average`](@ref) requires the explicit area that makes the
+  result dimensionless.
+- **Open boundaries only.** A diagonal position operator is not a valid
+  position observable on a torus; periodic-coordinate marker formulations
+  are out of scope. The marker summed over an entire finite open sample is
+  ``\approx 0`` (exactly ``\mathrm{Im}\,\mathrm{Tr} = 0`` for the exact
+  projector): topology is read from a **bulk** average with the boundary
+  excluded, never from the full trace.
+- **Deterministic vs stochastic cost.** Site-resolved maps cost two
+  ``N_C``-step recurrences per `batch_size` sites. For a regional average,
+  [`chern_marker_region`](@ref) replaces ``|R|`` site columns with `NR`
+  random-phase probes restricted to the region (cost independent of
+  ``|R|``), returning per-probe estimates so the statistical error is
+  explicit.
+
+```@docs; canonical=false
+fermi_projector
+fermi_coefficients
+chern_marker
+chern_marker_region
+chern_marker_average
 ```
 
 # Moment calculation
@@ -655,6 +734,10 @@ Below is a concise list of the main public APIs provided by the package.
 
 - Unitary evolution:
   - `evolve` (typed; adaptive `NC` via `evolution_order`)
+
+- Fermi projector / local Chern marker:
+  - `fermi_projector` (typed; coefficients via `fermi_coefficients`)
+  - `chern_marker`, `chern_marker_region`, `chern_marker_average`
 
 - Conductivity (DC / optical):
   - `kubo_bastin_cond` (absolute units, e²/h; ED-validated)

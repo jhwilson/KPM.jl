@@ -526,8 +526,7 @@ function fermi_projector(
     verbose::Integer = 0,
 )
     NH = size(h.H, 1)
-    size(V, 1) == NH ||
-        throw(ArgumentError("V has $(size(V, 1)) rows; expected NH = $NH"))
+    size(V, 1) == NH || throw(ArgumentError("V has $(size(V, 1)) rows; expected NH = $NH"))
     Vmat = V isa AbstractVector ? reshape(V, :, 1) : V
     C = fermi_coefficients(h.a, h.b, Ef; beta = beta, NC = NC, kernel = kernel)
     Hd = maybe_to_device(h.H, dt_cplx)
@@ -542,8 +541,7 @@ end
                  kernel=JacksonKernel, batch_size=32, check_every=16,
                  verbose=0) -> Vector{Float64}
 
-Bianco–Resta local Chern marker ``m_i = -4\\pi\\,\\mathrm{Im}\\,\\langle i|
-P\\,X\\,Q\\,Y\\,P|i\\rangle`` at the basis indices `sites`, with the
+Bianco–Resta local Chern marker ``m_i = -4\\pi\\,\\mathrm{Im}\\,\\langle i| P\\,X\\,Q\\,Y\\,P|i\\rangle`` at the basis indices `sites`, with the
 KPM Fermi projector ``P = f_\\beta(H - E_F)`` ([`fermi_coefficients`](@ref);
 `NC` is required — see there), ``Q = I - P``, and diagonal position
 operators from the caller-supplied coordinate vectors `x`, `y`. The sign
@@ -575,13 +573,10 @@ function chern_marker(
     verbose::Integer = 0,
 )
     NH = size(h.H, 1)
-    length(x) == NH ||
-        throw(ArgumentError("x has length $(length(x)); expected NH = $NH"))
-    length(y) == NH ||
-        throw(ArgumentError("y has length $(length(y)); expected NH = $NH"))
+    length(x) == NH || throw(ArgumentError("x has length $(length(x)); expected NH = $NH"))
+    length(y) == NH || throw(ArgumentError("y has length $(length(y)); expected NH = $NH"))
     isempty(sites) && throw(ArgumentError("sites must not be empty"))
-    all(s -> 1 <= s <= NH, sites) ||
-        throw(ArgumentError("sites must lie in 1:$NH"))
+    all(s -> 1 <= s <= NH, sites) || throw(ArgumentError("sites must lie in 1:$NH"))
     batch_size >= 1 || throw(ArgumentError("batch_size must be >= 1"))
 
     C = fermi_coefficients(h.a, h.b, Ef; beta = beta, NC = NC, kernel = kernel)
@@ -657,13 +652,10 @@ function chern_marker_region(
     verbose::Integer = 0,
 )
     NH = size(h.H, 1)
-    length(x) == NH ||
-        throw(ArgumentError("x has length $(length(x)); expected NH = $NH"))
-    length(y) == NH ||
-        throw(ArgumentError("y has length $(length(y)); expected NH = $NH"))
+    length(x) == NH || throw(ArgumentError("x has length $(length(x)); expected NH = $NH"))
+    length(y) == NH || throw(ArgumentError("y has length $(length(y)); expected NH = $NH"))
     isempty(region) && throw(ArgumentError("region must not be empty"))
-    all(s -> 1 <= s <= NH, region) ||
-        throw(ArgumentError("region must lie in 1:$NH"))
+    all(s -> 1 <= s <= NH, region) || throw(ArgumentError("region must lie in 1:$NH"))
     allunique(region) || throw(ArgumentError("region must not contain duplicates"))
     NR >= 1 || throw(ArgumentError("NR must be >= 1"))
     batch_size >= 1 || throw(ArgumentError("batch_size must be >= 1"))

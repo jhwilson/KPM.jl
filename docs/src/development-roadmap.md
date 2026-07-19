@@ -20,22 +20,23 @@ BdG self-consistency machinery.
 | --- | --- | --- | --- | --- | --- |
 | 1 | Unitary evolution | **delivered** | Low | Rescaling, two-slot recurrence, block-vector and device paths | Complex Bessel coefficients, adaptive truncation, time-grid API |
 | 2 | Spectral function, LDOS, and full real-space Green function | **delivered** | Low--medium | `ldos_mu`, `dos`, kernels, typed moment metadata | Complex off-diagonal moments and a causal reconstruction returning both real and imaginary parts |
-| 3 | Local Chern markers | open | Medium | Matrix-function recurrence, stochastic probes, existing Haldane/quantized-Hall tests | Fermi-projector action, explicit geometry/region normalization, boundary-safe marker evaluation |
+| 3 | Local Chern markers | **delivered** | Medium | Matrix-function recurrence, stochastic probes, existing Haldane/quantized-Hall tests | Fermi-projector action, explicit geometry/region normalization, boundary-safe marker evaluation |
 | 4 | Eigenstate filtering (filter-and-shake) | open | High | DOS estimates, rescaling, block recurrences, `Arpack` for comparisons | Band-pass filters, rank-revealing orthogonalization, Rayleigh--Ritz/locking, completeness diagnostics |
 | 5 | Real-space Green-function Hartree--Fock | open | Very high | Local/bond moment extraction, SCF mixing and checkpoints from BdG | General interaction callback, selected density-matrix elements, filling control, nonlocal exchange, noisy nonlinear convergence |
 
 The recommended delivery order is **spectral/Green-function foundation →
 unitary evolution → Chern markers → eigenstate filtering → Hartree--Fock**.
-The first two items are now delivered, tested against exact diagonalization
-on CPU: the spectral/Green milestone (also validated with the CUDA device
-active) provides the matrix-element machinery, and the shared
-matrix-function action below (`KPM.chebyshev_action!`) has been delivered
-together with time-independent unitary evolution as its small, contained
-validation. The action (not evolution itself) is the load-bearing piece,
-reused by the Fermi projector of the Chern-marker milestone, the window
-filters of the eigensolver, and the Fermi-operator density updates of
-Hartree--Fock. **The next step is the Fermi projector and local Chern
-marker, consuming the delivered action.**
+The first three items are now delivered, tested against exact
+diagonalization on CPU: the spectral/Green milestone (also validated with
+the CUDA device active) provides the matrix-element machinery; the shared
+matrix-function action (`KPM.chebyshev_action!`) was delivered together
+with time-independent unitary evolution as its small, contained validation;
+and the Fermi projector plus Bianco--Resta local Chern marker now consume
+that action (`fermi_projector`, `chern_marker`, `chern_marker_region`,
+anchored to the Haldane/FHS sign convention). The action remains the
+load-bearing piece for what is left: the window filters of the eigensolver
+and the Fermi-operator density updates of Hartree--Fock. **The next step is
+the filtered interior eigensolver.**
 
 ## Shared prerequisite: a general matrix-function action
 
@@ -74,6 +75,26 @@ physical operation (Green function, projector, evolution, filter), not expose a
 second competing KPM core.
 
 ## 1. Topological properties from local Chern markers
+
+### Current status
+
+**Implemented.** `fermi_projector` applies ``P = f_\beta(H - E_F)`` on the
+shared matrix-function action with coefficients from `fermi_coefficients`
+(closed-form step series at ``\beta=\infty``, Gauss--Chebyshev quadrature at
+finite ``\beta``, Jackson-damped by default, `NC` deliberately a required
+keyword with a documented ``\Delta E \approx \pi a/N_C`` resolution rule).
+`chern_marker` evaluates the Bianco--Resta marker
+``m_i = -4\pi\,\mathrm{Im}\langle i|PXQYP|i\rangle`` with two projector
+actions per site batch (the ``Q`` term cancels analytically);
+`chern_marker_region` is the first-class stochastic regional mode
+(region-restricted random-phase probes, per-probe estimates returned);
+`chern_marker_average` makes the explicit-area normalization contract an
+API point. Geometry is caller data throughout; open boundaries only. Tested
+on an open-boundary Haldane flake against the exact-projector marker
+(topological, trivial, finite-temperature, and disordered), sign-anchored
+to the Fukui--Hatsugai--Suzuki Chern number (bulk average ``= +C``,
+matching ``\sigma_{xy} = +C\,e^2/h``), with the whole-sample sum converging
+to the exact ``\mathrm{Im}\,\mathrm{Tr} = 0`` identity.
 
 ### Target and scope
 
@@ -484,10 +505,14 @@ tests before a higher-level solver depends on it.
    stringently than a smoothed projector would.
 3. **Fermi projector and Chern marker:** deterministic local maps plus stochastic
    regional averages, pinned to the existing Haldane sign convention. Consumes
-   the matrix-function action (sharp/smoothed Fermi projector). **← next.**
+   the matrix-function action (sharp/smoothed Fermi projector). *Delivered:
+   `fermi_projector`/`fermi_coefficients`, `chern_marker`,
+   `chern_marker_region`, and `chern_marker_average`, validated against
+   exact-projector markers on the open Haldane flake and sign-anchored to
+   the FHS Chern number (see the status above).*
 4. **Filtered interior eigensolver:** ChebFD baseline, then a documented
    filter-and-shake refresh strategy. Consumes the matrix-function action
-   (window filters) plus new subspace linear algebra.
+   (window filters) plus new subspace linear algebra. **← next.**
 5. **General lattice Hartree--Fock:** selected density-matrix elements,
    interaction callback, fixed-`mu`/fixed-filling SCF, mixing, checkpoints, and
    explicit energy conventions. Consumes the matrix-function action
