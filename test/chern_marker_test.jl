@@ -60,3 +60,48 @@ _cheb_eval(c, x) = sum(c[n+1] * cos(n * acos(x)) for n = 0:(length(c)-1))
     # NC is deliberately required
     @test_throws UndefKeywordError KPM.fermi_coefficients(a, b, Ef)
 end
+
+@testset "fermi_projector vs exact dense projector" begin
+    rng = Xoshiro(211)
+    NH, NC = 64, 512
+    a, b = 2.3, 0.4
+    # controlled gapped spectrum: rescaled eigenvalues in ±[0.2, 0.9], so the
+    # step at x̃_F = 0 (Ef = b) sits in a gap of width 0.4 ≫ π/NC
+    λ = vcat(-0.9 .+ 0.7 .* rand(rng, NH ÷ 2), 0.2 .+ 0.7 .* rand(rng, NH ÷ 2))
+    Q = Matrix(qr(randn(rng, ComplexF64, NH, NH)).Q)
+    Hn = Matrix(Hermitian(Q * Diagonal(λ) * Q'))
+    h = KPM.RescaledHamiltonian(Hn, a, b)
+    Ef = b
+
+    P_ed = Q * Diagonal(Float64.(λ .< 0)) * Q'
+    V = randn(rng, ComplexF64, NH, 3)
+    PV = KPM.fermi_projector(h, V; Ef = Ef, NC = NC)
+    @test PV ≈ P_ed * V atol = 1e-3
+
+    # vector input keeps vector shape
+    v = V[:, 1]
+    Pv = KPM.fermi_projector(h, v; Ef = Ef, NC = NC)
+    @test Pv isa Vector
+    @test Pv ≈ PV[:, 1] atol = 1e-12
+
+    # Hermiticity and (approximate) idempotency of the damped projector
+    u = randn(rng, ComplexF64, NH)
+    Pu = KPM.fermi_projector(h, u; Ef = Ef, NC = NC)
+    @test dot(u, Pv) ≈ dot(Pu, v) atol = 1e-10
+    @test norm(KPM.fermi_projector(h, Pv; Ef = Ef, NC = NC) - Pv) < 2e-3
+
+    # finite temperature matches the dense U f_β(E − Ef) U' action
+    beta = 20.0
+    P_T = Q * Diagonal(1 ./ (exp.(a .* λ .* beta) .+ 1)) * Q'
+    PV_T = KPM.fermi_projector(h, V; Ef = Ef, beta = beta, NC = NC)
+    @test PV_T ≈ P_T * V atol = 1e-3
+
+    # validation: row mismatch and required NC
+    @test_throws ArgumentError KPM.fermi_projector(
+        h,
+        randn(rng, ComplexF64, NH + 1, 2);
+        Ef = Ef,
+        NC = NC,
+    )
+    @test_throws UndefKeywordError KPM.fermi_projector(h, V; Ef = Ef)
+end

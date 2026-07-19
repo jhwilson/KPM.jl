@@ -501,6 +501,43 @@ function evolve(h::RescaledHamiltonian, psi0::AbstractVecOrMat, t::Real; kwargs.
 end
 
 """
+    fermi_projector(h::RescaledHamiltonian, V; Ef, beta=Inf, NC,
+                    kernel=JacksonKernel, check_every=16, verbose=0)
+
+Apply the Fermi projector ``P = f_\\beta(H - E_F)`` to a host vector or
+`NH × NR` block `V`, returning a plain host array of the same shape
+(complex). At `beta = Inf` (default) `P` projects onto the occupied
+subspace below `Ef` — sharp and accurate when the Jackson-damped resolution
+``\\Delta E \\approx \\pi\\,a/NC`` sits well inside a spectral gap at `Ef`;
+at finite `beta` the occupation is thermally smoothed. Coefficients come
+from [`fermi_coefficients`](@ref) (see there for the required-`NC` policy
+and kernel choice), the action from [`chebyshev_action!`](@ref), which also
+supplies the recurrence stability guard and device residence: the recurrence
+runs on the active device for plain dense/sparse `h.H`.
+"""
+function fermi_projector(
+    h::RescaledHamiltonian,
+    V::AbstractVecOrMat;
+    Ef::Real,
+    beta::Real = Inf,
+    NC::Integer,
+    kernel = JacksonKernel,
+    check_every::Integer = 16,
+    verbose::Integer = 0,
+)
+    NH = size(h.H, 1)
+    size(V, 1) == NH ||
+        throw(ArgumentError("V has $(size(V, 1)) rows; expected NH = $NH"))
+    Vmat = V isa AbstractVector ? reshape(V, :, 1) : V
+    C = fermi_coefficients(h.a, h.b, Ef; beta = beta, NC = NC, kernel = kernel)
+    Hd = maybe_to_device(h.H, dt_cplx)
+    out = device_zeros_of(Hd, dt_cplx, NH, size(Vmat, 2))
+    chebyshev_action!(out, Hd, Vmat, C; check_every = check_every, verbose = verbose)
+    out_host = maybe_to_host(out)
+    return V isa AbstractVector ? dropdims(out_host; dims = 2) : out_host
+end
+
+"""
     dos(m::DosMoments; kwargs...)
 
 Reconstruct the DOS from typed moments at physical energies. The center shift
