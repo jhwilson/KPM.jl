@@ -15,6 +15,17 @@ using .EDReference
 # Evaluate a Chebyshev series with coefficients c at x ∈ (-1, 1).
 _cheb_eval(c, x) = sum(c[n+1] * cos(n * acos(x)) for n = 0:(length(c)-1))
 
+# Orbital indices of the cells (x, y) ∈ xs × ys of an Lx×Ly open Haldane
+# flake (both sublattices), matching haldane_open_model's site layout.
+function _haldane_cells(Ly, xs, ys)
+    sites = Int[]
+    for x in xs, y in ys
+        c = y + Ly * (x - 1)
+        push!(sites, 2 * c - 1, 2 * c)
+    end
+    return sites
+end
+
 @testset "fermi_coefficients: closed form, quadrature, and error paths" begin
     a, b, Ef, NC = 2.3, 0.4, 0.7, 256
     xF = (Ef - b) / a
@@ -104,4 +115,29 @@ end
         NC = NC,
     )
     @test_throws UndefKeywordError KPM.fermi_projector(h, V; Ef = Ef)
+end
+
+@testset "open-boundary Haldane fixture: exact marker matches FHS" begin
+    # validates the ED oracle itself before KPM touches it
+    Lx = Ly = 10
+    H, pos, Ac = haldane_open_model(Lx, Ly)   # topological defaults
+    C = round(chern_number_fhs(haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = π/2, m = 0.0)))
+    @test abs(C) == 1
+
+    mk = ed_chern_marker(H, pos[:, 1], pos[:, 2], 0.0)
+    bulk = _haldane_cells(Ly, 4:7, 4:7)
+    @test sum(mk[bulk]) / (16 * Ac) ≈ C atol = 0.01
+    # exact identity: Im Tr[P X Q Y P] = 0 — the whole-sample sum vanishes
+    @test abs(sum(mk)) < 1e-8
+    # geometry sanity: N sites, cell area of the honeycomb lattice vectors
+    @test size(pos) == (2 * Lx * Ly, 2)
+    @test Ac ≈ 3 * sqrt(3) / 2 atol = 1e-12
+
+    # trivial phase: bulk marker near zero
+    m_triv = 1.6
+    Ht, post, _ = haldane_open_model(Lx, Ly; m = m_triv)
+    Ct = round(chern_number_fhs(haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = π/2, m = m_triv)))
+    @test Ct == 0
+    mkt = ed_chern_marker(Ht, post[:, 1], post[:, 2], 0.0)
+    @test abs(sum(mkt[bulk]) / (16 * Ac)) < 0.01
 end
