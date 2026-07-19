@@ -273,6 +273,80 @@ end
     @test mk ≈ mk_ed[bulk] atol = 0.05
 end
 
+@testset "stochastic regional estimator" begin
+    Lx = Ly = 10
+    NC = 512
+    NR = 32
+    H, pos, Ac = haldane_open_model(Lx, Ly)
+    h = _marker_fixture(H)
+    C = round(chern_number_fhs(haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = π/2, m = 0.0)))
+    region = _haldane_cells(Ly, 4:7, 4:7)
+
+    # deterministic reference: exact region sum from per-site markers
+    det_sum =
+        sum(KPM.chern_marker(h, pos[:, 1], pos[:, 2]; Ef = 0.0, sites = region, NC = NC))
+
+    est = KPM.chern_marker_region(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        region = region,
+        rng = Xoshiro(31),
+        NR = NR,
+        NC = NC,
+    )
+    @test length(est) == NR
+    stderr_est = std(est) / sqrt(NR)
+    @test abs(mean(est) - det_sum) < 4 * stderr_est
+    # regional Chern estimate through the same explicit-area contract
+    @test KPM.chern_marker_average([mean(est)]; area = 16 * Ac) ≈ C atol = 0.2
+
+    # identical seed ⇒ identical probes ⇒ batching is exact bookkeeping
+    est5 = KPM.chern_marker_region(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        region = region,
+        rng = Xoshiro(31),
+        NR = NR,
+        NC = NC,
+        batch_size = 5,
+    )
+    @test est5 ≈ est atol = 1e-12
+
+    # validation specific to the regional mode
+    @test_throws ArgumentError KPM.chern_marker_region(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        region = [1, 1],
+        rng = Xoshiro(1),
+        NC = NC,
+    )
+    @test_throws ArgumentError KPM.chern_marker_region(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        region = region,
+        rng = Xoshiro(1),
+        NR = 0,
+        NC = NC,
+    )
+    @test_throws UndefKeywordError KPM.chern_marker_region(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        region = region,
+        NR = 2,
+        NC = NC,
+    )
+end
+
 @testset "argument validation" begin
     H, pos, Ac = haldane_open_model(4, 4)
     h = _marker_fixture(H)
