@@ -184,14 +184,8 @@ end
     # gross weight Σ|m| and shrinking superlinearly (measured ≈ ×9 per
     # doubling: 6.8 → 0.58 → 0.065 at NC = 256/512/1024)
     @test abs(sum(mk)) < 2e-3 * sum(abs, mk)
-    mk_2NC = KPM.chern_marker(
-        h,
-        pos[:, 1],
-        pos[:, 2];
-        Ef = 0.0,
-        sites = all_sites,
-        NC = 2 * NC,
-    )
+    mk_2NC =
+        KPM.chern_marker(h, pos[:, 1], pos[:, 2]; Ef = 0.0, sites = all_sites, NC = 2 * NC)
     @test abs(sum(mk_2NC)) < abs(sum(mk)) / 4
     # an edge-column average is clearly not the bulk value
     edge = _haldane_cells(Ly, 1:1, 1:Ly)
@@ -353,8 +347,22 @@ end
     N = 2 * 4 * 4
     x, y = pos[:, 1], pos[:, 2]
 
-    @test_throws ArgumentError KPM.chern_marker(h, x[1:(N-1)], y; Ef = 0.0, sites = [1], NC = 64)
-    @test_throws ArgumentError KPM.chern_marker(h, x, y[1:(N-1)]; Ef = 0.0, sites = [1], NC = 64)
+    @test_throws ArgumentError KPM.chern_marker(
+        h,
+        x[1:(N-1)],
+        y;
+        Ef = 0.0,
+        sites = [1],
+        NC = 64,
+    )
+    @test_throws ArgumentError KPM.chern_marker(
+        h,
+        x,
+        y[1:(N-1)];
+        Ef = 0.0,
+        sites = [1],
+        NC = 64,
+    )
     @test_throws ArgumentError KPM.chern_marker(h, x, y; Ef = 0.0, sites = Int[], NC = 64)
     @test_throws ArgumentError KPM.chern_marker(h, x, y; Ef = 0.0, sites = [0], NC = 64)
     @test_throws ArgumentError KPM.chern_marker(h, x, y; Ef = 0.0, sites = [N + 1], NC = 64)

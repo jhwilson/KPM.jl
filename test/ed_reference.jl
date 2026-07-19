@@ -232,8 +232,7 @@ same `+C` as `chern_number_fhs` (σ_xy = +C e²/h).
 function ed_chern_marker(H, x, y, Ef; beta::Real = Inf)
     F = eigen(Hermitian(Matrix(H)))
     occ =
-        isinf(beta) ? Float64.(F.values .< Ef) :
-        1 ./ (exp.(beta .* (F.values .- Ef)) .+ 1)
+        isinf(beta) ? Float64.(F.values .< Ef) : 1 ./ (exp.(beta .* (F.values .- Ef)) .+ 1)
     P = F.vectors * Diagonal(occ) * F.vectors'
     X = Diagonal(collect(Float64, x))
     Y = Diagonal(collect(Float64, y))
@@ -306,7 +305,8 @@ end
 Kubo–Bastin formula with Lorentzian broadening `eta`:
 
 σ_αβ = (i e² ħ/A) Σ_{mn} f(ε_m) [ vα_{mn} vβ_{nm}/(ε_m-ε_n-iη)²
-- vβ_{mn} vα_{nm}/(ε_m-ε_n+iη)² ]
+
+  - vβ_{mn} vα_{nm}/(ε_m-ε_n+iη)² ]
 
 with v_α = J_α/(iħ). This is the ∫dε f(ε) Tr[...] form integrated exactly in
 the eigenbasis; its η→0 limit at T=0 for α≠β is `ed_hall_conductivity_T0`.

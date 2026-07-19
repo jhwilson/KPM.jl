@@ -96,9 +96,25 @@ function _pxqyp_imdiag!(
     check_every::Integer = 16,
     verbose::Integer = 0,
 )
-    chebyshev_action!(U, Hn, V, C; slots = slots, check_every = check_every, verbose = verbose)
+    chebyshev_action!(
+        U,
+        Hn,
+        V,
+        C;
+        slots = slots,
+        check_every = check_every,
+        verbose = verbose,
+    )
     YU .= yd .* U
-    chebyshev_action!(W, Hn, YU, C; slots = slots, check_every = check_every, verbose = verbose)
+    chebyshev_action!(
+        W,
+        Hn,
+        YU,
+        C;
+        slots = slots,
+        check_every = check_every,
+        verbose = verbose,
+    )
     return maybe_to_host(vec(sum(xd .* imag.(conj.(U) .* W); dims = 1)))
 end
 
