@@ -117,6 +117,14 @@ end
     @test_throws UndefKeywordError KPM.fermi_projector(h, V; Ef = Ef)
 end
 
+# Deterministic rescaling from exact eigenvalues (the evolution_test pattern).
+function _marker_fixture(H; margin = 0.95)
+    ev = eigvals(Hermitian(Matrix(H)))
+    b = (maximum(ev) + minimum(ev)) / 2
+    a = (maximum(ev) - minimum(ev)) / 2 / margin
+    return KPM.RescaledHamiltonian((H - b * I) ./ a, a, b)
+end
+
 @testset "open-boundary Haldane fixture: exact marker matches FHS" begin
     # validates the ED oracle itself before KPM touches it
     Lx = Ly = 10
@@ -140,4 +148,161 @@ end
     @test Ct == 0
     mkt = ed_chern_marker(Ht, post[:, 1], post[:, 2], 0.0)
     @test abs(sum(mkt[bulk]) / (16 * Ac)) < 0.01
+end
+
+@testset "topological phase: bulk marker quantized, sign anchored to FHS" begin
+    Lx = Ly = 10
+    NC = 512
+    H, pos, Ac = haldane_open_model(Lx, Ly)
+    h = _marker_fixture(H)
+    C = round(chern_number_fhs(haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = π/2, m = 0.0)))
+    bulk = _haldane_cells(Ly, 4:7, 4:7)
+
+    mk = KPM.chern_marker(h, pos[:, 1], pos[:, 2]; Ef = 0.0, sites = bulk, NC = NC)
+    @test KPM.chern_marker_average(mk; area = 16 * Ac) ≈ C atol = 0.05
+    # every bulk cell individually quantized (sites list is cell-contiguous)
+    for k = 1:16
+        @test KPM.chern_marker_average(mk[(2k-1):(2k)]; area = Ac) ≈ C atol = 0.1
+    end
+    # per-orbital agreement with the exact-projector marker
+    mk_ed = ed_chern_marker(H, pos[:, 1], pos[:, 2], 0.0)
+    @test mk ≈ mk_ed[bulk] atol = 0.02
+end
+
+@testset "boundary semantics: whole-sample sum vanishes, edge is not bulk" begin
+    Lx = Ly = 10
+    NC = 512
+    H, pos, Ac = haldane_open_model(Lx, Ly)
+    h = _marker_fixture(H)
+    C = round(chern_number_fhs(haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = π/2, m = 0.0)))
+
+    all_sites = collect(1:(2*Lx*Ly))
+    mk = KPM.chern_marker(h, pos[:, 1], pos[:, 2]; Ef = 0.0, sites = all_sites, NC = NC)
+    # the marker over the entire open sample carries no topology: the exact
+    # identity Im Tr[P X Q Y P] = 0 (ED sum ≈ 1e-13) is approached with NC —
+    # the residual is boundary-dominated truncation error, small against the
+    # gross weight Σ|m| and shrinking superlinearly (measured ≈ ×9 per
+    # doubling: 6.8 → 0.58 → 0.065 at NC = 256/512/1024)
+    @test abs(sum(mk)) < 2e-3 * sum(abs, mk)
+    mk_2NC = KPM.chern_marker(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        sites = all_sites,
+        NC = 2 * NC,
+    )
+    @test abs(sum(mk_2NC)) < abs(sum(mk)) / 4
+    # an edge-column average is clearly not the bulk value
+    edge = _haldane_cells(Ly, 1:1, 1:Ly)
+    @test abs(sum(mk[edge]) / (Ly * Ac) - C) > 0.3
+    # batching is exact bookkeeping: odd batch_size == one big batch
+    mk7 = KPM.chern_marker(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        sites = all_sites,
+        NC = NC,
+        batch_size = 7,
+    )
+    mk200 = KPM.chern_marker(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        sites = all_sites,
+        NC = NC,
+        batch_size = 200,
+    )
+    @test mk7 ≈ mk atol = 1e-12
+    @test mk200 ≈ mk atol = 1e-12
+end
+
+@testset "trivial phase: bulk marker vanishes" begin
+    Lx = Ly = 10
+    NC = 512
+    m_triv = 1.6
+    H, pos, Ac = haldane_open_model(Lx, Ly; m = m_triv)
+    h = _marker_fixture(H)
+    bulk = _haldane_cells(Ly, 4:7, 4:7)
+
+    mk = KPM.chern_marker(h, pos[:, 1], pos[:, 2]; Ef = 0.0, sites = bulk, NC = NC)
+    @test abs(KPM.chern_marker_average(mk; area = 16 * Ac)) < 0.05
+    mk_ed = ed_chern_marker(H, pos[:, 1], pos[:, 2], 0.0)
+    @test mk ≈ mk_ed[bulk] atol = 0.02
+end
+
+@testset "finite temperature: thermal projector keeps the bulk marker" begin
+    Lx = Ly = 10
+    NC = 512
+    beta = 20.0   # T well below the bulk gap ≈ 2.1
+    H, pos, Ac = haldane_open_model(Lx, Ly)
+    h = _marker_fixture(H)
+    C = round(chern_number_fhs(haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = π/2, m = 0.0)))
+    bulk = _haldane_cells(Ly, 4:7, 4:7)
+
+    mk = KPM.chern_marker(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        sites = bulk,
+        beta = beta,
+        NC = NC,
+    )
+    @test KPM.chern_marker_average(mk; area = 16 * Ac) ≈ C atol = 0.1
+    mk_ed = ed_chern_marker(H, pos[:, 1], pos[:, 2], 0.0; beta = beta)
+    @test mk ≈ mk_ed[bulk] atol = 0.02
+end
+
+@testset "disorder robustness: marker survives weak onsite disorder" begin
+    Lx = Ly = 10
+    NC = 512
+    W = 0.5
+    rng = Xoshiro(227)
+    H, pos, Ac = haldane_open_model(Lx, Ly)
+    Hdis = H + spdiagm(0 => ComplexF64.(W .* (rand(rng, 2 * Lx * Ly) .- 0.5)))
+    h = _marker_fixture(Hdis)
+    C = round(chern_number_fhs(haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = π/2, m = 0.0)))
+    bulk = _haldane_cells(Ly, 4:7, 4:7)
+
+    mk = KPM.chern_marker(h, pos[:, 1], pos[:, 2]; Ef = 0.0, sites = bulk, NC = NC)
+    @test KPM.chern_marker_average(mk; area = 16 * Ac) ≈ C atol = 0.15
+    mk_ed = ed_chern_marker(Hdis, pos[:, 1], pos[:, 2], 0.0)
+    @test mk ≈ mk_ed[bulk] atol = 0.05
+end
+
+@testset "argument validation" begin
+    H, pos, Ac = haldane_open_model(4, 4)
+    h = _marker_fixture(H)
+    N = 2 * 4 * 4
+    x, y = pos[:, 1], pos[:, 2]
+
+    @test_throws ArgumentError KPM.chern_marker(h, x[1:(N-1)], y; Ef = 0.0, sites = [1], NC = 64)
+    @test_throws ArgumentError KPM.chern_marker(h, x, y[1:(N-1)]; Ef = 0.0, sites = [1], NC = 64)
+    @test_throws ArgumentError KPM.chern_marker(h, x, y; Ef = 0.0, sites = Int[], NC = 64)
+    @test_throws ArgumentError KPM.chern_marker(h, x, y; Ef = 0.0, sites = [0], NC = 64)
+    @test_throws ArgumentError KPM.chern_marker(h, x, y; Ef = 0.0, sites = [N + 1], NC = 64)
+    @test_throws ArgumentError KPM.chern_marker(
+        h,
+        x,
+        y;
+        Ef = 0.0,
+        sites = [1],
+        NC = 64,
+        batch_size = 0,
+    )
+    # Ef outside the rescaled window propagates from fermi_coefficients
+    @test_throws ArgumentError KPM.chern_marker(
+        h,
+        x,
+        y;
+        Ef = h.b + 2 * h.a,
+        sites = [1],
+        NC = 64,
+    )
+    @test_throws UndefKeywordError KPM.chern_marker(h, x, y; Ef = 0.0, sites = [1])
+    @test_throws ArgumentError KPM.chern_marker_average([1.0]; area = 0.0)
+    @test_throws ArgumentError KPM.chern_marker_average([1.0]; area = -1.0)
 end

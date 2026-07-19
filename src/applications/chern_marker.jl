@@ -74,3 +74,49 @@ function fermi_coefficients(
     c .*= kernel.(0:(NC-1), NC)
     return c
 end
+
+# Per-column contraction of the marker sequence for one probe batch:
+# with u = P v, Im⟨u|X Q Y|u⟩ = −Im⟨u|X P Y|u⟩ identically (Σ_j x_j y_j
+# |u_j|² is exactly real for real coordinates), so Q never materializes and
+# two projector actions suffice. Returns the host vector
+# r[c] = Σ_j x[j] · Im(conj(U[j,c]) · W[j,c]),   U = P·V, W = P·(y .* U),
+# so that the Bianco–Resta marker of a unit-site probe column is
+# m = −4π·Im⟨e|P X Q Y P|e⟩ = +4π·r. Workspaces U, YU, W and the recurrence
+# slots are caller-supplied and resident with Hn; V may be host or resident.
+function _pxqyp_imdiag!(
+    Hn,
+    C::AbstractVector,
+    xd,
+    yd,
+    V,
+    U,
+    YU,
+    W,
+    slots;
+    check_every::Integer = 16,
+    verbose::Integer = 0,
+)
+    chebyshev_action!(U, Hn, V, C; slots = slots, check_every = check_every, verbose = verbose)
+    YU .= yd .* U
+    chebyshev_action!(W, Hn, YU, C; slots = slots, check_every = check_every, verbose = verbose)
+    return maybe_to_host(vec(sum(xd .* imag.(conj.(U) .* W); dims = 1)))
+end
+
+"""
+    chern_marker_average(markers; area) -> Float64
+
+Sum of raw orbital markers divided by the explicit `area` they cover. When
+`markers` holds the [`chern_marker`](@ref) values of **complete bulk cells**
+(all orbitals of each cell, away from the boundary) and `area` is the total
+area of those cells, this is the local-marker estimate of the Chern number.
+The area is caller data — cell and sample geometry are never inferred (the
+raw markers carry units of x·y, so the normalization decides
+dimensionlessness). Note the marker summed over an *entire* finite open
+sample is ≈ 0: topology comes from a bulk average with the boundary
+excluded, not from the full trace.
+"""
+function chern_marker_average(markers::AbstractVector{<:Real}; area::Real)
+    isfinite(area) && area > 0 ||
+        throw(ArgumentError("area must be finite and positive, got $area"))
+    return sum(markers) / area
+end
