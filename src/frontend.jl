@@ -621,6 +621,94 @@ function chern_marker(
 end
 
 """
+    chern_marker_region(h::RescaledHamiltonian, x, y; Ef, region, rng,
+                        NR=16, beta=Inf, NC, kernel=JacksonKernel,
+                        batch_size=32, check_every=16, verbose=0)
+                        -> Vector{Float64}
+
+Stochastic estimate of the **region-summed** local Chern marker
+``\\sum_{i \\in R} m_i`` ([`chern_marker`](@ref)) from `NR` random-phase
+probes supported on the basis indices `region` (duplicates are rejected).
+Returns the length-`NR` vector of independent per-probe estimates: `mean`
+of it is the estimate, `std/√NR` its statistical error, and
+`chern_marker_average(.; area)` of the mean (explicit region area) gives
+the regional Chern-number estimate. Probes come from
+[`random_phase_vectors`](@ref) under the package reproducibility contract
+(`rng = Xoshiro(seed)` ⇒ identical probes on every device).
+
+Cost is two `NC`-step recurrences per `batch_size` probes — independent of
+`|R|` — so this replaces `|R|` deterministic site columns with `NR` probes;
+for small regions the deterministic mode (`sites = region`, then `sum`) is
+both exact and cheaper.
+"""
+function chern_marker_region(
+    h::RescaledHamiltonian,
+    x::AbstractVector{<:Real},
+    y::AbstractVector{<:Real};
+    Ef::Real,
+    region::AbstractVector{<:Integer},
+    rng,
+    NR::Integer = 16,
+    beta::Real = Inf,
+    NC::Integer,
+    kernel = JacksonKernel,
+    batch_size::Integer = 32,
+    check_every::Integer = 16,
+    verbose::Integer = 0,
+)
+    NH = size(h.H, 1)
+    length(x) == NH ||
+        throw(ArgumentError("x has length $(length(x)); expected NH = $NH"))
+    length(y) == NH ||
+        throw(ArgumentError("y has length $(length(y)); expected NH = $NH"))
+    isempty(region) && throw(ArgumentError("region must not be empty"))
+    all(s -> 1 <= s <= NH, region) ||
+        throw(ArgumentError("region must lie in 1:$NH"))
+    allunique(region) || throw(ArgumentError("region must not contain duplicates"))
+    NR >= 1 || throw(ArgumentError("NR must be >= 1"))
+    batch_size >= 1 || throw(ArgumentError("batch_size must be >= 1"))
+
+    C = fermi_coefficients(h.a, h.b, Ef; beta = beta, NC = NC, kernel = kernel)
+    Hd = maybe_to_device(h.H, dt_cplx)
+    xd = to_device_of(Hd, Vector{dt_real}(x))
+    yd = to_device_of(Hd, Vector{dt_real}(y))
+
+    # unit-norm columns on |R| rows estimate tr_R[·]/|R|; the |R| factor
+    # below converts each probe to a region-summed estimate
+    phases = random_phase_vectors(rng, length(region), Int(NR))
+
+    estimates = Vector{dt_real}(undef, NR)
+    nb = min(Int(batch_size), Int(NR))
+    U, YU, W, s1, s2 = (device_zeros_of(Hd, dt_cplx, NH, nb) for _ = 1:5)
+    for lo = 1:batch_size:NR
+        hi = min(lo + batch_size - 1, NR)
+        if hi - lo + 1 != nb   # smaller final batch: fresh plain workspaces
+            nb = hi - lo + 1
+            U, YU, W, s1, s2 = (device_zeros_of(Hd, dt_cplx, NH, nb) for _ = 1:5)
+        end
+        V = zeros(dt_cplx, NH, nb)
+        for (c, p) in enumerate(lo:hi), (k, s) in enumerate(region)
+            V[s, c] = phases[k, p]
+        end
+        r = _pxqyp_imdiag!(
+            Hd,
+            C,
+            xd,
+            yd,
+            V,
+            U,
+            YU,
+            W,
+            (s1, s2);
+            check_every = check_every,
+            verbose = verbose,
+        )
+        estimates[lo:hi] .= (4π * length(region)) .* r
+    end
+    return estimates
+end
+
+"""
     dos(m::DosMoments; kwargs...)
 
 Reconstruct the DOS from typed moments at physical energies. The center shift
