@@ -229,8 +229,10 @@ end
         NC = NC,
         batch_size = 200,
     )
-    @test mk7 ≈ mk atol = 1e-12
-    @test mk200 ≈ mk atol = 1e-12
+    # rtol, not atol: GPU spmm accumulation order varies with batch width,
+    # so different batch shapes agree only to relative roundoff
+    @test mk7 ≈ mk rtol = 1e-12
+    @test mk200 ≈ mk rtol = 1e-12
 end
 
 @testset "trivial phase: bulk marker vanishes" begin
@@ -390,7 +392,7 @@ end
         NC = NC,
         batch_size = 5,
     )
-    @test est5 ≈ est atol = 1e-12
+    @test est5 ≈ est rtol = 1e-12   # rtol: GPU accumulation order varies with batch width
 
     # validation specific to the regional mode
     @test_throws ArgumentError KPM.chern_marker_region(
