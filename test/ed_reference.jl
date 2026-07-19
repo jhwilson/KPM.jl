@@ -12,6 +12,8 @@ using Random
 using SparseArrays
 
 export haldane_model,
+    haldane_open_model,
+    ed_chern_marker,
     haldane_bloch,
     chern_number_fhs,
     ed_kubo_bastin,
@@ -142,6 +144,101 @@ function _cell_offset(d, a1, a2)
     M = [a1 a2]
     c = M \ collect(d)
     return round(Int, c[1]), round(Int, c[2])
+end
+
+"""
+    haldane_open_model(Lx, Ly; t=1.0, t2=0.2, ϕ=π/2, m=0.0)
+
+The same Haldane model as [`haldane_model`](@ref) on an **open** Lx×Ly
+honeycomb flake: every hop whose target cell leaves the `1:Lx × 1:Ly` grid
+is dropped (no wrapping). Returns `(H, pos, cell_area)` with sparse H,
+`pos::Matrix{Float64}` of size `N × 2` holding the site coordinates
+(`r_A = (x-1)a1 + (y-1)a2`, `r_B = r_A + δAB`), and the unit-cell area
+`|a1 × a2|`. This is the geometry backing for local Chern markers, where a
+diagonal position operator requires open boundaries.
+"""
+function haldane_open_model(
+    Lx::Int,
+    Ly::Int;
+    t::Real = 1.0,
+    t2::Real = 0.2,
+    ϕ::Real = π/2,
+    m::Real = 0.0,
+)
+    a1 = [sqrt(3), 0.0]
+    a2 = [sqrt(3) / 2, 1.5]
+    δAB = [sqrt(3) / 2, 0.5]
+
+    inbounds(x, y) = 1 <= x <= Lx && 1 <= y <= Ly
+    cell(x, y) = y + Ly * (x - 1)
+    siteA(x, y) = 2 * cell(x, y) - 1
+    siteB(x, y) = 2 * cell(x, y)
+
+    N = 2 * Lx * Ly
+    pos = zeros(N, 2)
+    for x = 1:Lx, y = 1:Ly
+        rA = (x - 1) .* a1 .+ (y - 1) .* a2
+        pos[siteA(x, y), :] .= rA
+        pos[siteB(x, y), :] .= rA .+ δAB
+    end
+
+    I_, J_, V_ = Int[], Int[], ComplexF64[]
+    function addhop!(i, j, amp)
+        push!(I_, i)
+        push!(J_, j)
+        push!(V_, amp)
+        push!(I_, j)
+        push!(J_, i)
+        push!(V_, conj(amp))
+        return nothing
+    end
+
+    for x = 1:Lx, y = 1:Ly
+        addhop!(siteB(x, y), siteA(x, y), -t + 0im)
+        inbounds(x + 1, y) && addhop!(siteB(x, y), siteA(x + 1, y), -t + 0im)
+        inbounds(x, y + 1) && addhop!(siteB(x, y), siteA(x, y + 1), -t + 0im)
+
+        for d in (a1, a2 .- a1, .-a2)
+            xoff, yoff = _cell_offset(d, a1, a2)
+            if inbounds(x + xoff, y + yoff)
+                addhop!(siteA(x + xoff, y + yoff), siteA(x, y), t2 * cis(ϕ))
+                addhop!(siteB(x + xoff, y + yoff), siteB(x, y), t2 * cis(-ϕ))
+            end
+        end
+
+        push!(I_, siteA(x, y))
+        push!(J_, siteA(x, y))
+        push!(V_, m + 0im)
+        push!(I_, siteB(x, y))
+        push!(J_, siteB(x, y))
+        push!(V_, -m + 0im)
+    end
+
+    H = sparse(I_, J_, V_, N, N)
+    cell_area = abs(a1[1] * a2[2] - a1[2] * a2[1])
+    return H, pos, cell_area
+end
+
+"""
+    ed_chern_marker(H, x, y, Ef; beta=Inf) -> Vector{Float64}
+
+Dense-eigendecomposition Bianco–Resta local Chern marker reference,
+`m_i = -4π · Im ⟨i| P X Q Y P |i⟩` with the exact projector
+`P = U f_β(ε - Ef) U'`, `Q = I - P`, and diagonal position operators from
+the coordinate vectors `x`, `y`. The sign matches the package convention:
+the bulk average over complete cells, divided by their area, equals the
+same `+C` as `chern_number_fhs` (σ_xy = +C e²/h).
+"""
+function ed_chern_marker(H, x, y, Ef; beta::Real = Inf)
+    F = eigen(Hermitian(Matrix(H)))
+    occ =
+        isinf(beta) ? Float64.(F.values .< Ef) :
+        1 ./ (exp.(beta .* (F.values .- Ef)) .+ 1)
+    P = F.vectors * Diagonal(occ) * F.vectors'
+    X = Diagonal(collect(Float64, x))
+    Y = Diagonal(collect(Float64, y))
+    M = P * X * (I - P) * Y * P
+    return -4π .* imag.(diag(M))
 end
 
 """
