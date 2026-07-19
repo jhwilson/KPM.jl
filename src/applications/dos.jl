@@ -16,17 +16,17 @@ The reconstruction is
 ρ(E) = Σₙ hₙ gₙ μₙ Tₙ(x) / (a π √(1-x²)),  x = (E - b)/a,
 with gₙ the damping kernel (Jackson by default) and h₀=1, hₙ=2 for n ≥ 1.
 
-- `E_grid` : explicit energies to evaluate; or set `E_range=[Emin, Emax]`
-  with `N_tilde` points. Default covers the rescaled band with a 1% margin.
-  Points outside the band return ρ = 0.
+  - `E_grid` : explicit energies to evaluate; or set `E_range=[Emin, Emax]`
+    with `N_tilde` points. Default covers the rescaled band with a 1% margin.
+    Points outside the band return ρ = 0.
 
-- `b` : center shift of the rescaling, `H_norm = (H - b I)/a`. Default 0.
-  Use `normalizeH(H; center=true)` to obtain `(a, b, H_norm)`.
+  - `b` : center shift of the rescaling, `H_norm = (H - b I)/a`. Default 0.
+    Use `normalizeH(H; center=true)` to obtain `(a, b, H_norm)`.
 
-- `dE_order` : return the dE_order-th energy derivative instead (currently
-  ≤ 1; use `dos0(μ, a; dE_order=2)` at the band center).
+  - `dE_order` : return the dE_order-th energy derivative instead (currently
+    ≤ 1; use `dos0(μ, a; dE_order=2)` at the band center).
 
-- `NR` : number of random vectors (only used when `H` is passed).
+  - `NR` : number of random vectors (only used when `H` is passed).
 """
 function dos end
 
@@ -40,41 +40,50 @@ values of Tₙ(0), so only moments with even n contribute.
 """
 function dos0 end
 
-
 function dos(
-             H;
-             NC::Int64=1024,
-             NR::Int64=12,
-             E_grid=nothing,
-             N_tilde::Int64=0,
-             E_range=nothing,
-             kernel = JacksonKernel,
-             fix_normalization = 0,
-             dE_order=0,
-             center=false
-            )
+    H;
+    NC::Int64 = 1024,
+    NR::Int64 = 12,
+    E_grid = nothing,
+    N_tilde::Int64 = 0,
+    E_range = nothing,
+    kernel = JacksonKernel,
+    fix_normalization = 0,
+    dE_order = 0,
+    center = false,
+)
     if center
-        a, b, H_norm = normalizeH(H; fixed_a=fix_normalization, center=true)
+        a, b, H_norm = normalizeH(H; fixed_a = fix_normalization, center = true)
     else
-        a, H_norm = normalizeH(H; fixed_a=fix_normalization)
+        a, H_norm = normalizeH(H; fixed_a = fix_normalization)
         b = 0.0
     end
     μ = kpm_1d(H_norm, NC, NR)
 
-    return dos(μ, a; b=b, E_grid=E_grid, E_range=E_range, N_tilde=N_tilde, kernel=kernel, NC=NC, dE_order=dE_order)
+    return dos(
+        μ,
+        a;
+        b = b,
+        E_grid = E_grid,
+        E_range = E_range,
+        N_tilde = N_tilde,
+        kernel = kernel,
+        NC = NC,
+        dE_order = dE_order,
+    )
 end
 
-
 function dos(
-             μ, H_rescale_factor;
-             b=0.0,
-             E_grid=nothing,
-             N_tilde::Int64=0,
-             E_range=nothing,
-             NC::Int64=0,
-             kernel=JacksonKernel,
-             dE_order=0
-            )
+    μ,
+    H_rescale_factor;
+    b = 0.0,
+    E_grid = nothing,
+    N_tilde::Int64 = 0,
+    E_range = nothing,
+    NC::Int64 = 0,
+    kernel = JacksonKernel,
+    dE_order = 0,
+)
     @assert (length(size(μ)) == 1) "The input need to be 1D array"
     μ = maybe_to_device(μ)
     @assert H_rescale_factor > 0
@@ -96,7 +105,8 @@ function dos(
         if isnothing(E_range)
             E_range = [b - 0.99 * a, b + 0.99 * a]
         end
-        E_grid = collect(((0:(N_tilde)).*(E_range[2]-E_range[1]))./N_tilde .+ E_range[1])
+        E_grid =
+            collect(((0:(N_tilde)) .* (E_range[2]-E_range[1])) ./ N_tilde .+ E_range[1])
     else
         @assert isnothing(E_range) "Should not set `E_grid` and `E_range` simultaneously."
         if N_tilde != 0
@@ -112,7 +122,7 @@ function dos(
     idx = (abs.(E_grid .- b) .< a)
     x_grid_inrange = maybe_to_device((E_grid[idx] .- b) ./ a)
 
-    hgn = maybe_to_device(kernel.(0:(NC-1),NC) .* hn.(0:(NC-1)))
+    hgn = maybe_to_device(kernel.(0:(NC-1), NC) .* hn.(0:(NC-1)))
     μtilde = μ .* hgn
 
     if dE_order == 0
@@ -139,12 +149,11 @@ function dos(
     return E_grid, rhoE_full
 end
 
-
 function _dos_single(μtilde, H_rescale_factor, b, E::Number, NC)
     ### MUST BE NON-MUTATING ###
     a = H_rescale_factor
     x = (E - b) / a
-    n_grid = collect(0:(NC - 1))
+    n_grid = collect(0:(NC-1))
     rhoE = chebyshev_lin_trans(x, n_grid, μtilde)
 
     denom = @. (a * pi * sqrt(1 - x^2))
@@ -152,12 +161,7 @@ function _dos_single(μtilde, H_rescale_factor, b, E::Number, NC)
     return rhoE
 end
 
-function dos0(
-              μ, H_rescale_factor;
-              NC::Int64=0,
-              kernel=JacksonKernel,
-              dE_order=0
-             )
+function dos0(μ, H_rescale_factor; NC::Int64 = 0, kernel = JacksonKernel, dE_order = 0)
     @assert H_rescale_factor > 0
     a = H_rescale_factor # for convenience
 
@@ -193,5 +197,4 @@ function dos0(
     else
         throw("unimplemented for derivative of order $(dE_order).")
     end
-
 end

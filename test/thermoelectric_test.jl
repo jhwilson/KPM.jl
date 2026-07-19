@@ -22,7 +22,7 @@ function exact_mu2D(H::Matrix{ComplexF64}, J::Matrix{ComplexF64}, a, b, NC)
     Jt = V' * J * V
     W = Jt .* transpose(Jt)
     theta = acos.(clamp.(lam, -1.0, 1.0))
-    C = [cos((n - 1) * theta[i]) for i in 1:N, n in 1:NC]
+    C = [cos((n - 1) * theta[i]) for i = 1:N, n = 1:NC]
     return (transpose(C) * W * C) ./ N
 end
 
@@ -31,7 +31,7 @@ N = 10
 A0 = randn(rng, ComplexF64, N, N)
 H = Matrix(Hermitian(A0 + A0'))
 r = randn(rng, N)
-J = ComplexF64[H[i, j] * (r[i] - r[j]) for i in 1:N, j in 1:N]
+J = ComplexF64[H[i, j] * (r[i] - r[j]) for i = 1:N, j = 1:N]
 ev = eigvals(Hermitian(H))
 margin = 0.05 * (ev[end] - ev[1])
 a = (ev[end] - ev[1] + 2margin) / 2
@@ -48,18 +48,26 @@ E_test = b .+ a .* [-0.8, -0.35, 0.0, 0.22, 0.6, 0.93]
     Ht = (H - b * I) / a
     F = eigen(Hermitian(Ht))
     lam, V = F.values, F.vectors
-    Tn = [V * Diagonal(cos.(n .* acos.(lam))) * V' for n in 0:(NC - 1)]
-    g = [KPM.JacksonKernel(n, NC) for n in 0:(NC - 1)]
-    h = [n == 0 ? 1.0 : 2.0 for n in 0:(NC - 1)]
+    Tn = [V * Diagonal(cos.(n .* acos.(lam))) * V' for n = 0:(NC-1)]
+    g = [KPM.JacksonKernel(n, NC) for n = 0:(NC-1)]
+    h = [n == 0 ? 1.0 : 2.0 for n = 0:(NC-1)]
     function deltaK(E)
         x = (E - b) / a
-        return sum(h[n + 1] * g[n + 1] * cos(n * acos(x)) * Tn[n + 1]
-                   for n in 0:(NC - 1)) / (a * pi * sqrt(1 - x^2))
+        return sum(h[n+1] * g[n+1] * cos(n * acos(x)) * Tn[n+1] for n = 0:(NC-1)) /
+               (a * pi * sqrt(1 - x^2))
     end
-    sig_direct = [-(2 * pi^2 * gJ / vol) * real(tr(J * deltaK(E) * J * deltaK(E)))
-                  for E in E_test]
-    sig_kpm = KPM.transport_distribution(mu2D, a, E_test; b=b, NH=N,
-                                         volume=vol, g_J=gJ, NC=NC)
+    sig_direct =
+        [-(2 * pi^2 * gJ / vol) * real(tr(J * deltaK(E) * J * deltaK(E))) for E in E_test]
+    sig_kpm = KPM.transport_distribution(
+        mu2D,
+        a,
+        E_test;
+        b = b,
+        NH = N,
+        volume = vol,
+        g_J = gJ,
+        NC = NC,
+    )
 
     # exact-moment vs direct-contraction agreement is ~5e-11 elementwise
     # (dominated by the 1/(1-x^2)^2 amplification near the band edge); any
@@ -68,23 +76,47 @@ E_test = b .+ a .* [-0.8, -0.35, 0.0, 0.22, 0.6, 0.93]
     @test sig_kpm ≈ sig_direct rtol=1e-9
     @test all(sig_kpm .>= 0)
     # Scalar and batched BLAS contractions can differ at the ulp level by platform.
-    @test KPM.transport_distribution(mu2D, a, E_test[2]; b=b, NH=N,
-                                     volume=vol, g_J=gJ, NC=NC) ≈ sig_kpm[2] rtol=1e-13
-    @test KPM.transport_distribution(mu2D, a, E_test; b=b, NH=N, volume=2vol,
-                                     g_J=gJ, NC=NC) ≈ sig_kpm ./ 2
-    @test KPM.transport_distribution(mu2D, a, b + 1.5a; b=b, NH=N,
-                                     volume=vol, g_J=gJ, NC=NC) == 0.0
+    @test KPM.transport_distribution(
+        mu2D,
+        a,
+        E_test[2];
+        b = b,
+        NH = N,
+        volume = vol,
+        g_J = gJ,
+        NC = NC,
+    ) ≈ sig_kpm[2] rtol=1e-13
+    @test KPM.transport_distribution(
+        mu2D,
+        a,
+        E_test;
+        b = b,
+        NH = N,
+        volume = 2vol,
+        g_J = gJ,
+        NC = NC,
+    ) ≈ sig_kpm ./ 2
+    @test KPM.transport_distribution(
+        mu2D,
+        a,
+        b + 1.5a;
+        b = b,
+        NH = N,
+        volume = vol,
+        g_J = gJ,
+        NC = NC,
+    ) == 0.0
 end
 
 @testset "transport_integrals: quadrature accuracy, rigid shift, argument checks" begin
     beta = 4.0
     mu_chem = b + 0.1a
-    kwargs = (; b=b, NH=N, volume=vol, g_J=gJ, NC=NC)
+    kwargs = (; b = b, NH = N, volume = vol, g_J = gJ, NC = NC)
     res = Logging.with_logger(Logging.NullLogger()) do
-        KPM.transport_integrals(mu2D, a, mu_chem; beta=beta, kwargs...)
+        KPM.transport_integrals(mu2D, a, mu_chem; beta = beta, kwargs...)
     end
 
-    Eg = range(b - a * (1 - 1e-3), b + a * (1 - 1e-3); length=200_001)
+    Eg = range(b - a * (1 - 1e-3), b + a * (1 - 1e-3); length = 200_001)
     Eg_vec = collect(Eg)
     sg = KPM.transport_distribution(mu2D, a, Eg_vec; kwargs...)
     w = KPM.fermi_window(mu_chem, beta).(Eg_vec)
@@ -97,8 +129,7 @@ end
     @test res.L2 ≈ L2b rtol=1e-5
 
     res_fine = Logging.with_logger(Logging.NullLogger()) do
-        KPM.transport_integrals(mu2D, a, mu_chem; beta=beta,
-                                quad_N=4 * 8 * NC, kwargs...)
+        KPM.transport_integrals(mu2D, a, mu_chem; beta = beta, quad_N = 4 * 8 * NC, kwargs...)
     end
     @test res.L0 ≈ res_fine.L0 rtol=1e-10
     @test res.L1 ≈ res_fine.L1 rtol=1e-10
@@ -106,36 +137,70 @@ end
 
     c = 1.3
     res_shift = Logging.with_logger(Logging.NullLogger()) do
-        KPM.transport_integrals(mu2D, a, mu_chem + c; beta=beta,
-                                b=b + c, NH=N, volume=vol, g_J=gJ, NC=NC)
+        KPM.transport_integrals(
+            mu2D,
+            a,
+            mu_chem + c;
+            beta = beta,
+            b = b + c,
+            NH = N,
+            volume = vol,
+            g_J = gJ,
+            NC = NC,
+        )
     end
     @test res_shift.L0 ≈ res.L0 rtol=1e-10
     @test res_shift.L1 ≈ res.L1 rtol=1e-10
     @test res_shift.L2 ≈ res.L2 rtol=1e-10
 
     empty = Logging.with_logger(Logging.NullLogger()) do
-        KPM.transport_integrals(mu2D, a, b + 3a; beta=1000.0, kwargs...)
+        KPM.transport_integrals(mu2D, a, b + 3a; beta = 1000.0, kwargs...)
     end
     @test empty.L0 == 0.0
     @test empty.L1 == 0.0
     @test empty.L2 == 0.0
     @test empty.neg_weight == 0.0
-    @test_throws ArgumentError KPM.transport_integrals(mu2D, a, mu_chem; beta=Inf, kwargs...)
-    @test_throws ArgumentError KPM.transport_integrals(mu2D, a, mu_chem; beta=0.0, kwargs...)
-    @test_throws ArgumentError KPM.transport_integrals(mu2D, a, mu_chem; beta=-1.0, kwargs...)
-    @test_throws ArgumentError KPM.thermoelectric(mu2D, a, mu_chem; beta=Inf, kwargs...)
-    @test_throws ArgumentError KPM.transport_integrals(mu2D, a, NaN; beta=beta, kwargs...)
-    @test_throws ArgumentError KPM.thermoelectric(mu2D, a, NaN; beta=beta, kwargs...)
+    @test_throws ArgumentError KPM.transport_integrals(
+        mu2D,
+        a,
+        mu_chem;
+        beta = Inf,
+        kwargs...,
+    )
+    @test_throws ArgumentError KPM.transport_integrals(
+        mu2D,
+        a,
+        mu_chem;
+        beta = 0.0,
+        kwargs...,
+    )
+    @test_throws ArgumentError KPM.transport_integrals(
+        mu2D,
+        a,
+        mu_chem;
+        beta = -1.0,
+        kwargs...,
+    )
+    @test_throws ArgumentError KPM.thermoelectric(mu2D, a, mu_chem; beta = Inf, kwargs...)
+    @test_throws ArgumentError KPM.transport_integrals(mu2D, a, NaN; beta = beta, kwargs...)
+    @test_throws ArgumentError KPM.thermoelectric(mu2D, a, NaN; beta = beta, kwargs...)
     @test_throws ArgumentError KPM.transport_distribution(mu2D, Inf, E_test; kwargs...)
-    @test_throws ArgumentError KPM.transport_distribution(mu2D, a, E_test; b=NaN, NH=N, volume=vol)
+    @test_throws ArgumentError KPM.transport_distribution(
+        mu2D,
+        a,
+        E_test;
+        b = NaN,
+        NH = N,
+        volume = vol,
+    )
     @test_throws ArgumentError KPM.transport_distribution(mu2D, a, [0.0, NaN]; kwargs...)
 
     @test_logs (:warn, r"Jackson-kernel KPM energy-resolution estimate") begin
-        KPM.transport_integrals(mu2D, a, b; beta=100.0, kwargs...)
+        KPM.transport_integrals(mu2D, a, b; beta = 100.0, kwargs...)
     end
     band_upper = b + a * (1 - 1e-3)
     @test_logs (:warn, r"thermal window extends past the usable band") match_mode=:any begin
-        KPM.transport_integrals(mu2D, a, band_upper - 0.5; beta=1.0, kwargs...)
+        KPM.transport_integrals(mu2D, a, band_upper - 0.5; beta = 1.0, kwargs...)
     end
 end
 
@@ -143,25 +208,26 @@ end
     Nr = 64
     Hr = spzeros(ComplexF64, Nr, Nr)
     Jr = spzeros(ComplexF64, Nr, Nr)
-    for i in 1:Nr
+    for i = 1:Nr
         j = mod1(i + 1, Nr)
         Hr[i, j] = -1.0
         Hr[j, i] = -1.0
         Jr[i, j] = Hr[i, j] * (-1.0)
         Jr[j, i] = Hr[j, i] * (1.0)
     end
-    ar, br, Hn = KPM.normalizeH(Hr; center=true)
+    ar, br, Hn = KPM.normalizeH(Hr; center = true)
     psi = Matrix{ComplexF64}(I, Nr, Nr)
-    mur = KPM.kpm_2d(Hn, Jr, Jr, 64, Nr, Nr; psi_in=psi)
+    mur = KPM.kpm_2d(Hn, Jr, Jr, 64, Nr, Nr; psi_in = psi)
 
-    r0 = KPM.thermoelectric(mur, ar, 0.0; beta=5.0, NH=Nr, volume=Float64(Nr), b=br)
+    r0 = KPM.thermoelectric(mur, ar, 0.0; beta = 5.0, NH = Nr, volume = Float64(Nr), b = br)
     @test r0.L0 > 0 && isfinite(r0.L0)
     # Exact particle-hole symmetry leaves only deterministic recurrence roundoff.
     @test abs(r0.L1) < 1e-7
     @test abs(r0.S_over_kB_over_e) < 1e-8
 
-    rp = KPM.thermoelectric(mur, ar, 1.0; beta=5.0, NH=Nr, volume=Float64(Nr), b=br)
-    rm = KPM.thermoelectric(mur, ar, -1.0; beta=5.0, NH=Nr, volume=Float64(Nr), b=br)
+    rp = KPM.thermoelectric(mur, ar, 1.0; beta = 5.0, NH = Nr, volume = Float64(Nr), b = br)
+    rm =
+        KPM.thermoelectric(mur, ar, -1.0; beta = 5.0, NH = Nr, volume = Float64(Nr), b = br)
     @test rp.S_over_kB_over_e ≈ -rm.S_over_kB_over_e rtol=1e-7
     @test rp.L0 ≈ rm.L0 rtol=1e-7
     @test rm.S_over_kB_over_e < 0
@@ -172,17 +238,16 @@ end
     Nd = 64
     Hd = spzeros(ComplexF64, Nd, Nd)
     Jd = spzeros(ComplexF64, Nd, Nd)
-    for i in 1:(Nd - 1)
+    for i = 1:(Nd-1)
         t = isodd(i) ? -1.0 : -0.1
-        Hd[i, i + 1] = t
-        Hd[i + 1, i] = t
-        Jd[i, i + 1] = t * (-1.0)
-        Jd[i + 1, i] = t * (1.0)
+        Hd[i, i+1] = t
+        Hd[i+1, i] = t
+        Jd[i, i+1] = t * (-1.0)
+        Jd[i+1, i] = t * (1.0)
     end
-    ad, bd, Hdn = KPM.normalizeH(Hd; center=true)
-    mud = KPM.kpm_2d(Hdn, Jd, Jd, 64, Nd, Nd;
-                     psi_in=Matrix{ComplexF64}(I, Nd, Nd))
-    dkwargs = (; beta=20.0, NH=Nd, volume=Float64(Nd), b=bd)
+    ad, bd, Hdn = KPM.normalizeH(Hd; center = true)
+    mud = KPM.kpm_2d(Hdn, Jd, Jd, 64, Nd, Nd; psi_in = Matrix{ComplexF64}(I, Nd, Nd))
+    dkwargs = (; beta = 20.0, NH = Nd, volume = Float64(Nd), b = bd)
 
     # This off-center point remains thermally insulating at NC=64 while giving L1 != 0.
     rg = @test_logs (:warn, r"below-conductivity-floor") match_mode=:any begin
@@ -193,7 +258,7 @@ end
     @test 0 <= rg.L0 < 1e-4
 
     res = Logging.with_logger(Logging.NullLogger()) do
-        KPM.thermoelectric(mud, ad, 0.1; sigma_min=0.0, dkwargs...)
+        KPM.thermoelectric(mud, ad, 0.1; sigma_min = 0.0, dkwargs...)
     end
     @test isfinite(res.S_over_kB_over_e)
     rmet = Logging.with_logger(Logging.NullLogger()) do
@@ -214,7 +279,7 @@ end
     @test norm(S - (-beta .* L1m ./ L0m)) > 1e-3
 
     @test KPM.seebeck_solve(2.0, 0.5, beta) == -beta * 0.5 / 2.0
-    @test_throws ArgumentError KPM.seebeck_solve(2.0, 0.5, beta; sigma_min=NaN)
+    @test_throws ArgumentError KPM.seebeck_solve(2.0, 0.5, beta; sigma_min = NaN)
     @test_logs (:warn, r"L1 is non-finite") begin
         @test isnan(KPM.seebeck_solve(2.0, NaN, beta))
     end
@@ -228,21 +293,26 @@ end
         KPM.seebeck_solve(NaN, 0.5, beta)
     end)
     @test isnan(Logging.with_logger(Logging.NullLogger()) do
-        KPM.seebeck_solve(1e-300, 0.5, beta; sigma_min=1e-10)
+        KPM.seebeck_solve(1e-300, 0.5, beta; sigma_min = 1e-10)
     end)
 
     @test all(isnan, Logging.with_logger(Logging.NullLogger()) do
         KPM.seebeck_solve([-2.0 0.0; 0.0 -1.5], L1m, beta)
     end)
-    @test all(isnan, Logging.with_logger(Logging.NullLogger()) do
-        KPM.seebeck_solve(diagm([1e-15, 2e-15]), L1m, beta; sigma_min=1e-10)
-    end)
+    @test all(
+        isnan,
+        Logging.with_logger(Logging.NullLogger()) do
+            KPM.seebeck_solve(diagm([1e-15, 2e-15]), L1m, beta; sigma_min = 1e-10)
+        end,
+    )
     @test all(isnan, Logging.with_logger(Logging.NullLogger()) do
         KPM.seebeck_solve([1.0 1.0; 1.0 1.0], L1m, beta)
     end)
     @test_logs (:warn, r"L1 is non-finite") begin
-        @test all(isnan, KPM.seebeck_solve(Matrix{Float64}(I, 2, 2),
-                                           [NaN 0.0; 0.0 1.0], beta))
+        @test all(
+            isnan,
+            KPM.seebeck_solve(Matrix{Float64}(I, 2, 2), [NaN 0.0; 0.0 1.0], beta),
+        )
     end
     @test_throws DimensionMismatch KPM.seebeck_solve(zeros(2, 3), zeros(2, 3), beta)
     @test_throws DimensionMismatch KPM.seebeck_solve(zeros(2, 2), zeros(3, 3), beta)
@@ -254,15 +324,15 @@ end
     A0 = randn(rng, ComplexF64, N, N)
     H = Matrix(Hermitian(A0 + A0'))
     r = randn(rng, N)
-    J = ComplexF64[H[i, j] * (r[i] - r[j]) for i in 1:N, j in 1:N]
+    J = ComplexF64[H[i, j] * (r[i] - r[j]) for i = 1:N, j = 1:N]
     ev = eigvals(Hermitian(H))
     a = (ev[end] - ev[1]) / 2 * 1.1
     b = (ev[end] + ev[1]) / 2
     Ef = ev[4]
     for NC in (256, 2048)
         mu2D = exact_mu2D(H, J, a, b, NC)
-        kg = KPM.transport_distribution(mu2D, a, Ef; b=b, NH=N, volume=1.0)
-        kb = KPM.kubo_bastin_cond(mu2D, a, Ef; b=b, NH=N, area=1.0)
+        kg = KPM.transport_distribution(mu2D, a, Ef; b = b, NH = N, volume = 1.0)
+        kb = KPM.kubo_bastin_cond(mu2D, a, Ef; b = b, NH = N, area = 1.0)
         # A 0.1 absolute margin isolates the shared KG/KB normalization at finite NC.
         @test kb / kg ≈ 1 atol=0.1
         @test kg > 0
@@ -275,34 +345,35 @@ end
     A_local = randn(rng_local, ComplexF64, N_local, N_local)
     H_local = sparse(Matrix(Hermitian(A_local + A_local')))
     positions = randn(rng_local, N_local)
-    J_local = sparse(ComplexF64[
-        H_local[i, j] * (positions[i] - positions[j])
-        for i in 1:N_local, j in 1:N_local
-    ])
-    a_local, b_local, H_norm = KPM.normalizeH(H_local; center=true)
+    J_local = sparse(
+        ComplexF64[
+            H_local[i, j] * (positions[i] - positions[j]) for i = 1:N_local, j = 1:N_local
+        ],
+    )
+    a_local, b_local, H_norm = KPM.normalizeH(H_local; center = true)
     NC_local = 32
     psi_local = Matrix{ComplexF64}(I, N_local, N_local)
-    mu_local = KPM.kpm_2d(H_norm, J_local, J_local, NC_local,
-                          N_local, N_local; psi_in=psi_local)
+    mu_local =
+        KPM.kpm_2d(H_norm, J_local, J_local, NC_local, N_local, N_local; psi_in = psi_local)
 
     Ht = Matrix((H_local - b_local * I) / a_local)
     Tm = Vector{Matrix{ComplexF64}}(undef, NC_local)
     Tm[1] = Matrix{ComplexF64}(I, N_local, N_local)
     Tm[2] = Ht
-    for n in 3:NC_local
-        Tm[n] = 2 * Ht * Tm[n - 1] - Tm[n - 2]
+    for n = 3:NC_local
+        Tm[n] = 2 * Ht * Tm[n-1] - Tm[n-2]
     end
-    kernel_weights = [KPM.JacksonKernel(n, NC_local) for n in 0:(NC_local - 1)]
+    kernel_weights = [KPM.JacksonKernel(n, NC_local) for n = 0:(NC_local-1)]
     function recurrence_delta(E)
         x = (E - b_local) / a_local
         tx = Vector{Float64}(undef, NC_local)
         tx[1] = 1.0
         tx[2] = x
-        for n in 3:NC_local
-            tx[n] = 2x * tx[n - 1] - tx[n - 2]
+        for n = 3:NC_local
+            tx[n] = 2x * tx[n-1] - tx[n-2]
         end
         delta = zeros(ComplexF64, N_local, N_local)
-        for n in 1:NC_local
+        for n = 1:NC_local
             hn = n == 1 ? 1.0 : 2.0
             delta .+= hn * kernel_weights[n] * tx[n] .* Tm[n]
         end
@@ -314,42 +385,59 @@ end
     energies = b_local .+ a_local .* [-0.65, -0.35, 0.0, 0.3, 0.65]
     sigma_direct = [
         -(2π^2 * gJ_local / volume_local) *
-        real(tr(J_local * recurrence_delta(E) * J_local * recurrence_delta(E)))
-        for E in energies
+        real(tr(J_local * recurrence_delta(E) * J_local * recurrence_delta(E))) for
+        E in energies
     ]
     sigma_kpm = KPM.transport_distribution(
-        mu_local, a_local, energies; b=b_local, NH=N_local,
-        volume=volume_local, g_J=gJ_local, NC=NC_local)
+        mu_local,
+        a_local,
+        energies;
+        b = b_local,
+        NH = N_local,
+        volume = volume_local,
+        g_J = gJ_local,
+        NC = NC_local,
+    )
 
     # The recurrence and KPM routes contract the identical finite Jackson
     # expansion; the observed maximum elementwise relative error is 4.3e-13.
-    @test all(isapprox.(sigma_kpm, sigma_direct; rtol=1e-12))
+    @test all(isapprox.(sigma_kpm, sigma_direct; rtol = 1e-12))
 end
 
 @testset "disordered cubic thermoelectric integrals vs matched-broadening ED" begin
-    H3, Jx3, Jy3, Jz3, volume3 = cubic_model(
-        4; t=1.0, W=2.0, rng=Xoshiro(1))
+    H3, Jx3, Jy3, Jz3, volume3 = cubic_model(4; t = 1.0, W = 2.0, rng = Xoshiro(1))
     N3 = size(H3, 1)
-    a3, b3, H3_norm = KPM.normalizeH(H3; center=true)
+    a3, b3, H3_norm = KPM.normalizeH(H3; center = true)
     NC3 = 128
     psi3 = Matrix{ComplexF64}(I, N3, N3)
-    mu3 = KPM.kpm_2d(H3_norm, Jx3, Jx3, NC3, N3, N3; psi_in=psi3)
+    mu3 = KPM.kpm_2d(H3_norm, Jx3, Jx3, NC3, N3, N3; psi_in = psi3)
     lambda = 4.0
     lorentz = KPM.LorentzKernels(lambda)
 
     energies = b3 .+ a3 .* [-0.55, -0.25, 0.05, 0.3]
     sigma_kpm = KPM.transport_distribution(
-        mu3, a3, energies; b=b3, NH=N3, volume=volume3,
-        kernel=lorentz, NC=NC3)
+        mu3,
+        a3,
+        energies;
+        b = b3,
+        NH = N3,
+        volume = volume3,
+        kernel = lorentz,
+        NC = NC3,
+    )
     sigma_ed = [
         ed_transport_distribution(
-            H3, Jx3, Jx3, volume3; E=E,
-            eta=a3 * lambda * sqrt(1 - ((E - b3) / a3)^2) / NC3)
-        for E in energies
+            H3,
+            Jx3,
+            Jx3,
+            volume3;
+            E = E,
+            eta = a3 * lambda * sqrt(1 - ((E - b3) / a3)^2) / NC3,
+        ) for E in energies
     ]
     # The maximum observed pointwise relative error is below 5%; 15% is a
     # threefold broadening-match margin, not a stochastic tolerance.
-    @test all(isapprox.(sigma_kpm, sigma_ed; rtol=0.15))
+    @test all(isapprox.(sigma_kpm, sigma_ed; rtol = 0.15))
 
     mu_chem3 = b3 - 0.25a3
     beta3 = 10.0
@@ -357,11 +445,26 @@ end
     eta = a3 * lambda * sqrt(1 - xmu^2) / NC3
     kpm_integrals = Logging.with_logger(Logging.NullLogger()) do
         KPM.transport_integrals(
-            mu3, a3, mu_chem3; beta=beta3, b=b3, NH=N3,
-            volume=volume3, kernel=lorentz, NC=NC3)
+            mu3,
+            a3,
+            mu_chem3;
+            beta = beta3,
+            b = b3,
+            NH = N3,
+            volume = volume3,
+            kernel = lorentz,
+            NC = NC3,
+        )
     end
     ed_integrals = ed_transport_integrals(
-        H3, Jx3, Jx3, volume3; mu_chem=mu_chem3, beta=beta3, eta=eta)
+        H3,
+        Jx3,
+        Jx3,
+        volume3;
+        mu_chem = mu_chem3,
+        beta = beta3,
+        eta = eta,
+    )
     # Freezing eta at x_mu is valid here because the narrow ~1/beta window is
     # interior and sqrt(1-x^2) varies little across it; wide or edge windows
     # require a local eta(E) reference.
@@ -381,19 +484,49 @@ end
     base_integrals, scaled_integrals, base_result, scaled_result =
         Logging.with_logger(Logging.NullLogger()) do
             base_i = KPM.transport_integrals(
-                mu2D, a, mu_chem; beta=beta_local, b=b, NH=N,
-                volume=vol, g_J=gJ, NC=NC)
+                mu2D,
+                a,
+                mu_chem;
+                beta = beta_local,
+                b = b,
+                NH = N,
+                volume = vol,
+                g_J = gJ,
+                NC = NC,
+            )
             scaled_i = KPM.transport_integrals(
-                mu2D .* scale^2, scale * a, scale * mu_chem;
-                beta=beta_local / scale, b=scale * b, NH=N,
-                volume=vol, g_J=gJ, NC=NC)
+                mu2D .* scale^2,
+                scale * a,
+                scale * mu_chem;
+                beta = beta_local / scale,
+                b = scale * b,
+                NH = N,
+                volume = vol,
+                g_J = gJ,
+                NC = NC,
+            )
             base_r = KPM.thermoelectric(
-                mu2D, a, mu_chem; beta=beta_local, b=b, NH=N,
-                volume=vol, g_J=gJ, NC=NC)
+                mu2D,
+                a,
+                mu_chem;
+                beta = beta_local,
+                b = b,
+                NH = N,
+                volume = vol,
+                g_J = gJ,
+                NC = NC,
+            )
             scaled_r = KPM.thermoelectric(
-                mu2D .* scale^2, scale * a, scale * mu_chem;
-                beta=beta_local / scale, b=scale * b, NH=N,
-                volume=vol, g_J=gJ, NC=NC)
+                mu2D .* scale^2,
+                scale * a,
+                scale * mu_chem;
+                beta = beta_local / scale,
+                b = scale * b,
+                NH = N,
+                volume = vol,
+                g_J = gJ,
+                NC = NC,
+            )
             base_i, scaled_i, base_r, scaled_r
         end
     @test scaled_integrals.L0 ≈ base_integrals.L0 rtol=1e-12
@@ -406,18 +539,16 @@ end
     Nr = 64
     Hr = spzeros(ComplexF64, Nr, Nr)
     Jr = spzeros(ComplexF64, Nr, Nr)
-    for i in 1:Nr
+    for i = 1:Nr
         j = mod1(i + 1, Nr)
         Hr[i, j] = -1.0
         Hr[j, i] = -1.0
         Jr[i, j] = Hr[i, j] * (-1.0)
         Jr[j, i] = Hr[j, i] * (1.0)
     end
-    ar, br, Hrn = KPM.normalizeH(Hr; center=true)
+    ar, br, Hrn = KPM.normalizeH(Hr; center = true)
     NCr = 128
-    mur = KPM.kpm_2d(
-        Hrn, Jr, Jr, NCr, Nr, Nr;
-        psi_in=Matrix{ComplexF64}(I, Nr, Nr))
+    mur = KPM.kpm_2d(Hrn, Jr, Jr, NCr, Nr, Nr; psi_in = Matrix{ComplexF64}(I, Nr, Nr))
     # Strong Lorentz damping makes the finite-ring transport distribution
     # smooth on both thermal scales, which is the hypothesis of the Mott
     # expansion rather than an NC-resolution convergence claim.
@@ -425,20 +556,42 @@ end
     smooth_kernel = KPM.LorentzKernels(20.0)
     dE = 1e-4 * ar
     sigma_minus = KPM.transport_distribution(
-        mur, ar, mu_chem - dE; b=br, NH=Nr, volume=Float64(Nr), NC=NCr,
-        kernel=smooth_kernel)
+        mur,
+        ar,
+        mu_chem - dE;
+        b = br,
+        NH = Nr,
+        volume = Float64(Nr),
+        NC = NCr,
+        kernel = smooth_kernel,
+    )
     sigma_plus = KPM.transport_distribution(
-        mur, ar, mu_chem + dE; b=br, NH=Nr, volume=Float64(Nr), NC=NCr,
-        kernel=smooth_kernel)
+        mur,
+        ar,
+        mu_chem + dE;
+        b = br,
+        NH = Nr,
+        volume = Float64(Nr),
+        NC = NCr,
+        kernel = smooth_kernel,
+    )
     dlnsigma = (log(sigma_plus) - log(sigma_minus)) / (2dE)
 
     deviations = Float64[]
     for beta_local in (40.0, 80.0)
         result = Logging.with_logger(Logging.NullLogger()) do
             KPM.thermoelectric(
-                mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
-                volume=Float64(Nr), NC=NCr, kernel=smooth_kernel,
-                sigma_min=0.0)
+                mur,
+                ar,
+                mu_chem;
+                beta = beta_local,
+                b = br,
+                NH = Nr,
+                volume = Float64(Nr),
+                NC = NCr,
+                kernel = smooth_kernel,
+                sigma_min = 0.0,
+            )
         end
         mott = -(π^2 / (3beta_local)) * dlnsigma
         push!(deviations, abs(result.S_over_kB_over_e - mott))
@@ -454,11 +607,27 @@ end
     mu_chem = b + 0.1a
     result_v, result_2v = Logging.with_logger(Logging.NullLogger()) do
         rv = KPM.thermoelectric(
-            mu2D, a, mu_chem; beta=beta_local, b=b, NH=N,
-            volume=vol, g_J=gJ, NC=NC)
+            mu2D,
+            a,
+            mu_chem;
+            beta = beta_local,
+            b = b,
+            NH = N,
+            volume = vol,
+            g_J = gJ,
+            NC = NC,
+        )
         r2v = KPM.thermoelectric(
-            mu2D, a, mu_chem; beta=beta_local, b=b, NH=N,
-            volume=2vol, g_J=gJ, NC=NC)
+            mu2D,
+            a,
+            mu_chem;
+            beta = beta_local,
+            b = b,
+            NH = N,
+            volume = 2vol,
+            g_J = gJ,
+            NC = NC,
+        )
         rv, r2v
     end
     @test result_2v.L0 ≈ result_v.L0 / 2 rtol=1e-12
@@ -471,29 +640,45 @@ end
     Nr = 64
     Hr = spzeros(ComplexF64, Nr, Nr)
     Jr = spzeros(ComplexF64, Nr, Nr)
-    for i in 1:Nr
+    for i = 1:Nr
         j = mod1(i + 1, Nr)
         Hr[i, j] = -1.0
         Hr[j, i] = -1.0
         Jr[i, j] = Hr[i, j] * (-1.0)
         Jr[j, i] = Hr[j, i] * (1.0)
     end
-    ar, br, Hrn = KPM.normalizeH(Hr; center=true)
+    ar, br, Hrn = KPM.normalizeH(Hr; center = true)
     NCmax = 256
-    mur = KPM.kpm_2d(
-        Hrn, Jr, Jr, NCmax, Nr, Nr;
-        psi_in=Matrix{ComplexF64}(I, Nr, Nr))
+    mur = KPM.kpm_2d(Hrn, Jr, Jr, NCmax, Nr, Nr; psi_in = Matrix{ComplexF64}(I, Nr, Nr))
     mu_chem = -1.0
     beta_local = 8.0
     lorentz = KPM.LorentzKernels(4.0)
 
     quad_default, quad_fine = Logging.with_logger(Logging.NullLogger()) do
         q1 = KPM.transport_integrals(
-            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
-            volume=Float64(Nr), kernel=lorentz, NC=128, quad_N=8 * 128)
+            mur,
+            ar,
+            mu_chem;
+            beta = beta_local,
+            b = br,
+            NH = Nr,
+            volume = Float64(Nr),
+            kernel = lorentz,
+            NC = 128,
+            quad_N = 8 * 128,
+        )
         q2 = KPM.transport_integrals(
-            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
-            volume=Float64(Nr), kernel=lorentz, NC=128, quad_N=16 * 128)
+            mur,
+            ar,
+            mu_chem;
+            beta = beta_local,
+            b = br,
+            NH = Nr,
+            volume = Float64(Nr),
+            kernel = lorentz,
+            NC = 128,
+            quad_N = 16 * 128,
+        )
         q1, q2
     end
     @test quad_default.L0 ≈ quad_fine.L0 rtol=1e-10
@@ -502,14 +687,39 @@ end
 
     jackson128, jackson256, lorentz256 = Logging.with_logger(Logging.NullLogger()) do
         r128 = KPM.thermoelectric(
-            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
-            volume=Float64(Nr), NC=128, sigma_min=0.0)
+            mur,
+            ar,
+            mu_chem;
+            beta = beta_local,
+            b = br,
+            NH = Nr,
+            volume = Float64(Nr),
+            NC = 128,
+            sigma_min = 0.0,
+        )
         r256 = KPM.thermoelectric(
-            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
-            volume=Float64(Nr), NC=256, sigma_min=0.0)
+            mur,
+            ar,
+            mu_chem;
+            beta = beta_local,
+            b = br,
+            NH = Nr,
+            volume = Float64(Nr),
+            NC = 256,
+            sigma_min = 0.0,
+        )
         rl = KPM.thermoelectric(
-            mur, ar, mu_chem; beta=beta_local, b=br, NH=Nr,
-            volume=Float64(Nr), kernel=lorentz, NC=256, sigma_min=0.0)
+            mur,
+            ar,
+            mu_chem;
+            beta = beta_local,
+            b = br,
+            NH = Nr,
+            volume = Float64(Nr),
+            kernel = lorentz,
+            NC = 256,
+            sigma_min = 0.0,
+        )
         r128, r256, rl
     end
     # Observed S values (Jackson-128, Jackson-256, Lorentz-256) are
@@ -519,26 +729,38 @@ end
 end
 
 @testset "Haldane equal-energy KG excludes antisymmetric Hall response" begin
-    Hh, Jxh, Jyh, area_h = haldane_model(
-        6, 6; t=1.0, t2=0.2, ϕ=π / 2, m=0.0)
+    Hh, Jxh, Jyh, area_h = haldane_model(6, 6; t = 1.0, t2 = 0.2, ϕ = π / 2, m = 0.0)
     Dh = size(Hh, 1)
-    ah, bh, Hh_norm = KPM.normalizeH(Hh; center=true)
+    ah, bh, Hh_norm = KPM.normalizeH(Hh; center = true)
     NCh = 96
     psih = Matrix{ComplexF64}(I, Dh, Dh)
-    muh_xy = KPM.kpm_2d(Hh_norm, Jxh, Jyh, NCh, Dh, Dh; psi_in=psih)
+    muh_xy = KPM.kpm_2d(Hh_norm, Jxh, Jyh, NCh, Dh, Dh; psi_in = psih)
 
-    sigma_xy = KPM.kubo_bastin_cond(
-        muh_xy, ah, 0.0; b=bh, NH=Dh, area=area_h)
+    sigma_xy = KPM.kubo_bastin_cond(muh_xy, ah, 0.0; b = bh, NH = Dh, area = area_h)
     # Finite-size/NC error in the Chern plateau is comfortably below this pin.
     @test abs(sigma_xy) ≈ 1.0 atol=0.05
 
     ti = Logging.with_logger(Logging.NullLogger()) do
         KPM.transport_integrals(
-            muh_xy, ah, 0.0; beta=20.0, b=bh, NH=Dh,
-            volume=area_h, NC=NCh)
+            muh_xy,
+            ah,
+            0.0;
+            beta = 20.0,
+            b = bh,
+            NH = Dh,
+            volume = area_h,
+            NC = NCh,
+        )
     end
     sigma_kg = KPM.transport_distribution(
-        muh_xy, ah, 0.0; b=bh, NH=Dh, volume=area_h, NC=NCh)
+        muh_xy,
+        ah,
+        0.0;
+        b = bh,
+        NH = Dh,
+        volume = area_h,
+        NC = NCh,
+    )
     # The Fermi-sea Bastin antisymmetric response is invisible to the
     # equal-energy KG contraction by design: KG reconstructs only the
     # symmetric part and therefore vanishes in the insulating gap.
@@ -552,8 +774,15 @@ end
     Htiny = Diagonal(ComplexF64[-1, 1])
     Jtiny = ComplexF64[0 1; -1 0]
     empty_ed = ed_transport_integrals(
-        Htiny, Jtiny, Jtiny, 1.0; mu_chem=100.0, beta=100.0, eta=0.01)
-    @test empty_ed == (L0=0.0, L1=0.0, L2=0.0)
+        Htiny,
+        Jtiny,
+        Jtiny,
+        1.0;
+        mu_chem = 100.0,
+        beta = 100.0,
+        eta = 0.01,
+    )
+    @test empty_ed == (L0 = 0.0, L1 = 0.0, L2 = 0.0)
 
     # A deliberately under-resolved synthetic NC=8 moment set isolates the
     # negative-weight diagnostic from model- and platform-dependent ringing.
@@ -561,7 +790,17 @@ end
     mu_bad = zeros(ComplexF64, NC_bad, NC_bad)
     mu_bad[1, 1] = 1.0
     @test_logs (:warn, r"significant negative weight") match_mode=:any begin
-        KPM.thermoelectric(mu_bad, a, b + 0.2a; beta=4.0, b=b, NH=N,
-                          volume=vol, g_J=gJ, NC=NC_bad, sigma_min=0.0)
+        KPM.thermoelectric(
+            mu_bad,
+            a,
+            b + 0.2a;
+            beta = 4.0,
+            b = b,
+            NH = N,
+            volume = vol,
+            g_J = gJ,
+            NC = NC_bad,
+            sigma_min = 0.0,
+        )
     end
 end

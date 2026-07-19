@@ -21,8 +21,8 @@ end
 
 function all_sites(Nx, Ny)
     sites = HoneycombSite[]
-    for x in 1:Nx
-        for y in 1:Ny
+    for x = 1:Nx
+        for y = 1:Ny
             push!(sites, HoneycombSite(x, y, 1, site_position(x, y, 1)))
             push!(sites, HoneycombSite(x, y, 2, site_position(x, y, 2)))
         end
@@ -30,33 +30,34 @@ function all_sites(Nx, Ny)
     return sites
 end
 
-function GrapheneLattice(Nx::Int64, Ny::Int64; 
+function GrapheneLattice(
+    Nx::Int64,
+    Ny::Int64;
     t::Number = 1.0, # NN hopping
     Δ::Number = 0.0, # On-site energy difference
     bc_factor_x::Number = 1.0+0im, # twisted boundary condition
-	bc_factor_y::Number = 1.0+0im,
-    )
-
+    bc_factor_y::Number = 1.0+0im,
+)
     N = 2 * Nx * Ny  # Total number of sites
     site_list = all_sites(Nx, Ny)
 
-    function cell_pos(x,y)
-		modx = mod(x-1,Nx) + 1 # Periodic Boundary condition
-		mody = mod(y-1,Ny) + 1
-		return mody + Ny * (modx - 1)
-	end
+    function cell_pos(x, y)
+        modx = mod(x-1, Nx) + 1 # Periodic Boundary condition
+        mody = mod(y-1, Ny) + 1
+        return mody + Ny * (modx - 1)
+    end
 
     Ind1, Ind2, Vals = Int64[], Int64[], ComplexF64[]
-    function addToList!(pos1,pos2,value,Ind1,Ind2,Vals)
-            push!(Ind1, pos1)
-            push!(Ind2, pos2)
-            push!(Vals, value)
-            return
+    function addToList!(pos1, pos2, value, Ind1, Ind2, Vals)
+        push!(Ind1, pos1)
+        push!(Ind2, pos2)
+        push!(Vals, value)
+        return
     end
-    for x in 1:Nx, y in 1:Ny
-        curpos = cell_pos(x,y)
-        pbx = cell_pos(x+1,y)
-        pby = cell_pos(x,y+1)
+    for x = 1:Nx, y = 1:Ny
+        curpos = cell_pos(x, y)
+        pbx = cell_pos(x+1, y)
+        pby = cell_pos(x, y+1)
         # Add diagonal terms
         addToList!(2*curpos-1, 2*curpos-1, Δ/2, Ind1, Ind2, Vals)
         addToList!(2*curpos-1, 2*curpos, -t, Ind1, Ind2, Vals)
@@ -64,7 +65,7 @@ function GrapheneLattice(Nx::Int64, Ny::Int64;
         addToList!(2*curpos, 2*curpos, -Δ/2, Ind1, Ind2, Vals)
         # Add hopping terms
         addToList!(2*curpos, 2*pbx-1, (-t)*bc_factor_x^(x==Nx), Ind1, Ind2, Vals)
-        addToList!(2*pbx-1,2*curpos, ((-t)*bc_factor_x^(x==Nx))', Ind1, Ind2, Vals)
+        addToList!(2*pbx-1, 2*curpos, ((-t)*bc_factor_x^(x==Nx))', Ind1, Ind2, Vals)
         addToList!(2*curpos, 2*pby-1, (-t)*bc_factor_y^(y==Ny), Ind1, Ind2, Vals)
         addToList!(2*pby-1, 2*curpos, ((-t)*bc_factor_y^(y==Ny))', Ind1, Ind2, Vals)
     end
@@ -78,18 +79,18 @@ function GrapheneLattice(Nx::Int64, Ny::Int64;
     ry = [sqrt(3)/2, 3/2]
     Valxs, Valys = ComplexF64[], ComplexF64[]
     Valxxs, Valyys, Valxys = ComplexF64[], ComplexF64[], ComplexF64[]
-    for k in 1:length(Ind1)
+    for k = 1:length(Ind1)
         i = Ind1[k]
         j = Ind2[k]
         dist = site_list[i].pos - site_list[j].pos
-        for Py in -1:1, Px in -1:1
+        for Py = -1:1, Px = -1:1
             dpos = dist .+ Py * Ny .* ry .+ Px * Nx .* rx
             if norm(dpos) < 1.1
-                push!(Valxs,Vals[k]*dpos[1])
-                push!(Valys,Vals[k]*dpos[2])
-                push!(Valxxs,Vals[k]*dpos[1]*dpos[1])
-                push!(Valxys,Vals[k]*dpos[1]*dpos[2])
-                push!(Valyys,Vals[k]*dpos[2]*dpos[2])
+                push!(Valxs, Vals[k]*dpos[1])
+                push!(Valys, Vals[k]*dpos[2])
+                push!(Valxxs, Vals[k]*dpos[1]*dpos[1])
+                push!(Valxys, Vals[k]*dpos[1]*dpos[2])
+                push!(Valyys, Vals[k]*dpos[2]*dpos[2])
                 break
             end
         end
@@ -105,14 +106,14 @@ end
 function GraphenePositionOps(Nx::Int64, Ny::Int64)
     N = 2 * Nx * Ny
     site_list = all_sites(Nx, Ny)
-    
+
     # Position operators
     X_pos = spzeros(Float64, N, N)
     Y_pos = spzeros(Float64, N, N)
-    for i in 1:N
+    for i = 1:N
         X_pos[i, i] = site_list[i].pos[1]
         Y_pos[i, i] = site_list[i].pos[2]
     end
-    
+
     return X_pos, Y_pos
 end

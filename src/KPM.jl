@@ -4,7 +4,7 @@ using Serialization
 
 const dt_real = Float64
 const dt_cplx = ComplexF64
-const dt_num = Union{Float64, ComplexF64}
+const dt_num = Union{Float64,ComplexF64}
 
 include("device.jl")
 

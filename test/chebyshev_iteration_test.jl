@@ -29,12 +29,12 @@ KPM.chebyshev_iter(H, ψviews, Niter)
 expected = Vector{Array{ComplexF64,2}}(undef, Niter)
 expected[1] = copy(ψ0)
 expected[2] = copy(ψ1)
-for i in 3:Niter
-	expected[i] = 2 * H * expected[i-1] - expected[i-2]
+for i = 3:Niter
+    expected[i] = 2 * H * expected[i-1] - expected[i-2]
 end
 
 @testset "chebyshev_iter correctness" begin
-	for i in 1:Niter
-		@test norm(ψall[:, :, i] .- expected[i]) < 1e-10
-	end
+    for i = 1:Niter
+        @test norm(ψall[:, :, i] .- expected[i]) < 1e-10
+    end
 end

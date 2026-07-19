@@ -9,15 +9,17 @@ using .EDReference
 function dwave_channel_dense(h, mu, U, n, D)
     N = size(h, 1)
     xi = Matrix{ComplexF64}(h) - mu * I - Diagonal(U .* n ./ 2)
-    return [xi Matrix{ComplexF64}(D);
-            adjoint(Matrix{ComplexF64}(D)) -conj(xi)]
+    return [
+        xi Matrix{ComplexF64}(D);
+        adjoint(Matrix{ComplexF64}(D)) -conj(xi)
+    ]
 end
 
-function dwave_reconstruct_directed(mu_F, a, beta; Np=2size(mu_F, 1))
+function dwave_reconstruct_directed(mu_F, a, beta; Np = 2size(mu_F, 1))
     NC = size(mu_F, 1)
-    gh = KPM.JacksonKernel.(0:NC-1, NC) .* KPM.hn.(0:NC-1)
+    gh = KPM.JacksonKernel.(0:(NC-1), NC) .* KPM.hn.(0:(NC-1))
     nodes, _ = KPM.gausschebyshevt(Np)
-    C = cos.((0:NC-1) .* acos.(nodes'))
+    C = cos.((0:(NC-1)) .* acos.(nodes'))
     wf = KPM.fermiFunctions(0.0, beta).(a .* nodes) ./ Np
     return transpose(gh .* mu_F) * (C * wf)
 end
@@ -29,10 +31,14 @@ function dwave_channel_update_ed(H, channel, beta)
     values = ComplexF64[]
     sign = channel.parity === :even ? 1.0 : -1.0
     for (b, (i, j)) in pairs(channel.bonds)
-        Fij = sum(eig.vectors[i, s] * conj(eig.vectors[j + N, s]) * occ[s]
-                  for s in eachindex(eig.values))
-        Fji = sum(eig.vectors[j, s] * conj(eig.vectors[i + N, s]) * occ[s]
-                  for s in eachindex(eig.values))
+        Fij = sum(
+            eig.vectors[i, s] * conj(eig.vectors[j+N, s]) * occ[s] for
+            s in eachindex(eig.values)
+        )
+        Fji = sum(
+            eig.vectors[j, s] * conj(eig.vectors[i+N, s]) * occ[s] for
+            s in eachindex(eig.values)
+        )
         push!(values, -channel.V[b] * (Fij + sign * Fji) / 2)
     end
     return values
@@ -45,7 +51,7 @@ const DWAVE_BETA = 8.0
 
 const DWAVE_BONDS, DWAVE_WEIGHTS, DWAVE_X = let
     rows, cols, _ = findnz(DWAVE_H)
-    bonds = Tuple{Int, Int}[]
+    bonds = Tuple{Int,Int}[]
     weights = ComplexF64[]
     x_bonds = BitVector()
     for (i, j) in zip(rows, cols)
@@ -61,20 +67,20 @@ const DWAVE_BONDS, DWAVE_WEIGHTS, DWAVE_X = let
     bonds, weights, x_bonds
 end
 const DWAVE_CHANNEL = KPM.PairingChannel(DWAVE_BONDS, DWAVE_WEIGHTS, 1.6, :even)
-const DWAVE_D0 = KPM.pairing_matrix(DWAVE_N, [DWAVE_CHANNEL]; amplitude=0.35)
+const DWAVE_D0 = KPM.pairing_matrix(DWAVE_N, [DWAVE_CHANNEL]; amplitude = 0.35)
 
 @testset "d-wave PH branch" begin
-    H = dwave_channel_dense(DWAVE_H, DWAVE_MU, zeros(DWAVE_N), zeros(DWAVE_N),
-                            DWAVE_D0)
+    H = dwave_channel_dense(DWAVE_H, DWAVE_MU, zeros(DWAVE_N), zeros(DWAVE_N), DWAVE_D0)
     I9 = Matrix{ComplexF64}(I, DWAVE_N, DWAVE_N)
-    tauy = [zeros(ComplexF64, DWAVE_N, DWAVE_N) -im * I9;
-            im * I9 zeros(ComplexF64, DWAVE_N, DWAVE_N)]
+    tauy = [
+        zeros(ComplexF64, DWAVE_N, DWAVE_N) -im * I9;
+        im * I9 zeros(ComplexF64, DWAVE_N, DWAVE_N)
+    ]
     @test tauy * conj(H) * tauy ≈ -H atol=1e-12
 end
 
 @testset "C4 covariance of the gap update (ED)" begin
-    H = dwave_channel_dense(DWAVE_H, DWAVE_MU, zeros(DWAVE_N), zeros(DWAVE_N),
-                            DWAVE_D0)
+    H = dwave_channel_dense(DWAVE_H, DWAVE_MU, zeros(DWAVE_N), zeros(DWAVE_N), DWAVE_D0)
     delta_new = dwave_channel_update_ed(H, DWAVE_CHANNEL, DWAVE_BETA)
     xvalues = delta_new[DWAVE_X]
     yvalues = delta_new[.!DWAVE_X]
@@ -87,17 +93,21 @@ end
 end
 
 @testset "KPM channel update vs ED" begin
-    H = dwave_channel_dense(DWAVE_H, DWAVE_MU, zeros(DWAVE_N), zeros(DWAVE_N),
-                            DWAVE_D0)
+    H = dwave_channel_dense(DWAVE_H, DWAVE_MU, zeros(DWAVE_N), zeros(DWAVE_N), DWAVE_D0)
     delta_ed = dwave_channel_update_ed(H, DWAVE_CHANNEL, DWAVE_BETA)
-    op = KPM.BdGOperator(DWAVE_H; mu=DWAVE_MU, U=0.0, n=zeros(DWAVE_N),
-                         D=DWAVE_D0, hole_convention=:conjugate)
+    op = KPM.BdGOperator(
+        DWAVE_H;
+        mu = DWAVE_MU,
+        U = 0.0,
+        n = zeros(DWAVE_N),
+        D = DWAVE_D0,
+        hole_convention = :conjugate,
+    )
     rh = KPM.rescale(op)
     errors = Float64[]
     for NC in (128, 512)
-        moments = KPM.bdg_channel_moments(rh, [DWAVE_CHANNEL]; NC=NC,
-                                           g_rho=1)
-        _, amplitudes = KPM.bdg_update(moments; beta=DWAVE_BETA)
+        moments = KPM.bdg_channel_moments(rh, [DWAVE_CHANNEL]; NC = NC, g_rho = 1)
+        _, amplitudes = KPM.bdg_update(moments; beta = DWAVE_BETA)
         push!(errors, maximum(abs.(only(amplitudes) .- delta_ed)))
     end
     println("d-wave channel-update errors: NC=128 $(errors[1]), NC=512 $(errors[2])")

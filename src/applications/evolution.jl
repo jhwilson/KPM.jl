@@ -46,13 +46,19 @@ evaluations beyond the turning point. Throws when the required order would
 exceed `NC_cap` (including `|a t| >= NC_cap` up front) — pass `NC`
 explicitly or split the propagation into shorter times.
 """
-function evolution_order(a::Real, t::Real; tol::Real=1e-12, NC_min::Integer=8,
-                         NC_cap::Integer=10_000_000)
+function evolution_order(
+    a::Real,
+    t::Real;
+    tol::Real = 1e-12,
+    NC_min::Integer = 8,
+    NC_cap::Integer = 10_000_000,
+)
     isfinite(a) && a > 0 || throw(ArgumentError("a must be finite and positive, got $a"))
     isfinite(t) || throw(ArgumentError("t must be finite, got $t"))
     0 < tol < 1 || throw(ArgumentError("tol must be in (0, 1), got $tol"))
     NC_min >= 2 || throw(ArgumentError("NC_min must be >= 2, got $NC_min"))
-    NC_min <= NC_cap || throw(ArgumentError("NC_min = $NC_min must not exceed NC_cap = $NC_cap"))
+    NC_min <= NC_cap ||
+        throw(ArgumentError("NC_min = $NC_min must not exceed NC_cap = $NC_cap"))
     z = abs(a * t)
     _evolution_order_capcheck(z, NC_cap)
     # coarse scan from the turning point: two consecutive orders below tol/2
@@ -72,8 +78,11 @@ function evolution_order(a::Real, t::Real; tol::Real=1e-12, NC_min::Integer=8,
 end
 
 _evolution_order_capcheck(x::Real, NC_cap::Integer) =
-    (isfinite(x) && x < NC_cap) ||
-    throw(ArgumentError("evolution order would exceed NC_cap = $NC_cap (reached $x); pass NC explicitly or split the propagation into shorter times"))
+    (isfinite(x) && x < NC_cap) || throw(
+        ArgumentError(
+            "evolution order would exceed NC_cap = $NC_cap (reached $x); pass NC explicitly or split the propagation into shorter times",
+        ),
+    )
 
 """
     evolution_coefficients(a, b, ts; NC=0, tol=1e-12) -> (C, NC, tail)
@@ -91,8 +100,13 @@ needs no special-casing. `NC=0` (default) selects the order adaptively via
 `tail[k] = 2 Σ_{m≥NC} |J_m(a t_k)|` ([`evolution_tail`](@ref), a rigorous
 truncation bound) exceeds `tol` triggers a warning.
 """
-function evolution_coefficients(a::Real, b::Real, ts::AbstractVector{<:Real};
-                                NC::Integer=0, tol::Real=1e-12)
+function evolution_coefficients(
+    a::Real,
+    b::Real,
+    ts::AbstractVector{<:Real};
+    NC::Integer = 0,
+    tol::Real = 1e-12,
+)
     isfinite(a) && a > 0 || throw(ArgumentError("a must be finite and positive, got $a"))
     isfinite(b) || throw(ArgumentError("b must be finite, got $b"))
     isempty(ts) && throw(ArgumentError("ts must not be empty"))
@@ -100,9 +114,10 @@ function evolution_coefficients(a::Real, b::Real, ts::AbstractVector{<:Real};
     0 < tol < 1 || throw(ArgumentError("tol must be in (0, 1), got $tol"))
     adaptive = NC == 0
     if adaptive
-        NC = maximum(evolution_order(a, t; tol=tol) for t in ts)
+        NC = maximum(evolution_order(a, t; tol = tol) for t in ts)
     else
-        NC >= 2 || throw(ArgumentError("NC must be >= 2 (or 0 for adaptive selection), got $NC"))
+        NC >= 2 ||
+            throw(ArgumentError("NC must be >= 2 (or 0 for adaptive selection), got $NC"))
     end
     NT = length(ts)
     C = Matrix{dt_cplx}(undef, NC, NT)
@@ -112,7 +127,7 @@ function evolution_coefficients(a::Real, b::Real, ts::AbstractVector{<:Real};
         phase = cis(-b * t)
         C[1, k] = phase * besselj(0, z)
         minus_i_pow = one(dt_cplx)
-        for n in 2:NC
+        for n = 2:NC
             minus_i_pow *= -im
             C[n, k] = phase * 2 * minus_i_pow * besselj(n - 1, z)
         end
@@ -136,13 +151,20 @@ the [`evolution_coefficients`](@ref) table). `H_norm` must already be
 rescaled and resident where the caller wants the recurrence to run; `out`
 must follow its residence. Prefer the typed [`evolve`](@ref) front end.
 """
-function evolve!(out::AbstractArray{<:Complex, 3}, H_norm, a::Real, b::Real,
-                 psi0::AbstractMatrix, ts::AbstractVector{<:Real};
-                 NC::Integer=0, tol::Real=1e-12, check_every::Integer=16,
-                 verbose::Integer=0)
-    C, NC_used, tail = evolution_coefficients(a, b, ts; NC=NC, tol=tol)
-    verbose >= 1 &&
-        println("evolve: NC = $NC_used, max tail estimate = $(maximum(tail))")
-    chebyshev_action!(out, H_norm, psi0, C; check_every=check_every, verbose=verbose)
+function evolve!(
+    out::AbstractArray{<:Complex,3},
+    H_norm,
+    a::Real,
+    b::Real,
+    psi0::AbstractMatrix,
+    ts::AbstractVector{<:Real};
+    NC::Integer = 0,
+    tol::Real = 1e-12,
+    check_every::Integer = 16,
+    verbose::Integer = 0,
+)
+    C, NC_used, tail = evolution_coefficients(a, b, ts; NC = NC, tol = tol)
+    verbose >= 1 && println("evolve: NC = $NC_used, max tail estimate = $(maximum(tail))")
+    chebyshev_action!(out, H_norm, psi0, C; check_every = check_every, verbose = verbose)
     return out
 end

@@ -11,12 +11,24 @@ using LinearAlgebra
 using Random
 using SparseArrays
 
-export haldane_model, haldane_bloch, chern_number_fhs,
-       ed_kubo_bastin, ed_kubo_bastin_broadened, ed_hall_conductivity_T0,
-       ring_model, flux_ring_model, bdg_matrix, bdg_matrix_singlet,
-       ed_two_energy_response, ed_diamagnetic, ed_bdg_free_energy,
-       cubic_model, ed_transport_distribution, ed_transport_integrals,
-       ed_greens, ed_evolve
+export haldane_model,
+    haldane_bloch,
+    chern_number_fhs,
+    ed_kubo_bastin,
+    ed_kubo_bastin_broadened,
+    ed_hall_conductivity_T0,
+    ring_model,
+    flux_ring_model,
+    bdg_matrix,
+    bdg_matrix_singlet,
+    ed_two_energy_response,
+    ed_diamagnetic,
+    ed_bdg_free_energy,
+    cubic_model,
+    ed_transport_distribution,
+    ed_transport_integrals,
+    ed_greens,
+    ed_evolve
 
 """
     ed_greens(H, u, v, E; eta, branch=:retarded) -> ComplexF64
@@ -25,7 +37,7 @@ Dense Lehmann-sum resolvent reference,
 `G^{R/A}_uv(E) = Σ_m ⟨u|m⟩⟨m|v⟩ / (E - ε_m ± iη)`.
 `E` may be a number or an array (broadcast over energies).
 """
-function ed_greens(H, u, v, E; eta::Real, branch::Symbol=:retarded)
+function ed_greens(H, u, v, E; eta::Real, branch::Symbol = :retarded)
     s = branch === :retarded ? 1 : -1
     F = eigen(Hermitian(Matrix(H)))
     w = conj.(F.vectors' * u) .* (F.vectors' * v)
@@ -52,7 +64,14 @@ t2·e^{±iϕ} with the standard chirality pattern, staggered mass ±m. Returns
 `(H, Jx, Jy, area)` with sparse H (Hermitian), bond-current operators
 (J_α)_ij = H_ij (r_i - r_j)_α, and the total sample area.
 """
-function haldane_model(Lx::Int, Ly::Int; t::Real=1.0, t2::Real=0.2, ϕ::Real=π/2, m::Real=0.0)
+function haldane_model(
+    Lx::Int,
+    Ly::Int;
+    t::Real = 1.0,
+    t2::Real = 0.2,
+    ϕ::Real = π/2,
+    m::Real = 0.0,
+)
     a1 = [sqrt(3), 0.0]
     a2 = [sqrt(3) / 2, 1.5]
     δAB = [sqrt(3) / 2, 0.5]           # B-site offset within the cell
@@ -68,14 +87,20 @@ function haldane_model(Lx::Int, Ly::Int; t::Real=1.0, t2::Real=0.2, ϕ::Real=π/
     # add hop j -> i with amplitude amp and true displacement d = r_i - r_j,
     # plus its Hermitian conjugate
     function addhop!(i, j, amp, d)
-        push!(I_, i); push!(J_, j); push!(V_, amp)
-        push!(Vx_, amp * d[1]); push!(Vy_, amp * d[2])
-        push!(I_, j); push!(J_, i); push!(V_, conj(amp))
-        push!(Vx_, -conj(amp) * d[1]); push!(Vy_, -conj(amp) * d[2])
+        push!(I_, i);
+        push!(J_, j);
+        push!(V_, amp)
+        push!(Vx_, amp * d[1]);
+        push!(Vy_, amp * d[2])
+        push!(I_, j);
+        push!(J_, i);
+        push!(V_, conj(amp))
+        push!(Vx_, -conj(amp) * d[1]);
+        push!(Vy_, -conj(amp) * d[2])
         return nothing
     end
 
-    for x in 1:Lx, y in 1:Ly
+    for x = 1:Lx, y = 1:Ly
         # NN: B(x,y) <- A from the three neighboring cells; displacements are
         # the three A->B bond vectors
         addhop!(siteB(x, y), siteA(x, y), -t + 0im, δAB)                    # δ1
@@ -93,10 +118,16 @@ function haldane_model(Lx::Int, Ly::Int; t::Real=1.0, t2::Real=0.2, ϕ::Real=π/
         end
 
         # staggered mass (no contribution to J: d = 0)
-        push!(I_, siteA(x, y)); push!(J_, siteA(x, y)); push!(V_, m + 0im)
-        push!(Vx_, 0); push!(Vy_, 0)
-        push!(I_, siteB(x, y)); push!(J_, siteB(x, y)); push!(V_, -m + 0im)
-        push!(Vx_, 0); push!(Vy_, 0)
+        push!(I_, siteA(x, y));
+        push!(J_, siteA(x, y));
+        push!(V_, m + 0im)
+        push!(Vx_, 0);
+        push!(Vy_, 0)
+        push!(I_, siteB(x, y));
+        push!(J_, siteB(x, y));
+        push!(V_, -m + 0im)
+        push!(Vx_, 0);
+        push!(Vy_, 0)
     end
 
     H = sparse(I_, J_, V_, N, N)
@@ -120,7 +151,7 @@ Bloch Hamiltonian h(k) of the same Haldane model as `haldane_model`
 (periodic gauge, k in reciprocal coordinates): returns a function
 `(k1, k2) -> 2×2 Hermitian matrix` with k = k1·b1 + k2·b2, k1, k2 ∈ [0, 1).
 """
-function haldane_bloch(; t::Real=1.0, t2::Real=0.2, ϕ::Real=π/2, m::Real=0.0)
+function haldane_bloch(; t::Real = 1.0, t2::Real = 0.2, ϕ::Real = π/2, m::Real = 0.0)
     # cell offsets of the hops, matching haldane_model exactly:
     # NN B <- A from cells (0,0), (1,0), (0,1); NNN along a1, a2-a1, -a2
     nnn = ((1, 0), (-1, 1), (0, -1))
@@ -149,15 +180,15 @@ coordinates) via the Fukui–Hatsugai–Suzuki lattice-gauge method [JPSJ 74, 16
 Kubo formula — so it independently anchors the absolute sign convention
 σ_xy = C e²/h of the ED and KPM Hall calculations.
 """
-function chern_number_fhs(hk; Nk::Int=24, band::Int=1)
+function chern_number_fhs(hk; Nk::Int = 24, band::Int = 1)
     u = Matrix{Vector{ComplexF64}}(undef, Nk, Nk)
-    for i in 1:Nk, j in 1:Nk
+    for i = 1:Nk, j = 1:Nk
         F = eigen(Hermitian(hk((i - 1) / Nk, (j - 1) / Nk)))
         u[i, j] = F.vectors[:, band]
     end
     wrap(i) = mod(i - 1, Nk) + 1
     total = 0.0
-    for i in 1:Nk, j in 1:Nk
+    for i = 1:Nk, j = 1:Nk
         u00 = u[i, j]
         u10 = u[wrap(i + 1), j]
         u11 = u[wrap(i + 1), wrap(j + 1)]
@@ -178,22 +209,25 @@ end
 Kubo–Bastin formula with Lorentzian broadening `eta`:
 
 σ_αβ = (i e² ħ/A) Σ_{mn} f(ε_m) [ vα_{mn} vβ_{nm}/(ε_m-ε_n-iη)²
-                                 - vβ_{mn} vα_{nm}/(ε_m-ε_n+iη)² ]
+- vβ_{mn} vα_{nm}/(ε_m-ε_n+iη)² ]
 
 with v_α = J_α/(iħ). This is the ∫dε f(ε) Tr[...] form integrated exactly in
 the eigenbasis; its η→0 limit at T=0 for α≠β is `ed_hall_conductivity_T0`.
 """
-function ed_kubo_bastin(H, Jα, Jβ, area; Ef::Real, eta::Real, beta::Real=Inf)
+function ed_kubo_bastin(H, Jα, Jβ, area; Ef::Real, eta::Real, beta::Real = Inf)
     ev, U = eigen(Hermitian(Matrix(H)))
     Va = U' * (Matrix(Jα) ./ im) * U
     Vb = U' * (Matrix(Jβ) ./ im) * U
     D = length(ev)
     f(e) = isinf(beta) ? (e <= Ef ? 1.0 : 0.0) : 1 / (exp(beta * (e - Ef)) + 1)
     acc = zero(ComplexF64)
-    for m in 1:D, n in 1:D
+    for m = 1:D, n = 1:D
         Δ = ev[m] - ev[n]
-        acc += f(ev[m]) * (Va[m, n] * Vb[n, m] / (Δ - im * eta)^2 -
-                           Vb[m, n] * Va[n, m] / (Δ + im * eta)^2)
+        acc +=
+            f(ev[m]) * (
+                Va[m, n] * Vb[n, m] / (Δ - im * eta)^2 -
+                Vb[m, n] * Va[n, m] / (Δ + im * eta)^2
+            )
     end
     σ = real(im * acc / area)
     return 2π * σ
@@ -209,8 +243,16 @@ kernel broadens both factors — on a discrete spectrum the dissipative
 (longitudinal) response only exists with a broadened δ, so this is the right
 reference for σ_xx. Returns σ_αβ in units of e²/h.
 """
-function ed_kubo_bastin_broadened(H, Jα, Jβ, area; Ef::Real, eta::Real,
-                                  beta::Real=Inf, grid_N::Int=4000)
+function ed_kubo_bastin_broadened(
+    H,
+    Jα,
+    Jβ,
+    area;
+    Ef::Real,
+    eta::Real,
+    beta::Real = Inf,
+    grid_N::Int = 4000,
+)
     ev, U = eigen(Hermitian(Matrix(H)))
     Va = U' * (Matrix(Jα) ./ im) * U
     Vb = U' * (Matrix(Jβ) ./ im) * U
@@ -222,7 +264,7 @@ function ed_kubo_bastin_broadened(H, Jα, Jβ, area; Ef::Real, eta::Real,
     lo = minimum(ev) - 20 * eta
     hi = isinf(beta) ? Ef : maximum(ev) + 20 * eta
     grid_N = max(grid_N, ceil(Int, 20 * (hi - lo) / eta))
-    εs = range(lo, hi; length=grid_N)
+    εs = range(lo, hi; length = grid_N)
     dε = step(εs)
 
     L(x) = (eta / π) / (x^2 + eta^2)
@@ -248,11 +290,10 @@ nearest-neighbor hopping `-t`, and onsite disorder uniform on `[-W/2, W/2]`.
 The sparse bond-current operators use minimum-image torus displacements, and
 `volume = L^3`.
 """
-function cubic_model(L::Int; t::Real=1.0, W::Real=0.0, rng=Xoshiro(1))
+function cubic_model(L::Int; t::Real = 1.0, W::Real = 0.0, rng = Xoshiro(1))
     L >= 3 || throw(ArgumentError("cubic_model: L must be at least 3"))
     W >= 0 || throw(ArgumentError("cubic_model: W must be nonnegative"))
-    site(x, y, z) = mod1(x, L) + L * (mod1(y, L) - 1) +
-                    L^2 * (mod1(z, L) - 1)
+    site(x, y, z) = mod1(x, L) + L * (mod1(y, L) - 1) + L^2 * (mod1(z, L) - 1)
     N = L^3
     I_, J_, V_ = Int[], Int[], ComplexF64[]
     Vx_, Vy_, Vz_ = ComplexF64[], ComplexF64[], ComplexF64[]
@@ -260,24 +301,34 @@ function cubic_model(L::Int; t::Real=1.0, W::Real=0.0, rng=Xoshiro(1))
     # Add the directed hop j -> i and its Hermitian conjugate. The supplied
     # displacement is already the minimum-image r_i-r_j on the torus.
     function addhop!(i, j, amp, dx, dy, dz)
-        push!(I_, i); push!(J_, j); push!(V_, amp)
-        push!(Vx_, amp * dx); push!(Vy_, amp * dy); push!(Vz_, amp * dz)
-        push!(I_, j); push!(J_, i); push!(V_, conj(amp))
+        push!(I_, i);
+        push!(J_, j);
+        push!(V_, amp)
+        push!(Vx_, amp * dx);
+        push!(Vy_, amp * dy);
+        push!(Vz_, amp * dz)
+        push!(I_, j);
+        push!(J_, i);
+        push!(V_, conj(amp))
         push!(Vx_, -conj(amp) * dx)
         push!(Vy_, -conj(amp) * dy)
         push!(Vz_, -conj(amp) * dz)
         return nothing
     end
 
-    for z in 1:L, y in 1:L, x in 1:L
+    for z = 1:L, y = 1:L, x = 1:L
         j = site(x, y, z)
         addhop!(site(x + 1, y, z), j, -t + 0im, 1.0, 0.0, 0.0)
         addhop!(site(x, y + 1, z), j, -t + 0im, 0.0, 1.0, 0.0)
         addhop!(site(x, y, z + 1), j, -t + 0im, 0.0, 0.0, 1.0)
 
         onsite = W * (rand(rng) - 0.5)
-        push!(I_, j); push!(J_, j); push!(V_, onsite + 0im)
-        push!(Vx_, 0); push!(Vy_, 0); push!(Vz_, 0)
+        push!(I_, j);
+        push!(J_, j);
+        push!(V_, onsite + 0im)
+        push!(Vx_, 0);
+        push!(Vy_, 0);
+        push!(Vz_, 0)
     end
 
     H = sparse(I_, J_, V_, N, N)
@@ -325,14 +376,22 @@ distribution. The uniform energy grid covers the intersection of the padded
 spectrum and the `mu_chem ± 40/beta` thermal window and resolves each
 Lorentzian width with at least 20 points.
 """
-function ed_transport_integrals(H, Ja, Jb, volume; mu_chem::Real, beta::Real,
-                                eta::Real, grid_N::Int=4000)
+function ed_transport_integrals(
+    H,
+    Ja,
+    Jb,
+    volume;
+    mu_chem::Real,
+    beta::Real,
+    eta::Real,
+    grid_N::Int = 4000,
+)
     ev, U = eigen(Hermitian(Matrix(H)))
     lo = max(minimum(ev) - 20 * eta, mu_chem - 40 / beta)
     hi = min(maximum(ev) + 20 * eta, mu_chem + 40 / beta)
-    lo < hi || return (L0=0.0, L1=0.0, L2=0.0)
+    lo < hi || return (L0 = 0.0, L1 = 0.0, L2 = 0.0)
     grid_N = max(grid_N, ceil(Int, 20 * (hi - lo) / eta))
-    energies = range(lo, hi; length=grid_N)
+    energies = range(lo, hi; length = grid_N)
     dE = step(energies)
     sigma = _ed_transport_from_eigen(ev, U, Ja, Jb, volume, energies, eta)
     f = @. 1 / (exp(beta * (energies - mu_chem)) + 1)
@@ -341,7 +400,7 @@ function ed_transport_integrals(H, Ja, Jb, volume; mu_chem::Real, beta::Real,
     L0 = sum(thermal .* sigma) * dE
     L1 = sum(delta .* thermal .* sigma) * dE
     L2 = sum(delta .^ 2 .* thermal .* sigma) * dE
-    return (L0=Float64(L0), L1=Float64(L1), L2=Float64(L2))
+    return (L0 = Float64(L0), L1 = Float64(L1), L2 = Float64(L2))
 end
 
 """
@@ -370,14 +429,14 @@ end
 
 N-site periodic one-dimensional nearest-neighbor ring reference model.
 """
-function ring_model(N::Int; t::Real=1.0)
+function ring_model(N::Int; t::Real = 1.0)
     N > 0 || throw(ArgumentError("ring_model: N must be positive"))
     h = spzeros(Float64, N, N)
-    for i in 1:N
+    for i = 1:N
         h[i, mod1(i + 1, N)] = -Float64(t)
         h[i, mod1(i - 1, N)] = -Float64(t)
     end
-    pos = hcat(collect(0.0:N-1), zeros(N))
+    pos = hcat(collect(0.0:(N-1)), zeros(N))
     function disp(i, j)
         dx = pos[i, 1] - pos[j, 1]
         dx > N / 2 && (dx -= N)
@@ -393,16 +452,16 @@ end
 N-site periodic ring with directed nearest-neighbor hopping
 `h[i, i+1] = -t * exp(im * phi)` and total flux `N * phi`.
 """
-function flux_ring_model(N::Int; t::Real=1.0, phi::Real=0.35)
+function flux_ring_model(N::Int; t::Real = 1.0, phi::Real = 0.35)
     N > 0 || throw(ArgumentError("flux_ring_model: N must be positive"))
     h = spzeros(ComplexF64, N, N)
     hopping = -Float64(t) * cis(Float64(phi))
-    for i in 1:N
+    for i = 1:N
         j = mod1(i + 1, N)
         h[i, j] = hopping
         h[j, i] = conj(hopping)
     end
-    _, pos, disp = ring_model(N; t=t)
+    _, pos, disp = ring_model(N; t = t)
     return h, pos, disp
 end
 
@@ -435,15 +494,15 @@ end
 
 Dense Lehmann-sum reference for the generic two-energy response.
 """
-function ed_two_energy_response(H, Jl, Jr; beta, eta, omega=0.0, Ef=0.0)
-    eta == 0 && !(omega == 0 && isfinite(beta)) &&
+function ed_two_energy_response(H, Jl, Jr; beta, eta, omega = 0.0, Ef = 0.0)
+    eta == 0 &&
+        !(omega == 0 && isfinite(beta)) &&
         throw(ArgumentError("eta=0 requires omega=0 and finite beta"))
 
     F = eigen(Hermitian(Matrix(H)))
     Jl_e = F.vectors' * Matrix(Jl) * F.vectors
     Jr_e = F.vectors' * Matrix(Jr) * F.vectors
-    fermi(e) = isinf(beta) ? ((e < Ef) + (e <= Ef)) / 2 :
-                             1 / (exp(beta * (e - Ef)) + 1)
+    fermi(e) = isinf(beta) ? ((e < Ef) + (e <= Ef)) / 2 : 1 / (exp(beta * (e - Ef)) + 1)
     occupations = fermi.(F.values)
     acc = zero(ComplexF64)
     for p in eachindex(F.values), q in eachindex(F.values)
@@ -456,8 +515,7 @@ function ed_two_energy_response(H, Jl, Jr; beta, eta, omega=0.0, Ef=0.0)
                 (occupations[p] - occupations[q]) / delta_E
             end
         else
-            (occupations[p] - occupations[q]) /
-                (omega + delta_E + im * eta)
+            (occupations[p] - occupations[q]) / (omega + delta_E + im * eta)
         end
         acc += Jl_e[p, q] * Jr_e[q, p] * divided_difference
     end
@@ -474,8 +532,9 @@ function ed_diamagnetic(H_dense, Dhat; beta)
     F = eigen(Hermitian(Matrix(H_dense)))
     D_eigen = F.vectors' * Matrix(Dhat) * F.vectors
     fermi(e) = 1 / (exp(beta * e) + 1)
-    return Float64(real(sum(fermi(F.values[n]) * D_eigen[n, n]
-                            for n in eachindex(F.values))))
+    return Float64(
+        real(sum(fermi(F.values[n]) * D_eigen[n, n] for n in eachindex(F.values))),
+    )
 end
 
 export square_model, bdg_peierls_matrix
@@ -488,7 +547,7 @@ Periodic square-lattice nearest-neighbor model with hopping `-t`, coordinates
 `i = ix + (iy - 1) * Lx`. The returned closure supplies minimum-image
 displacements in both periodic directions.
 """
-function square_model(Lx::Int, Ly::Int; t::Real=1.0)
+function square_model(Lx::Int, Ly::Int; t::Real = 1.0)
     Lx > 0 || throw(ArgumentError("square_model: Lx must be positive"))
     Ly > 0 || throw(ArgumentError("square_model: Ly must be positive"))
     N = Lx * Ly
@@ -496,11 +555,10 @@ function square_model(Lx::Int, Ly::Int; t::Real=1.0)
     h = spzeros(Float64, N, N)
     pos = zeros(Float64, N, 2)
 
-    for iy in 1:Ly, ix in 1:Lx
+    for iy = 1:Ly, ix = 1:Lx
         i = site(ix, iy)
         pos[i, :] .= (ix - 1, iy - 1)
-        for (jx, jy) in ((ix + 1, iy), (ix - 1, iy),
-                         (ix, iy + 1), (ix, iy - 1))
+        for (jx, jy) in ((ix + 1, iy), (ix - 1, iy), (ix, iy + 1), (ix, iy - 1))
             h[i, site(jx, jy)] = -Float64(t)
         end
     end
@@ -528,15 +586,25 @@ potential. A real modulation `u(m) = cos(q ⋅ m)` is used when `q` is given,
 so the result remains Hermitian. The singlet hole block is `-conj(h(A))`;
 the intervalley hole block uses the same `h` with the opposite Peierls phase.
 """
-function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1,
-                            hole_convention::Symbol=:singlet)
+function bdg_peierls_matrix(
+    h,
+    pos,
+    disp,
+    A::Real;
+    q = nothing,
+    dir::Integer = 1,
+    hole_convention::Symbol = :singlet,
+)
     N = size(h, 1)
     size(h, 2) == N || throw(ArgumentError("bdg_peierls_matrix: h must be square"))
     size(pos, 1) == N || throw(ArgumentError("bdg_peierls_matrix: incompatible pos"))
     ndim = size(pos, 2)
     1 <= dir <= ndim || throw(ArgumentError("bdg_peierls_matrix: invalid dir=$dir"))
-    q === nothing || length(q) == ndim ||
-        throw(ArgumentError("bdg_peierls_matrix: q has length $(length(q)); expected $ndim"))
+    q === nothing ||
+        length(q) == ndim ||
+        throw(
+            ArgumentError("bdg_peierls_matrix: q has length $(length(q)); expected $ndim"),
+        )
     hole_convention in (:intervalley, :singlet) ||
         throw(ArgumentError("bdg_peierls_matrix: invalid hole_convention=$hole_convention"))
 
@@ -547,24 +615,40 @@ function bdg_peierls_matrix(h, pos, disp, A::Real; q=nothing, dir::Integer=1,
         i = I[k]
         j = J[k]
         d = disp(i, j)
-        m = [pos[j, ν] + d[ν] / 2 for ν in 1:ndim]
+        m = [pos[j, ν] + d[ν] / 2 for ν = 1:ndim]
         u = q === nothing ? 1.0 : cos(dot(q, m))
         hp[i, j] = V[k] * exp(im * A * d[dir] * u)
         hole_hopping = hole_convention === :singlet ? conj(V[k]) : V[k]
         hh[i, j] = -hole_hopping * exp(-im * A * d[dir] * u)
     end
-    H = [hp zeros(ComplexF64, N, N);
-         zeros(ComplexF64, N, N) hh]
+    H = [
+        hp zeros(ComplexF64, N, N);
+        zeros(ComplexF64, N, N) hh
+    ]
     @assert ishermitian(H)
     return Matrix{ComplexF64}(H)
 end
 
-function ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta::AbstractMatrix, A;
-                            q=nothing, dir=1, beta,
-                            hole_convention=:singlet)
+function ed_bdg_free_energy(
+    h,
+    pos,
+    disp,
+    mu,
+    U,
+    n,
+    Delta::AbstractMatrix,
+    A;
+    q = nothing,
+    dir = 1,
+    beta,
+    hole_convention = :singlet,
+)
     N = size(h, 1)
-    size(Delta) == (N, N) ||
-        throw(ArgumentError("ed_bdg_free_energy: Delta has size $(size(Delta)); expected ($N, $N)"))
+    size(Delta) == (N, N) || throw(
+        ArgumentError(
+            "ed_bdg_free_energy: Delta has size $(size(Delta)); expected ($N, $N)",
+        ),
+    )
     D = Matrix{ComplexF64}(Delta)
     xi0 = -mu * I - Diagonal(U .* n ./ 2)
     hole0 = if hole_convention === :singlet
@@ -575,9 +659,16 @@ function ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta::AbstractMatrix, A;
         throw(ArgumentError("ed_bdg_free_energy: invalid hole_convention=$hole_convention"))
     end
     local_part = ComplexF64[xi0 D; adjoint(D) hole0]
-    H = bdg_peierls_matrix(
-        h, pos, disp, A; q=q, dir=dir, hole_convention=hole_convention) +
-        local_part
+    H =
+        bdg_peierls_matrix(
+            h,
+            pos,
+            disp,
+            A;
+            q = q,
+            dir = dir,
+            hole_convention = hole_convention,
+        ) + local_part
     E = eigvals(Hermitian(H))
     softplus(x) = x > 0 ? x + log1p(exp(-x)) : log1p(exp(x))
     return Float64(-sum(softplus(-beta * e) for e in E) / beta)
@@ -596,9 +687,20 @@ a matrix pairing block, the rigid-`Delta` convention holds it fixed: Peierls
 phases are applied only to kinetic bonds and never to pairing entries. The
 softplus evaluation is stable for either sign of `-beta E_n`.
 """
-function ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta, A;
-                            q=nothing, dir=1, beta,
-                            hole_convention=:singlet)
+function ed_bdg_free_energy(
+    h,
+    pos,
+    disp,
+    mu,
+    U,
+    n,
+    Delta,
+    A;
+    q = nothing,
+    dir = 1,
+    beta,
+    hole_convention = :singlet,
+)
     N = size(h, 1)
     h0 = spzeros(eltype(h), N, N)
     local_part = if hole_convention === :singlet
@@ -608,9 +710,16 @@ function ed_bdg_free_energy(h, pos, disp, mu, U, n, Delta, A;
     else
         throw(ArgumentError("ed_bdg_free_energy: invalid hole_convention=$hole_convention"))
     end
-    H = bdg_peierls_matrix(
-        h, pos, disp, A; q=q, dir=dir, hole_convention=hole_convention) +
-        local_part
+    H =
+        bdg_peierls_matrix(
+            h,
+            pos,
+            disp,
+            A;
+            q = q,
+            dir = dir,
+            hole_convention = hole_convention,
+        ) + local_part
     E = eigvals(Hermitian(H))
     softplus(x) = x > 0 ? x + log1p(exp(-x)) : log1p(exp(x))
     return Float64(-sum(softplus(-beta * e) for e in E) / beta)
