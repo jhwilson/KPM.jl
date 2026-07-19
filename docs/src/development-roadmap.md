@@ -78,7 +78,12 @@ second competing KPM core.
 
 ### Current status
 
-**Implemented.** `fermi_projector` applies ``P = f_\beta(H - E_F)`` on the
+**Implemented** and **validated with the CUDA device active** (GPU-vs-CPU
+equality for the projector action, the deterministic marker with its FHS
+anchor evaluated end to end on the device, the seeded stochastic regional
+estimator, and the device-resident probe seeding of the shared action, plus
+the full suite in GPU mode). `fermi_projector` applies
+``P = f_\beta(H - E_F)`` on the
 shared matrix-function action with coefficients from `fermi_coefficients`
 (closed-form step series at ``\beta=\infty``, Gauss--Chebyshev quadrature at
 finite ``\beta``, Jackson-damped by default, `NC` deliberately a required
@@ -132,9 +137,11 @@ cells, orbital multiplicities, spatial dimension, or boundary geometry from
 4. Default the first implementation to open boundaries. A naive diagonal
    position operator is not valid on a torus; periodic-coordinate formulations
    should be a separate, explicitly tested extension.
-5. Document that the marker summed over an entire finite open sample is zero:
-   topology is obtained from a bulk/cell average with the boundary excluded,
-   not from the full finite trace.
+5. Document that the sharp (``\beta = \infty``) marker summed over an entire
+   finite open sample is zero: topology is obtained from a bulk/cell average
+   with the boundary excluded, not from the full finite trace. (The finite-
+   temperature Fermi--Dirac operator is not idempotent and carries no such
+   identity.)
 
 ### Validation and risks
 
@@ -508,11 +515,11 @@ tests before a higher-level solver depends on it.
    stringently than a smoothed projector would.
 3. **Fermi projector and Chern marker:** deterministic local maps plus stochastic
    regional averages, pinned to the existing Haldane sign convention. Consumes
-   the matrix-function action (sharp/smoothed Fermi projector). *Delivered:
-   `fermi_projector`/`fermi_coefficients`, `chern_marker`,
-   `chern_marker_region`, and `chern_marker_average`, validated against
-   exact-projector markers on the open Haldane flake and sign-anchored to
-   the FHS Chern number (see the status above).*
+   the matrix-function action (sharp/smoothed Fermi projector). *Delivered
+   and GPU-validated: `fermi_projector`/`fermi_coefficients`,
+   `chern_marker`, `chern_marker_region`, and `chern_marker_average`,
+   validated against dense exact markers on the open Haldane flake and
+   sign-anchored to the FHS Chern number (see the status above).*
 4. **Filtered interior eigensolver:** ChebFD baseline, then a documented
    filter-and-shake refresh strategy. Consumes the matrix-function action
    (window filters) plus new subspace linear algebra. **← next.**
