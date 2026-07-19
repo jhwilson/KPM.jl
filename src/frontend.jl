@@ -538,6 +538,89 @@ function fermi_projector(
 end
 
 """
+    chern_marker(h::RescaledHamiltonian, x, y; Ef, sites, beta=Inf, NC,
+                 kernel=JacksonKernel, batch_size=32, check_every=16,
+                 verbose=0) -> Vector{Float64}
+
+Bianco–Resta local Chern marker ``m_i = -4\\pi\\,\\mathrm{Im}\\,\\langle i|
+P\\,X\\,Q\\,Y\\,P|i\\rangle`` at the basis indices `sites`, with the
+KPM Fermi projector ``P = f_\\beta(H - E_F)`` ([`fermi_coefficients`](@ref);
+`NC` is required — see there), ``Q = I - P``, and diagonal position
+operators from the caller-supplied coordinate vectors `x`, `y`. The sign
+convention matches the package's Hall conductivity: the bulk average over
+complete cells ([`chern_marker_average`](@ref), explicit area) equals the
+same `+C` as ``\\sigma_{xy} = +C\\,e^2/h``.
+
+Geometry is user data: coordinates, site grouping, and areas are inputs,
+never inferred from `H` — the raw markers are per **orbital** and carry
+units of x·y. Valid for **open boundaries only**: a diagonal position
+operator is not a legal position observable on a torus, and the marker
+summed over the whole finite sample is ≈ 0 — topology is read from a bulk
+average with the boundary excluded. Cost is two `NC`-step recurrences per
+`batch_size` sites (five complex `NH × batch_size` device workspaces,
+≈ `80·NH·batch_size` bytes); for a regional average that does not need
+every site, see [`chern_marker_region`](@ref).
+"""
+function chern_marker(
+    h::RescaledHamiltonian,
+    x::AbstractVector{<:Real},
+    y::AbstractVector{<:Real};
+    Ef::Real,
+    sites::AbstractVector{<:Integer},
+    beta::Real = Inf,
+    NC::Integer,
+    kernel = JacksonKernel,
+    batch_size::Integer = 32,
+    check_every::Integer = 16,
+    verbose::Integer = 0,
+)
+    NH = size(h.H, 1)
+    length(x) == NH ||
+        throw(ArgumentError("x has length $(length(x)); expected NH = $NH"))
+    length(y) == NH ||
+        throw(ArgumentError("y has length $(length(y)); expected NH = $NH"))
+    isempty(sites) && throw(ArgumentError("sites must not be empty"))
+    all(s -> 1 <= s <= NH, sites) ||
+        throw(ArgumentError("sites must lie in 1:$NH"))
+    batch_size >= 1 || throw(ArgumentError("batch_size must be >= 1"))
+
+    C = fermi_coefficients(h.a, h.b, Ef; beta = beta, NC = NC, kernel = kernel)
+    Hd = maybe_to_device(h.H, dt_cplx)
+    xd = to_device_of(Hd, Vector{dt_real}(x))
+    yd = to_device_of(Hd, Vector{dt_real}(y))
+
+    markers = Vector{dt_real}(undef, length(sites))
+    nb = min(Int(batch_size), length(sites))
+    U, YU, W, s1, s2 = (device_zeros_of(Hd, dt_cplx, NH, nb) for _ = 1:5)
+    for lo = 1:batch_size:length(sites)
+        hi = min(lo + batch_size - 1, length(sites))
+        if hi - lo + 1 != nb   # smaller final batch: fresh plain workspaces
+            nb = hi - lo + 1
+            U, YU, W, s1, s2 = (device_zeros_of(Hd, dt_cplx, NH, nb) for _ = 1:5)
+        end
+        V = zeros(dt_cplx, NH, nb)
+        for (c, s) in enumerate(view(sites, lo:hi))
+            V[s, c] = 1
+        end
+        r = _pxqyp_imdiag!(
+            Hd,
+            C,
+            xd,
+            yd,
+            V,
+            U,
+            YU,
+            W,
+            (s1, s2);
+            check_every = check_every,
+            verbose = verbose,
+        )
+        markers[lo:hi] .= (4π) .* r
+    end
+    return markers
+end
+
+"""
     dos(m::DosMoments; kwargs...)
 
 Reconstruct the DOS from typed moments at physical energies. The center shift
