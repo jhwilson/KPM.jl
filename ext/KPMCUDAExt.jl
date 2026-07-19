@@ -66,6 +66,12 @@ KPM.to_device_of(::_CuOpRef, x::Array) = CuArray(x)
 KPM.to_device_of(::_CuOpRef, x::CuArray) = x
 KPM.device_zeros_of(::_CuOpRef, T::Type, dims...) = CUDA.zeros(T, dims...)
 
+# Device-resident probe blocks seed the action recurrence by direct
+# assignment; the slot is complex, so mixed-eltype assignment widens in the
+# broadcast. Only fires when both sides live on the GPU (a host slot with a
+# CuArray V falls back to the generic host path, which copies through Array).
+KPM._seed_slot!(slot::CuMatrix, Hn, V::CuMatrix) = (slot .= V; nothing)
+
 # --- Chebyshev three-term recurrence ---------------------------------------
 
 # α_{n+1} = 2 H α_n - α_{n-1}, fused into one 5-arg mul! that overwrites the

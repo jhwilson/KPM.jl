@@ -115,6 +115,30 @@ end
     @test Vview == Vcopy
 end
 
+@testset "seed dispatch: host blocks widen, wrappers materialize" begin
+    rng = Xoshiro(191)
+    NH, NR = 16, 3
+    slot = fill(1.0 + 1.0im, NH, NR)
+
+    # complex host block: verbatim copy
+    Vc = randn(rng, ComplexF64, NH, NR)
+    KPM._seed_slot!(slot, nothing, Vc)
+    @test slot == Vc
+    # real block widens to the complex slot eltype
+    Vr = randn(rng, NH, NR)
+    KPM._seed_slot!(slot, nothing, Vr)
+    @test slot == complex.(Vr)
+    # SubArray and wrapper (Adjoint) probes materialize without mutation
+    Vbig = randn(rng, ComplexF64, NH, NR + 2)
+    Vview = view(Vbig, :, 2:(NR+1))
+    Vsnap = copy(Vview)
+    KPM._seed_slot!(slot, nothing, Vview)
+    @test slot == Vsnap && Vview == Vsnap
+    Vadj = randn(rng, ComplexF64, NR, NH)'
+    KPM._seed_slot!(slot, nothing, Vadj)
+    @test slot == Matrix(Vadj)
+end
+
 @testset "zero padding is exact" begin
     rng = Xoshiro(167)
     NH, NC, NR, K = 32, 9, 2, 2
