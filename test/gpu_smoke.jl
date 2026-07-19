@@ -7,10 +7,13 @@
 #   2. DoS reconstruction on the device
 #   3. kpm_2d moments + kubo_bastin_cond: quantized Hall plateau from GPU moments
 #   4. dc_long
-#   5. chebyshev_action + evolve (matrix-function action, unitary evolution)
-#   6. BdG: assembled device operator, onsite + pairing-channel SCF, and
+#   5. chebyshev_action + evolve (matrix-function action, unitary evolution,
+#      device-resident probe seeding)
+#   6. Fermi projector + local Chern marker (deterministic and stochastic
+#      regional modes) on the open Haldane flake, GPU vs CPU and vs FHS
+#   7. BdG: assembled device operator, onsite + pairing-channel SCF, and
 #      superfluid stiffness, each GPU vs CPU
-#   7. timing comparisons (informational)
+#   8. timing comparisons (informational)
 
 using Test
 using LinearAlgebra
@@ -157,6 +160,11 @@ end
     act_cpu = on_cpu(() -> KPM.chebyshev_action(H, V, C))
     @test act_gpu ≈ act_cpu atol = 1e-8
 
+    # device-resident probe block: the direct-assignment seeding path must
+    # reproduce the host-seeded result
+    act_dev_v = Array(KPM.chebyshev_action(Hn_dev, CuArray{ComplexF64}(V), C))
+    @test act_dev_v ≈ act_cpu atol = 1e-8
+
     # typed evolve: scalar time and shared-recurrence time grid
     # (H's spectrum is ±0.9 cos k ⊂ (−1, 1), so it serves directly as H_norm)
     h = KPM.RescaledHamiltonian(H, 2.0, 0.3)
@@ -170,6 +178,61 @@ end
     evs_gpu = KPM.evolve(h, ψ0, ts)
     evs_cpu = on_cpu(() -> KPM.evolve(h, ψ0, ts))
     @test evs_gpu ≈ evs_cpu atol = 1e-8
+end
+
+@testset "Fermi projector and Chern marker: GPU == CPU" begin
+    Lx = Ly = 12
+    NC = 512
+    H, pos, Ac = haldane_open_model(Lx, Ly; t = 1.0, t2 = 0.2, ϕ = π/2, m = 0.0)
+    ev = eigvals(Hermitian(Matrix(H)))
+    b = (maximum(ev) + minimum(ev)) / 2
+    a = (maximum(ev) - minimum(ev)) / 2 / 0.95
+    h = KPM.RescaledHamiltonian((H - b * I) ./ a, a, b)
+    x, y = pos[:, 1], pos[:, 2]
+
+    # projector action on a block
+    V = randn(Xoshiro(17), ComplexF64, size(H, 1), 3)
+    PV_gpu = KPM.fermi_projector(h, V; Ef = 0.0, NC = NC)
+    PV_cpu = on_cpu(() -> KPM.fermi_projector(h, V; Ef = 0.0, NC = NC))
+    @test PV_gpu ≈ PV_cpu atol = 1e-8
+
+    # deterministic marker over the central 4×4 cells, and the FHS anchor
+    # end to end on the device
+    bulk = Int[]
+    for cx = 5:8, cy = 5:8
+        c = cy + Ly * (cx - 1)
+        push!(bulk, 2 * c - 1, 2 * c)
+    end
+    mk_gpu = KPM.chern_marker(h, x, y; Ef = 0.0, sites = bulk, NC = NC)
+    mk_cpu = on_cpu(() -> KPM.chern_marker(h, x, y; Ef = 0.0, sites = bulk, NC = NC))
+    @test mk_gpu ≈ mk_cpu atol = 1e-8
+    C = round(chern_number_fhs(haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = π/2, m = 0.0)))
+    @test KPM.chern_marker_average(mk_gpu; area = 16 * Ac) ≈ C atol = 0.1
+
+    # stochastic regional estimator: identical seed ⇒ identical probes
+    est_gpu = KPM.chern_marker_region(
+        h,
+        x,
+        y;
+        Ef = 0.0,
+        region = bulk,
+        rng = Xoshiro(31),
+        NR = 8,
+        NC = NC,
+    )
+    est_cpu = on_cpu(
+        () -> KPM.chern_marker_region(
+            h,
+            x,
+            y;
+            Ef = 0.0,
+            region = bulk,
+            rng = Xoshiro(31),
+            NR = 8,
+            NC = NC,
+        ),
+    )
+    @test est_gpu ≈ est_cpu atol = 1e-8
 end
 
 square_site(ix, iy, Lx, Ly) = mod1(ix, Lx) + (mod1(iy, Ly) - 1) * Lx
