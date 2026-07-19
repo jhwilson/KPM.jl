@@ -16,8 +16,6 @@ using SparseArrays
 Γ₅ = kron(σ₀, σ₃)
 Γ₁₂ = kron(σ₃, σ₀) # = Γ₁Γ₂/i
 
-
-
 # Model parameters
 const C₀ = -0.0048
 const C₁ = 2.7232
@@ -62,8 +60,8 @@ end
 
 function all_sites(Nx, Ny, Nz)
     sites = MnBiTeBilayerSite[]
-    for x in 1:Nx, y in 1:Ny, z in 1:Nz
-        for orb in 1:8
+    for x = 1:Nx, y = 1:Ny, z = 1:Nz
+        for orb = 1:8
             push!(sites, MnBiTeBilayerSite(x, y, z, site_position(x, y, z, orb)))
         end
     end
@@ -76,8 +74,15 @@ end
 Constructs the real-space tight-binding Hamiltonian for MnBi₂Te₄ with 8×8 basis per cell.
 Returns (Ham, sites).
 """
-function MnBiTeLattice(Nx::Int, Ny::Int, Nz::Int; m::Float64=0.0,
-    bc_x::Number = 1.0+0im, bc_y::Number = 1.0+0im,bc_z::Number = 1.0+0im)
+function MnBiTeLattice(
+    Nx::Int,
+    Ny::Int,
+    Nz::Int;
+    m::Float64 = 0.0,
+    bc_x::Number = 1.0+0im,
+    bc_y::Number = 1.0+0im,
+    bc_z::Number = 1.0+0im,
+)
     Ncell = Nx * Ny * Nz
     N = Ncell * 8 # 8 = 2 layers × 4 orbitals
     site_list = all_sites(Nx, Ny, Nz)
@@ -95,8 +100,8 @@ function MnBiTeLattice(Nx::Int, Ny::Int, Nz::Int; m::Float64=0.0,
     T₁ = kron(σ₀, (-t₀*Γ₀ - im*t₁*Γ₁ - im*t₄*Γ₄ - t₅*Γ₅))
     T₂ = kron(σ₀, (-t₀*Γ₀ - im*t₁*(-Γ₁ + sqrt(3)*Γ₂)/2 - im*t₄*Γ₄ - t₅*Γ₅))
     T₃ = kron(σ₀, (-t₀*Γ₀ - im*t₁*(-Γ₁ - sqrt(3)*Γ₂)/2 - im*t₄*Γ₄ - t₅*Γ₅))
-    T₄ = -t₀z * kron(σ₁, Γ₀) + im*t₃z * kron(σ₂, Γ₃) - t₅z * kron(σ₁, Γ₅)
-    
+    T₄ = -t₀z * kron(σ₁, Γ₀) + im * t₃z * kron(σ₂, Γ₃) - t₅z * kron(σ₁, Γ₅)
+
     Ind1, Ind2, Vals = Int[], Int[], ComplexF64[]
 
     function addToList!(pos1, pos2, value, Ind1, Ind2, Vals)
@@ -108,21 +113,21 @@ function MnBiTeLattice(Nx::Int, Ny::Int, Nz::Int; m::Float64=0.0,
     function addHoppingMat!(cell1, cell2, mat, Ind1, Ind2, Vals)
         pos1 = 8 * (cell1 - 1) .+ (1:8)
         pos2 = 8 * (cell2 - 1) .+ (1:8)
-        for i in 1:8, j in 1:8
+        for i = 1:8, j = 1:8
             if abs(mat[i, j]) > 1e-10  # Avoid adding negligible terms
                 addToList!(pos1[i], pos2[j], mat[i, j], Ind1, Ind2, Vals)
             end
         end
     end
 
-    for x in 1:Nx, y in 1:Ny, z in 1:Nz
+    for x = 1:Nx, y = 1:Ny, z = 1:Nz
         curpos = cellidx(x, y, z)
         # Add hopping terms
         pb1 = cellidx(x+1, y, z)
         pb2 = cellidx(x, y+1, z)
         pb3 = cellidx(x-1, y-1, z)
         pbz = cellidx(x, y, z+1)
-        addHoppingMat!(curpos, curpos, T₀./2, Ind1, Ind2, Vals) 
+        addHoppingMat!(curpos, curpos, T₀ ./ 2, Ind1, Ind2, Vals)
         #addHoppingMat!(curpos, curpos, T₀, Ind1, Ind2, Vals) 
         addHoppingMat!(pb1, curpos, T₁*bc_x^(x==Nx), Ind1, Ind2, Vals)
         addHoppingMat!(pb2, curpos, T₂*bc_y^(y==Ny), Ind1, Ind2, Vals)
@@ -137,31 +142,30 @@ function MnBiTeLattice(Nx::Int, Ny::Int, Nz::Int; m::Float64=0.0,
     end
 
     Ham = sparse(Ind1, Ind2, Vals, N, N)
-    Ham = Ham + Ham'  
-
+    Ham = Ham + Ham'
 
     Valxs, Valys, Valzs = ComplexF64[], ComplexF64[], ComplexF64[]
-    for k in 1:length(Ind1)
+    for k = 1:length(Ind1)
         i = Ind1[k]
         j = Ind2[k]
         dist = site_list[i].pos - site_list[j].pos
         if abs(bc_z) < 0.99
-            all_pos = zeros(Float64, 3,9)
-            for Py in -1:1, Px in -1:1
-               dpos = dist + Py * Ny * a₁ + Px * Nx * a₂
-               all_pos[:,(Py+1)*3 + (Px+2)] = dpos
+            all_pos = zeros(Float64, 3, 9)
+            for Py = -1:1, Px = -1:1
+                dpos = dist + Py * Ny * a₁ + Px * Nx * a₂
+                all_pos[:, (Py+1)*3+(Px+2)] = dpos
             end
         else
-            all_pos = zeros(Float64, 3,27)
-            for Py in -1:1, Px in -1:1, Pz in -1:1
+            all_pos = zeros(Float64, 3, 27)
+            for Py = -1:1, Px = -1:1, Pz = -1:1
                 dpos = dist + Py * Ny * a₁ + Px * Nx * a₂ + Pz * Nz * a₄
-                all_pos[:,(Py+1)*9 + (Px+1)*3 + (Pz+2)] = dpos
+                all_pos[:, (Py+1)*9+(Px+1)*3+(Pz+2)] = dpos
             end
         end
         ind = sortperm(norm.(eachcol(all_pos)))
-        push!(Valxs,Vals[k]*all_pos[1,ind[1]])
-        push!(Valys,Vals[k]*all_pos[2,ind[1]])
-        push!(Valzs,Vals[k]*all_pos[3,ind[1]])
+        push!(Valxs, Vals[k]*all_pos[1, ind[1]])
+        push!(Valys, Vals[k]*all_pos[2, ind[1]])
+        push!(Valzs, Vals[k]*all_pos[3, ind[1]])
     end
     Jx = sparse(Ind1, Ind2, Valxs, N, N)
     Jy = sparse(Ind1, Ind2, Valys, N, N)
@@ -169,8 +173,7 @@ function MnBiTeLattice(Nx::Int, Ny::Int, Nz::Int; m::Float64=0.0,
     return Ham, Jx, Jy, Jz
 end
 
-
-function MnBiTeK(kx,ky,kz;m::Float64=0.0)
+function MnBiTeK(kx, ky, kz; m::Float64 = 0.0)
     k1 = kx
     k2 = (-kx + sqrt(3)*ky)/2
     k3 = (-kx - sqrt(3)*ky)/2
@@ -196,11 +199,11 @@ function MnBiTePositionOp(Nx::Int64, Ny::Int64, Nz::Int64)
     Y_pos = spzeros(Float64, N, N)
     Z_pos = spzeros(Float64, N, N)
 
-    for ind in 1:N
+    for ind = 1:N
         X_pos[ind, ind] = site_list[ind].pos[1]
         Y_pos[ind, ind] = site_list[ind].pos[2]
         Z_pos[ind, ind] = site_list[ind].pos[3]
     end
-    
+
     return X_pos, Y_pos, Z_pos
 end

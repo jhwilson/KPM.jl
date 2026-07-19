@@ -32,8 +32,8 @@ converted to CSR storage with element type `expect_eltype`, so that `mul!`
 against the complex Chebyshev block vectors is supported by CUSPARSE.
 SubArrays are never moved.
 """
-maybe_to_device(x, expect_eltype=eltype(x)) = to_device(ACTIVE_DEVICE[], x, expect_eltype)
-maybe_to_device(x::SubArray, expect_eltype=eltype(x)) = x
+maybe_to_device(x, expect_eltype = eltype(x)) = to_device(ACTIVE_DEVICE[], x, expect_eltype)
+maybe_to_device(x::SubArray, expect_eltype = eltype(x)) = x
 
 # Generic fallback: anything without a device-specific method stays put.
 to_device(::AbstractDevice, x, expect_eltype) = x
@@ -43,7 +43,7 @@ to_device(::AbstractDevice, x, expect_eltype) = x
 
 Copy `x` back to host memory; no-op for host arrays and numbers.
 """
-maybe_to_host(x::Union{Array, SparseMatrixCSC, SubArray, Number}) = x
+maybe_to_host(x::Union{Array,SparseMatrixCSC,SubArray,Number}) = x
 
 """
     maybe_on_device_zeros(args...)
@@ -59,3 +59,17 @@ device_rand(::CPUDevice, args...) = rand(args...)
 
 on_host_rand(args...) = rand(args...)
 on_host_zeros(args...) = zeros(args...)
+
+"""
+    to_device_of(ref, x)
+    device_zeros_of(ref, T, dims...)
+
+Residence-following helpers: place `x` (or a fresh zeros array) on the same
+device as the operator/array `ref`, regardless of the globally active device.
+Host references leave host arrays untouched; the CUDA extension adds methods
+for device-resident references. Used by the BdG paths, where the caller
+decides device residence once (by converting the operator) and every
+workspace follows it.
+"""
+to_device_of(ref, x) = x
+device_zeros_of(ref, T::Type, dims...) = zeros(T, dims...)

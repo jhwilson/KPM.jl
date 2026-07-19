@@ -1,0 +1,40 @@
+# Manifest for the Anderson mobility-edge Seebeck ensemble (cluster stage of
+# the Anderson mobility-edge benchmark). All compute
+# parameters and seeds live here; scripts/anderson_seebeck_ensemble.jl reads
+# it and nothing is hardcoded in analysis. Task enumeration:
+# task = (size_index - 1) * pairs_per_size + pair_index, 36 tasks total.
+
+[model]
+W = 12.0
+t = 1.0
+# Fixed certified rescaling for every realization and size: Gershgorin bound
+# 6t + W/2 = 12t < a. Never rescale per-realization.
+a = 12.25
+b = 0.0
+
+[kpm]
+NR = 8
+arr_size = 16
+
+[ensemble]
+# 0x5eebecc; per-task stream is seed_base + 10000*size_index + pair_index.
+seed_base = 99532492
+sizes = [16, 20, 24]
+# Stored Chebyshev order per size (reconstruct/truncate offline). Jackson
+# resolution pi*a/NC: 0.050t at NC=768, 0.038t at NC=1024.
+NC = [1024, 1024, 1024]
+pairs_per_size = 12
+
+[analysis]
+# Offline reconstruction reference values (not used by the compute script).
+kBT = [0.15, 0.25, 0.35]
+# Effective KPM transport edge, localized by the window-free two-temperature
+# collapse (minimum at 8.15, <5% only on [8.10, 8.15];
+# adversarial/reanalysis-collapse-sensitivity.jl). The free power-law fit is
+# boundary-pinned/ill-conditioned and is not the provenance
+# (notebook/2026-07-17_pre-pr-adversarial-review.md). The historical critical
+# estimate 7.5 (Grussbach-Schreiber PRB 51, 663) is kept for comparison; KPM
+# broadening makes 8.155 an upper bound on the thermodynamic edge.
+Ec_ref = 8.155
+Ec_hist = 7.5
+x_ref = 1.5

@@ -22,10 +22,9 @@ with D the Hilbert-space dimension and A the sample area — this is what
 [`kubo_bastin_cond`](@ref) evaluates (with a Gauss–Chebyshev quadrature
 rather than a uniform E grid); prefer it for absolute values.
 
-- `H_rescale_factor` is the normalization of H. Needed when μ is passed.
+  - `H_rescale_factor` is the normalization of H. Needed when μ is passed.
 
-- `NR` random vectors. Needed when H is passed
-
+  - `NR` random vectors. Needed when H is passed
 """
 function d_dc_cond end
 
@@ -50,9 +49,6 @@ the D/A, (1-x_F²) and e²/h factors are not included. For an absolutely
 normalized, ED-validated conductivity use [`kubo_bastin_cond`](@ref).
 """
 function dc_cond_single end
-
-
-
 
 """
     kubo_bastin_cond(mu2D, a, Ef; b=0.0, NH, area, beta=Inf, kernel=JacksonKernel,
@@ -102,16 +98,25 @@ Index convention: α (the `Jα` passed to `kpm_2d`) is the response direction,
 where C is anchored independently through a Fukui–Hatsugai–Suzuki Berry-flux
 calculation in `test/kubo_bastin_test.jl`.
 """
-function kubo_bastin_cond(mu2D, a::Real, Ef::Real; b::Real=0.0,
-                          NH::Integer, area::Real,
-                          beta::Real=Inf, kernel=JacksonKernel,
-                          NC::Int64=size(mu2D, 1), quad_N::Int64=8*NC,
-                          edge_cutoff::Real=1e-3)
+function kubo_bastin_cond(
+    mu2D,
+    a::Real,
+    Ef::Real;
+    b::Real = 0.0,
+    NH::Integer,
+    area::Real,
+    beta::Real = Inf,
+    kernel = JacksonKernel,
+    NC::Int64 = size(mu2D, 1),
+    quad_N::Int64 = 8*NC,
+    edge_cutoff::Real = 1e-3,
+)
     a > 0 || throw(ArgumentError("kubo_bastin_cond: a must be positive."))
     area > 0 || throw(ArgumentError("kubo_bastin_cond: area must be positive."))
     NH > 0 || throw(ArgumentError("kubo_bastin_cond: NH must be positive."))
     quad_N > 0 || throw(ArgumentError("kubo_bastin_cond: quad_N must be positive."))
-    0 <= edge_cutoff < 1 || throw(ArgumentError("kubo_bastin_cond: edge_cutoff must be in [0, 1)."))
+    0 <= edge_cutoff < 1 ||
+        throw(ArgumentError("kubo_bastin_cond: edge_cutoff must be in [0, 1)."))
 
     NC = min(NC, size(mu2D, 1), size(mu2D, 2))
     μtilde = maybe_to_host(mu2D_apply_kernel_and_h(mu2D[1:NC, 1:NC], NC, kernel))
@@ -120,8 +125,10 @@ function kubo_bastin_cond(mu2D, a::Real, Ef::Real; b::Real=0.0,
     # nodes inside the edge cutoff with nonzero Fermi weight; Gauss–Chebyshev
     # absorbs 1/√(1-x²), leaving (1-x²)^{-3/2} in the effective weight φ
     nodes, weights = gausschebyshevt(quad_N)
-    keep = [k for k in eachindex(nodes)
-            if abs(nodes[k]) < 1 - edge_cutoff && ff(a * nodes[k] + b) != 0]
+    keep = [
+        k for k in eachindex(nodes) if
+        abs(nodes[k]) < 1 - edge_cutoff && ff(a * nodes[k] + b) != 0
+    ]
     isempty(keep) && return 0.0
     x = nodes[keep]
     φ = [weights[k] * ff(a * nodes[k] + b) / (1 - nodes[k]^2)^(3/2) for k in keep]
@@ -129,10 +136,10 @@ function kubo_bastin_cond(mu2D, a::Real, Ef::Real; b::Real=0.0,
     # Γnm(x) = (x - i m s)e^{imθ} T_n(x) + (x + i n s)e^{-inθ} T_m(x) factorizes
     # in n and m, so the (node × moment) contraction is two GEMMs per chunk:
     #   Σ_k φ_k Σ_nm μ̃[n,m] Γnm(x_k) = Σ_k φ_k [(μ̃ᵀC)ᵀ⋅WM + (μ̃C)ᵀ⋅WN]_k
-    ns = 0:(NC - 1)
+    ns = 0:(NC-1)
     acc = zero(dt_cplx)
     chunk = max(1, min(length(x), cld(1_000_000, NC)))  # bound workspace to ~16 MB/matrix
-    for lo in 1:chunk:length(x)
+    for lo = 1:chunk:length(x)
         hi = min(lo + chunk - 1, length(x))
         xs = transpose(view(x, lo:hi))
         φs = transpose(view(φ, lo:hi))
@@ -149,8 +156,13 @@ function kubo_bastin_cond(mu2D, a::Real, Ef::Real; b::Real=0.0,
     return -2 * NH / (area * a^2) * real(acc)
 end
 
-
-function d_dc_cond_old(μ, a::Float64; E_grid=nothing, NC::Integer=0, kernel=JacksonKernel)
+function d_dc_cond_old(
+    μ,
+    a::Float64;
+    E_grid = nothing,
+    NC::Integer = 0,
+    kernel = JacksonKernel,
+)
     μ=complex(μ)
     μ=maybe_to_device(μ) # temporary
 
@@ -161,13 +173,13 @@ function d_dc_cond_old(μ, a::Float64; E_grid=nothing, NC::Integer=0, kernel=Jac
         if NC > size(μ)[1]
             @warn "NC=$(NC) exceeds the maximum size of μ; decreased to $(size(μ)[1])."
         end
-        NC = min(size(μ)[1],NC)
+        NC = min(size(μ)[1], NC)
     end
 
     if isnothing(E_grid)
-        Erange = [-a+0.01,a-0.01]
+        Erange = [-a+0.01, a-0.01]
         Ntilde = 2 * NC
-        E_grid = collect(((0:(Ntilde)).*(Erange[2]-Erange[1]))./Ntilde .+ Erange[1])
+        E_grid = collect(((0:(Ntilde)) .* (Erange[2]-Erange[1])) ./ Ntilde .+ Erange[1])
     end
 
     dσE_full = zeros(ComplexF64, size(E_grid))
@@ -175,7 +187,6 @@ function d_dc_cond_old(μ, a::Float64; E_grid=nothing, NC::Integer=0, kernel=Jac
 
     #process μtilde
     μtilde = mu2D_apply_kernel_and_h(μ, NC, kernel)
-
 
     for idx_ in idx
         ϵ = E_grid[idx_] / a
@@ -185,10 +196,17 @@ function d_dc_cond_old(μ, a::Float64; E_grid=nothing, NC::Integer=0, kernel=Jac
     return E_grid, dσE_full
 end
 
-
 d_dc_cond(μ, a::Float64, E::Float64; kwargs...) = d_dc_cond(μ, a, [E]; kwargs...)
 
-function d_dc_cond(μ, a::Float64, E::Array{Float64, 1}; b::Float64=0.0, NC::Integer=0, kernel=JacksonKernel, dE_order=0)
+function d_dc_cond(
+    μ,
+    a::Float64,
+    E::Array{Float64,1};
+    b::Float64 = 0.0,
+    NC::Integer = 0,
+    kernel = JacksonKernel,
+    dE_order = 0,
+)
     if (NC==0)
         # if not specified, take full
         NC = size(μ)[1]
@@ -196,7 +214,7 @@ function d_dc_cond(μ, a::Float64, E::Array{Float64, 1}; b::Float64=0.0, NC::Int
         if NC > size(μ)[1]
             @warn "NC=$(NC) exceeds the maximum size of μ; decreased to $(size(μ)[1])."
         end
-        NC = min(size(μ)[1],NC)
+        NC = min(size(μ)[1], NC)
     end
 
     dσE = zeros(Float64, size(E))
@@ -213,9 +231,7 @@ function d_dc_cond(μ, a::Float64, E::Array{Float64, 1}; b::Float64=0.0, NC::Int
     idx = abs.(E .- b) .< abs(a)
     dσE[idx] .= real(g.(E[idx]))
     return dσE
-
 end
-
 
 function _d_dc_cond_single(μtilde, H_rescale_factor::Float64, b, E, NC::Int64)
     a = H_rescale_factor
@@ -226,7 +242,12 @@ function _d_dc_cond_single(μtilde, H_rescale_factor::Float64, b, E, NC::Int64)
     return dσE
 end
 
-function dc_cond0(mu, H_rescale_factor::Number; kernel=JacksonKernel, NC::Int64=size(mu, 1))
+function dc_cond0(
+    mu,
+    H_rescale_factor::Number;
+    kernel = JacksonKernel,
+    NC::Int64 = size(mu, 1),
+)
     mu_tilde = mu2D_apply_kernel_and_h(mu[1:NC, 1:NC], NC, kernel)
     # Σ_{nm even} μ̃nm Tn(0) Tm(0): Tn(0) = +1 for n ≡ 0 (mod 4), -1 for n ≡ 2 (mod 4)
     oneone = sum(mu_tilde[1:4:NC, 1:4:NC]);
@@ -238,7 +259,14 @@ function dc_cond0(mu, H_rescale_factor::Number; kernel=JacksonKernel, NC::Int64=
     return (oneone + threethree - onethree - threeone) / H_rescale_factor
 end
 
-function dc_cond_single(mu, H_rescale_factor::Number, Ef::Number; b::Number=0.0, kernel=JacksonKernel, NC::Int64=size(mu, 1))
+function dc_cond_single(
+    mu,
+    H_rescale_factor::Number,
+    Ef::Number;
+    b::Number = 0.0,
+    kernel = JacksonKernel,
+    NC::Int64 = size(mu, 1),
+)
     Ef_tilde = (Ef - b) / H_rescale_factor
     mu_tilde = maybe_to_host(mu2D_apply_kernel_and_h(mu[1:NC, 1:NC], NC, kernel))
 
@@ -251,5 +279,4 @@ function dc_cond_single(mu, H_rescale_factor::Number, Ef::Number; b::Number=0.0,
     # 1/a is one factor of the full physical normalization; see the docstring
     # and kubo_bastin_cond for absolute units
     return sum(mu_tilde) / H_rescale_factor
-
 end

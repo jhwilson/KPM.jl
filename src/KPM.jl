@@ -4,7 +4,7 @@ using Serialization
 
 const dt_real = Float64
 const dt_cplx = ComplexF64
-const dt_num = Union{Float64, ComplexF64}
+const dt_num = Union{Float64,ComplexF64}
 
 include("device.jl")
 
@@ -15,8 +15,12 @@ include("kernels/kernels.jl")
 include("moment.jl")
 
 include("applications/dos.jl")
+include("applications/greens.jl")
+include("applications/evolution.jl")
+include("applications/chern_marker.jl")
 include("applications/ldos_mu.jl")
 include("applications/conductivity.jl")
+include("applications/thermoelectric.jl")
 include("applications/cpge.jl")
 include("applications/optical_cond.jl")
 include("applications/bdg.jl")
