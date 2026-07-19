@@ -231,8 +231,14 @@ same `+C` as `chern_number_fhs` (σ_xy = +C e²/h).
 """
 function ed_chern_marker(H, x, y, Ef; beta::Real = Inf)
     F = eigen(Hermitian(Matrix(H)))
-    occ =
-        isinf(beta) ? Float64.(F.values .< Ef) : 1 ./ (exp.(beta .* (F.values .- Ef)) .+ 1)
+    # sharp occupation uses the package's midpoint-at-the-jump convention
+    # (fermiFunctions: weight 1/2 exactly at Ef), matching what the KPM step
+    # series converges to at an eigenvalue pinned to Ef
+    occ = if isinf(beta)
+        ((F.values .< Ef) .+ (F.values .<= Ef)) ./ 2
+    else
+        1 ./ (exp.(beta .* (F.values .- Ef)) .+ 1)
+    end
     P = F.vectors * Diagonal(occ) * F.vectors'
     X = Diagonal(collect(Float64, x))
     Y = Diagonal(collect(Float64, y))

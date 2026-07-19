@@ -90,11 +90,14 @@ actions per site batch (the ``Q`` term cancels analytically);
 (region-restricted random-phase probes, per-probe estimates returned);
 `chern_marker_average` makes the explicit-area normalization contract an
 API point. Geometry is caller data throughout; open boundaries only. Tested
-on an open-boundary Haldane flake against the exact-projector marker
-(topological, trivial, finite-temperature, and disordered), sign-anchored
-to the Fukui--Hatsugai--Suzuki Chern number (bulk average ``= +C``,
-matching ``\sigma_{xy} = +C\,e^2/h``), with the whole-sample sum converging
-to the exact ``\mathrm{Im}\,\mathrm{Tr} = 0`` identity.
+on an open-boundary Haldane flake against dense exact references — the
+sharp projector marker (topological, trivial, disordered) and the smooth
+Fermi--Dirac thermal marker (not idempotent, hence no zero-trace identity;
+its nonzero whole-sample sum is pinned against the dense value) —
+sign-anchored to the Fukui--Hatsugai--Suzuki Chern number (bulk average
+``= +C``, matching ``\sigma_{xy} = +C\,e^2/h``), with the sharp
+whole-sample sum converging to the exact ``\mathrm{Im}\,\mathrm{Tr} = 0``
+identity.
 
 ### Target and scope
 

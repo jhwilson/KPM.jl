@@ -504,16 +504,22 @@ end
     fermi_projector(h::RescaledHamiltonian, V; Ef, beta=Inf, NC,
                     kernel=JacksonKernel, check_every=16, verbose=0)
 
-Apply the Fermi projector ``P = f_\\beta(H - E_F)`` to a host vector or
+Apply the Fermi operator ``P = f_\\beta(H - E_F)`` to a host vector or
 `NH × NR` block `V`, returning a plain host array of the same shape
-(complex). At `beta = Inf` (default) `P` projects onto the occupied
-subspace below `Ef` — sharp and accurate when the Jackson-damped resolution
+(complex). `h.H` must be Hermitian (the rescaling contract). At
+`beta = Inf` (default) `P` projects onto the occupied subspace below `Ef` —
+sharp and accurate when the Jackson-damped resolution
 ``\\Delta E \\approx \\pi\\,a/NC`` sits well inside a spectral gap at `Ef`;
-at finite `beta` the occupation is thermally smoothed. Coefficients come
-from [`fermi_coefficients`](@ref) (see there for the required-`NC` policy
-and kernel choice), the action from [`chebyshev_action!`](@ref), which also
-supplies the recurrence stability guard and device residence: the recurrence
-runs on the active device for plain dense/sparse `h.H`.
+an eigenvalue exactly at `Ef` takes weight `1/2` (the midpoint convention
+of the package step [`fermiFunctions`](@ref), and what the Chebyshev series
+converges to at a jump), so place `Ef` in a gap for projector semantics. At
+finite `beta` the occupation is thermally smoothed and the operator is
+deliberately **not** idempotent — a Fermi–Dirac operator, not a subspace
+projector. Coefficients come from [`fermi_coefficients`](@ref) (see there
+for the required-`NC` policy and kernel choice), the action from
+[`chebyshev_action!`](@ref), which also supplies the recurrence stability
+guard and device residence: the recurrence runs on the active device for
+plain dense/sparse `h.H`.
 """
 function fermi_projector(
     h::RescaledHamiltonian,
@@ -551,10 +557,15 @@ same `+C` as ``\\sigma_{xy} = +C\\,e^2/h``.
 
 Geometry is user data: coordinates, site grouping, and areas are inputs,
 never inferred from `H` — the raw markers are per **orbital** and carry
-units of x·y. Valid for **open boundaries only**: a diagonal position
-operator is not a legal position observable on a torus, and the marker
-summed over the whole finite sample is ≈ 0 — topology is read from a bulk
-average with the boundary excluded. Cost is two `NC`-step recurrences per
+units of x·y. `h.H` must be Hermitian (the contraction uses ``\\langle Pv|`` as the bra). Valid for **open boundaries only**: a diagonal position
+operator is not a legal position observable on a torus. At `beta = Inf` the
+marker summed over the whole finite sample converges to the exact identity
+``\\mathrm{Im}\\,\\mathrm{Tr}[PXQYP] = 0`` — topology is read from a bulk
+average with the boundary excluded, never the full trace. At finite `beta`
+that identity does **not** hold (the Fermi–Dirac operator is not
+idempotent): the thermal marker is a smooth diagnostic whose whole-sample
+sum is genuinely nonzero, while its bulk average still tracks `C` for
+temperatures well below the gap. Cost is two `NC`-step recurrences per
 `batch_size` sites (five complex `NH × batch_size` device workspaces,
 ≈ `80·NH·batch_size` bytes); for a regional average that does not need
 every site, see [`chern_marker_region`](@ref).
@@ -575,6 +586,8 @@ function chern_marker(
     NH = size(h.H, 1)
     length(x) == NH || throw(ArgumentError("x has length $(length(x)); expected NH = $NH"))
     length(y) == NH || throw(ArgumentError("y has length $(length(y)); expected NH = $NH"))
+    all(isfinite, x) && all(isfinite, y) ||
+        throw(ArgumentError("coordinate vectors must be finite"))
     isempty(sites) && throw(ArgumentError("sites must not be empty"))
     all(s -> 1 <= s <= NH, sites) || throw(ArgumentError("sites must lie in 1:$NH"))
     batch_size >= 1 || throw(ArgumentError("batch_size must be >= 1"))
@@ -626,8 +639,11 @@ Stochastic estimate of the **region-summed** local Chern marker
 probes supported on the basis indices `region` (duplicates are rejected).
 Returns the length-`NR` vector of independent per-probe estimates: `mean`
 of it is the estimate, `std/√NR` its statistical error, and
-`chern_marker_average(.; area)` of the mean (explicit region area) gives
-the regional Chern-number estimate. Probes come from
+`chern_marker_average(mean(est); area)` (explicit region area) gives the
+regional Chern-number estimate. **Each entry already estimates the entire
+region sum** — do not pass the returned vector itself to
+[`chern_marker_average`](@ref), which would multiply the answer by `NR`;
+average the probes first. Probes come from
 [`random_phase_vectors`](@ref) under the package reproducibility contract
 (`rng = Xoshiro(seed)` ⇒ identical probes on every device).
 
@@ -654,6 +670,8 @@ function chern_marker_region(
     NH = size(h.H, 1)
     length(x) == NH || throw(ArgumentError("x has length $(length(x)); expected NH = $NH"))
     length(y) == NH || throw(ArgumentError("y has length $(length(y)); expected NH = $NH"))
+    all(isfinite, x) && all(isfinite, y) ||
+        throw(ArgumentError("coordinate vectors must be finite"))
     isempty(region) && throw(ArgumentError("region must not be empty"))
     all(s -> 1 <= s <= NH, region) || throw(ArgumentError("region must lie in 1:$NH"))
     allunique(region) || throw(ArgumentError("region must not contain duplicates"))
