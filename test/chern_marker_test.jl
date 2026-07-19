@@ -125,6 +125,23 @@ function _marker_fixture(H; margin = 0.95)
     return KPM.RescaledHamiltonian((H - b * I) ./ a, a, b)
 end
 
+@testset "occupation at Ef is the midpoint 1/2 (fermiFunctions convention)" begin
+    # an eigenvalue exactly at Ef takes weight 1/2: the Chebyshev step series
+    # converges to the jump midpoint, matching KPM.fermiFunctions
+    h = KPM.RescaledHamiltonian(Matrix(Diagonal([-0.5, 0.0, 0.5])), 1.0, 0.0)
+    e2 = ComplexF64[0.0, 1.0, 0.0]
+    for NC in (32, 512)
+        p = KPM.fermi_projector(h, e2; Ef = 0.0, NC = NC)
+        @test real(p[2]) ≈ 0.5 atol = 1e-12   # exact by symmetry at x̃_F = 0
+    end
+    # generic (asymmetric) Fermi level: still the midpoint, up to truncation
+    hg = KPM.RescaledHamiltonian(Matrix(Diagonal([-0.5, 0.3, 0.6])), 1.0, 0.0)
+    pg = KPM.fermi_projector(hg, ComplexF64[0.0, 1.0, 0.0]; Ef = 0.3, NC = 4096)
+    @test real(pg[2]) ≈ 0.5 atol = 1e-2
+    # and the ED oracle now shares the convention
+    @test KPM.fermiFunctions(0.3, Inf)(0.3) == 0.5
+end
+
 @testset "open-boundary Haldane fixture: exact marker matches FHS" begin
     # validates the ED oracle itself before KPM touches it
     Lx = Ly = 10
@@ -186,7 +203,10 @@ end
     @test abs(sum(mk)) < 2e-3 * sum(abs, mk)
     mk_2NC =
         KPM.chern_marker(h, pos[:, 1], pos[:, 2]; Ef = 0.0, sites = all_sites, NC = 2 * NC)
-    @test abs(sum(mk_2NC)) < abs(sum(mk)) / 4
+    # a /2 ratio (measured ≈ /9) leaves margin for kernel/fixture tweaks
+    # while still asserting convergence, plus an absolute end-point bound
+    @test abs(sum(mk_2NC)) < abs(sum(mk)) / 2
+    @test abs(sum(mk_2NC)) < 0.1
     # an edge-column average is clearly not the bulk value
     edge = _haldane_cells(Ly, 1:1, 1:Ly)
     @test abs(sum(mk[edge]) / (Ly * Ac) - C) > 0.3
@@ -227,7 +247,7 @@ end
     @test mk ≈ mk_ed[bulk] atol = 0.02
 end
 
-@testset "finite temperature: thermal projector keeps the bulk marker" begin
+@testset "finite temperature: thermal Fermi–Dirac marker (not a projector)" begin
     Lx = Ly = 10
     NC = 512
     beta = 20.0   # T well below the bulk gap ≈ 2.1
@@ -248,6 +268,23 @@ end
     @test KPM.chern_marker_average(mk; area = 16 * Ac) ≈ C atol = 0.1
     mk_ed = ed_chern_marker(H, pos[:, 1], pos[:, 2], 0.0; beta = beta)
     @test mk ≈ mk_ed[bulk] atol = 0.02
+
+    # the thermal Fermi–Dirac operator is NOT idempotent, so the sharp
+    # zero-trace identity does not apply: the whole-sample sum is genuinely
+    # nonzero (half-occupied edge states) — pin it against the dense value
+    all_sites = collect(1:(2*Lx*Ly))
+    mk_all = KPM.chern_marker(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        sites = all_sites,
+        beta = beta,
+        NC = NC,
+    )
+    mk_all_ed = ed_chern_marker(H, pos[:, 1], pos[:, 2], 0.0; beta = beta)
+    @test abs(sum(mk_all_ed)) > 10        # ≈ 54.9 here: nowhere near zero
+    @test sum(mk_all) ≈ sum(mk_all_ed) rtol = 0.05
 end
 
 @testset "disorder robustness: marker survives weak onsite disorder" begin
@@ -294,7 +331,52 @@ end
     stderr_est = std(est) / sqrt(NR)
     @test abs(mean(est) - det_sum) < 4 * stderr_est
     # regional Chern estimate through the same explicit-area contract
-    @test KPM.chern_marker_average([mean(est)]; area = 16 * Ac) ≈ C atol = 0.2
+    # (scalar method: the probe mean is already the full region sum)
+    @test KPM.chern_marker_average(mean(est); area = 16 * Ac) ≈ C atol = 0.2
+
+    # singleton region: v = e^{iφ} e_i makes every probe exact, pinning the
+    # |R| normalization with zero statistical slack
+    i0 = region[1]
+    m_i0 = KPM.chern_marker(h, pos[:, 1], pos[:, 2]; Ef = 0.0, sites = [i0], NC = NC)
+    est1 = KPM.chern_marker_region(
+        h,
+        pos[:, 1],
+        pos[:, 2];
+        Ef = 0.0,
+        region = [i0],
+        rng = Xoshiro(7),
+        NR = 4,
+        NC = NC,
+    )
+    @test est1 ≈ fill(m_i0[1], 4) atol = 1e-10
+
+    # high-power bias check on a tiny flake: 512 probes over the full basis
+    # against the deterministic sum (noncontiguous region shapes included in
+    # the main check above)
+    H4, pos4, _ = haldane_open_model(4, 4)
+    h4 = _marker_fixture(H4)
+    det4 = sum(
+        KPM.chern_marker(
+            h4,
+            pos4[:, 1],
+            pos4[:, 2];
+            Ef = 0.0,
+            sites = collect(1:32),
+            NC = 128,
+        ),
+    )
+    est4 = KPM.chern_marker_region(
+        h4,
+        pos4[:, 1],
+        pos4[:, 2];
+        Ef = 0.0,
+        region = collect(1:32),
+        rng = Xoshiro(41),
+        NR = 512,
+        NC = 128,
+        batch_size = 64,
+    )
+    @test abs(mean(est4) - det4) < 4 * std(est4) / sqrt(512)
 
     # identical seed ⇒ identical probes ⇒ batching is exact bookkeeping
     est5 = KPM.chern_marker_region(
@@ -341,11 +423,49 @@ end
     )
 end
 
+@testset "center-shift invariance through the marker front end" begin
+    # a rigid spectral shift with Ef shifted alongside must leave the marker
+    # untouched: b flows physical → rescaled through fermi_coefficients
+    Lx = Ly = 6
+    NC = 256
+    δ = 3.7
+    H, pos, Ac = haldane_open_model(Lx, Ly)
+    h = _marker_fixture(H)
+    hs = KPM.RescaledHamiltonian(h.H, h.a, h.b + δ)   # same H_norm, shifted b
+    sites = _haldane_cells(Ly, 3:4, 3:4)
+    mk0 = KPM.chern_marker(h, pos[:, 1], pos[:, 2]; Ef = 0.0, sites = sites, NC = NC)
+    mkδ = KPM.chern_marker(hs, pos[:, 1], pos[:, 2]; Ef = δ, sites = sites, NC = NC)
+    @test mkδ ≈ mk0 atol = 1e-12
+    # the same shift through the projector action
+    v = ComplexF64.(pos[:, 1] ./ norm(pos[:, 1]))
+    @test KPM.fermi_projector(hs, v; Ef = δ, NC = NC) ≈
+          KPM.fermi_projector(h, v; Ef = 0.0, NC = NC) atol = 1e-12
+end
+
 @testset "argument validation" begin
     H, pos, Ac = haldane_open_model(4, 4)
     h = _marker_fixture(H)
     N = 2 * 4 * 4
     x, y = pos[:, 1], pos[:, 2]
+
+    # non-finite coordinates are rejected in both modes
+    xnan = copy(x)
+    xnan[3] = NaN
+    yinf = copy(y)
+    yinf[2] = Inf
+    @test_throws ArgumentError KPM.chern_marker(h, xnan, y; Ef = 0.0, sites = [1], NC = 64)
+    @test_throws ArgumentError KPM.chern_marker_region(
+        h,
+        x,
+        yinf;
+        Ef = 0.0,
+        region = [1],
+        rng = Xoshiro(1),
+        NC = 64,
+    )
+    # scalar averaging method matches the vector method on a summed value
+    @test KPM.chern_marker_average(2.5; area = 0.5) ==
+          KPM.chern_marker_average([2.5]; area = 0.5)
 
     @test_throws ArgumentError KPM.chern_marker(
         h,

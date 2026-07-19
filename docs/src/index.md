@@ -628,10 +628,12 @@ Pv = KPM.fermi_projector(h, v; Ef=0.0, NC=1024)
 m  = KPM.chern_marker(h, x, y; Ef=0.0, sites=sites, NC=1024)
 C  = KPM.chern_marker_average(m; area=n_cells * cell_area)
 
-# stochastic regional estimate: NR probes on a region, mean ± std/√NR
+# stochastic regional estimate: NR probes on a region, mean ± std/√NR;
+# each entry of est already estimates the WHOLE region sum, so average the
+# probes before normalizing (never pass est itself to chern_marker_average)
 est = KPM.chern_marker_region(h, x, y; Ef=0.0, region=region,
                               rng=Xoshiro(1), NR=32, NC=1024)
-C ≈ KPM.chern_marker_average([sum(est)/length(est)]; area=region_area)
+C ≈ KPM.chern_marker_average(mean(est); area=region_area)
 ```
 
 Semantics, pinned by the test suite against exact dense projectors:
@@ -643,10 +645,18 @@ Semantics, pinned by the test suite against exact dense projectors:
   result dimensionless.
 - **Open boundaries only.** A diagonal position operator is not a valid
   position observable on a torus; periodic-coordinate marker formulations
-  are out of scope. The marker summed over an entire finite open sample is
-  ``\approx 0`` (exactly ``\mathrm{Im}\,\mathrm{Tr} = 0`` for the exact
-  projector): topology is read from a **bulk** average with the boundary
-  excluded, never from the full trace.
+  are out of scope. At ``\beta = \infty`` the marker summed over an entire
+  finite open sample is ``\approx 0`` (exactly
+  ``\mathrm{Im}\,\mathrm{Tr} = 0`` for an idempotent projector): topology
+  is read from a **bulk** average with the boundary excluded, never from
+  the full trace.
+- **Finite temperature is a smooth diagnostic, not a projector marker.**
+  The Fermi–Dirac operator at finite ``\beta`` is deliberately not
+  idempotent, so the zero-trace identity does *not* hold — the thermal
+  whole-sample sum is genuinely nonzero (pinned against dense references in
+  the tests). The bulk average still tracks ``C`` for temperatures well
+  below the gap, and thermal smoothing is the recommended regularizer near
+  a transition.
 - **Deterministic vs stochastic cost.** Site-resolved maps cost two
   ``N_C``-step recurrences per `batch_size` sites. For a regional average,
   [`chern_marker_region`](@ref) replaces ``|R|`` site columns with `NR`

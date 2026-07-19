@@ -112,7 +112,7 @@ for (label, m) in (("topological (m = 0)", 0.0), ("trivial (m = 1.6)", 1.6))
         NR = 64,
         NC = NC,
     )
-    C_est = KPM.chern_marker_average([mean(est)]; area = length(bulk) ÷ 2 * Ac)
+    C_est = KPM.chern_marker_average(mean(est); area = length(bulk) ÷ 2 * Ac)
     C_err = std(est) / sqrt(length(est)) / (length(bulk) ÷ 2 * Ac)
     println(
         "   stochastic bulk average: ",

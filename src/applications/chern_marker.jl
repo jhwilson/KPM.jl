@@ -21,8 +21,14 @@ At `beta = Inf` the coefficients are the closed-form step series
 (``c_0 = 1 - \\theta_F/\\pi``, ``c_n = -(2/\\pi)\\sin(n\\theta_F)/n`` with
 ``\\theta_F = \\arccos \\tilde x_F``, ``\\tilde x_F = (E_F - b)/a``); at
 finite `beta` they are evaluated by `Np`-point Gauss–Chebyshev quadrature of
-the smooth Fermi factor. `Ef` must map strictly inside the rescaled window,
-`-1 < x̃_F < 1`.
+the smooth Fermi factor. At the jump itself the sharp series converges to
+the midpoint value `1/2` — the same convention as the package step
+[`fermiFunctions`](@ref) — so a state with an eigenvalue exactly at `Ef`
+receives half occupation. `Ef` must map strictly inside the rescaled
+window, `-1 < x̃_F < 1`: an `Ef` outside the spectrum would make every
+coefficient route a near-constant occupation (`P ≈ 0` or `≈ I`), which is
+far more likely a rescaling bookkeeping error than intent, so it is
+rejected rather than silently returning a trivial operator.
 
 The step is non-analytic, so the series has no rigorous truncation bound and
 `NC` is a **required** keyword (deliberately unlike the `NC = 1024` moment
@@ -127,12 +133,20 @@ Sum of raw orbital markers divided by the explicit `area` they cover. When
 area of those cells, this is the local-marker estimate of the Chern number.
 The area is caller data — cell and sample geometry are never inferred (the
 raw markers carry units of x·y, so the normalization decides
-dimensionlessness). Note the marker summed over an *entire* finite open
-sample is ≈ 0: topology comes from a bulk average with the boundary
-excluded, not from the full trace.
+dimensionlessness). Note the sharp (`beta = Inf`) marker summed over an
+*entire* finite open sample is ≈ 0: topology comes from a bulk average with
+the boundary excluded, not from the full trace.
+
+The scalar method serves an already-summed value — in particular
+`chern_marker_average(mean(est); area)` for the per-probe region-sum
+estimates of [`chern_marker_region`](@ref). Do not pass that estimate
+vector to the vector method: its entries each estimate the whole region
+sum, so summing them overcounts by `NR`.
 """
 function chern_marker_average(markers::AbstractVector{<:Real}; area::Real)
     isfinite(area) && area > 0 ||
         throw(ArgumentError("area must be finite and positive, got $area"))
     return sum(markers) / area
 end
+
+chern_marker_average(marker::Real; area::Real) = chern_marker_average([marker]; area = area)
