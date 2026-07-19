@@ -5,6 +5,13 @@
 # `idx_max` cutoffs, fused hn·kernel·T_n(E_f) weights) — a future unification
 # would have to reproduce that contract on top of `chebyshev_action!`.
 
+# Seed T_0 |V⟩ by indexed assignment (the validated GPU idiom); the Matrix
+# call widens and materializes SubArrays, which to_device_of deliberately
+# does not move. The CUDA extension adds a CuArray method that seeds an
+# Hn-resident probe block by direct assignment, skipping the host round-trip.
+_seed_slot!(slot, Hn, V::AbstractMatrix) =
+    (slot[:, :] = to_device_of(Hn, Matrix{dt_cplx}(V)); nothing)
+
 """
     chebyshev_action!(out, Hn, V, C; slots=nothing, check_every=16, verbose=0)
 
@@ -37,13 +44,6 @@ unstably — the rescaling margin was too tight. The guard sees only the
 propagated probe subspace, not the full spectrum; `check_every=0` disables
 it.
 """
-# Seed T_0 |V⟩ by indexed assignment (the validated GPU idiom); the Matrix
-# call widens and materializes SubArrays, which to_device_of deliberately
-# does not move. The CUDA extension adds a CuArray method that seeds an
-# Hn-resident probe block by direct assignment, skipping the host round-trip.
-_seed_slot!(slot, Hn, V::AbstractMatrix) =
-    (slot[:, :] = to_device_of(Hn, Matrix{dt_cplx}(V)); nothing)
-
 function chebyshev_action!(
     out::AbstractArray{<:Complex,3},
     Hn,
