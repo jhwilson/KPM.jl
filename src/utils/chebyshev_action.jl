@@ -13,10 +13,11 @@ Accumulate the matrix-function action
     out[:, :, k] = Σ_{n=1}^{NC} C[n, k] · T_{n-1}(Hn) V
 
 over the two-slot Chebyshev recurrence, overwriting `out`. `Hn` is the
-*rescaled* Hamiltonian (spectrum inside (−1, 1)); `V` is a host `NH × NR`
-probe block (`SubArray`s are materialized before transfer) and `C` is an
-`NC × K` coefficient table, real or complex, whose rows multiply
-`T_0 … T_{NC-1}`.
+*rescaled* Hamiltonian (spectrum inside (−1, 1)); `V` is an `NH × NR` probe
+block — host (`SubArray`s are materialized before transfer) or already
+resident with `Hn`, in which case it is seeded by direct assignment without a
+host round-trip — and `C` is an `NC × K` coefficient table, real or complex,
+whose rows multiply `T_0 … T_{NC-1}`.
 
 Internal primitive: coefficients are used verbatim — no `hn` factor, no
 kernel damping, no moment doubling — so callers supply fully formed series
@@ -36,6 +37,13 @@ unstably — the rescaling margin was too tight. The guard sees only the
 propagated probe subspace, not the full spectrum; `check_every=0` disables
 it.
 """
+# Seed T_0 |V⟩ by indexed assignment (the validated GPU idiom); the Matrix
+# call widens and materializes SubArrays, which to_device_of deliberately
+# does not move. The CUDA extension adds a CuArray method that seeds an
+# Hn-resident probe block by direct assignment, skipping the host round-trip.
+_seed_slot!(slot, Hn, V::AbstractMatrix) =
+    (slot[:, :] = to_device_of(Hn, Matrix{dt_cplx}(V)); nothing)
+
 function chebyshev_action!(
     out::AbstractArray{<:Complex,3},
     Hn,
@@ -80,10 +88,7 @@ function chebyshev_action!(
     # broadcast_assign! dispatches on for both devices.
     Ct = to_device_of(Hn, permutedims(Matrix{dt_cplx}(C)))
 
-    # Seed T_0 |V⟩ by indexed assignment (the validated GPU idiom); the
-    # Matrix call widens and materializes SubArrays, which to_device_of
-    # deliberately does not move.
-    slots[1][:, :] = to_device_of(Hn, Matrix{dt_cplx}(V))
+    _seed_slot!(slots[1], Hn, V)
     # Seed column norms: the stability guard measures growth relative to these.
     ref_sq = sum(abs2, slots[1]; dims = 1)
 
