@@ -90,6 +90,10 @@ end
     include("evolution_test.jl")
 end
 
+@testset "Fermi projector and Chern marker (applications/chern_marker.jl)" begin
+    include("chern_marker_test.jl")
+end
+
 @testset "optional CUDA extension migration" begin
     include("optional_cuda_test.jl")
 end
