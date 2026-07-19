@@ -1,0 +1,5 @@
+indent = 4
+remove_extra_newlines = true
+format_docstrings = true
+margins = 88
+conditional_to_if = true

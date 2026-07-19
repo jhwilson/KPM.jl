@@ -30,11 +30,11 @@ end
 
 # T_{x,n} matrix over an x grid and an order grid. The scalar method accepts
 # any Number so ForwardDiff duals pass through (dos with dE_order >= 1).
-function chebyshevT_xn(x_grid::Array{T, 1} where {T <: dt_num}, n_grid::Array{Int64, 1})
+function chebyshevT_xn(x_grid::Array{T,1} where {T<:dt_num}, n_grid::Array{Int64,1})
     return chebyshevT.(transpose(n_grid), x_grid)
 end
 
-function chebyshevT_xn(x::Number, n_grid::Array{Int64, 1})
+function chebyshevT_xn(x::Number, n_grid::Array{Int64,1})
     return chebyshevT.(transpose(n_grid), x)
 end
 

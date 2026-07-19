@@ -36,12 +36,12 @@ end
 
     # direct three-term recurrence, complex dots
     mu_direct = zeros(ComplexF64, NR, NC)
-    for j in 1:NR
+    for j = 1:NR
         α_prev = ψr[:, j]
         α_curr = Hd * ψr[:, j]
         mu_direct[j, 1] = dot(ψl[:, j], α_prev)
         mu_direct[j, 2] = dot(ψl[:, j], α_curr)
-        for n in 3:NC
+        for n = 3:NC
             α_prev, α_curr = α_curr, 2 .* (Hd * α_curr) .- α_prev
             mu_direct[j, n] = dot(ψl[:, j], α_curr)
         end
@@ -50,9 +50,9 @@ end
 
     # ED: μ_n = Σ_m ⟨ψl|m⟩⟨m|ψr⟩ T_n(λ_m), complex
     λ, V = eigen(Hermitian(Hd))
-    for j in 1:NR
+    for j = 1:NR
         w = conj.(V' * ψl[:, j]) .* (V' * ψr[:, j])
-        mu_ed = [sum(w .* cos.(n .* acos.(clamp.(λ, -1, 1)))) for n in 0:(NC - 1)]
+        mu_ed = [sum(w .* cos.(n .* acos.(clamp.(λ, -1, 1)))) for n = 0:(NC-1)]
         @test vec(mu_all[j, :]) ≈ mu_ed atol = 1e-8
     end
 
@@ -95,12 +95,12 @@ end
     @test eltype(mu_avg) <: Complex
     @test size(mu_avg) == (NC,)
 
-    mu_all = KPM.kpm_1d(H, NC, NR; psi_in_l = copy(ψl), psi_in_r = copy(ψr),
-                        avg_output = false)
+    mu_all =
+        KPM.kpm_1d(H, NC, NR; psi_in_l = copy(ψl), psi_in_r = copy(ψr), avg_output = false)
     @test vec(sum(mu_all, dims = 1) ./ NR) ≈ mu_avg atol = 1e-12
 
-    mu_ser = KPM.kpm_1d(H, NC, NR; psi_in_l = copy(ψl), psi_in_r = copy(ψr),
-                        NR_parallel = false)
+    mu_ser =
+        KPM.kpm_1d(H, NC, NR; psi_in_l = copy(ψl), psi_in_r = copy(ψr), NR_parallel = false)
     @test mu_ser ≈ mu_avg atol = 1e-12
 
     # equal-vector path still returns real averages
@@ -122,9 +122,12 @@ function _greens_fixture(rng; NH = 64, NC = 512, a = 2.3, b = 0.4)
     i, j = 3, NH - 5
     ψl = zeros(ComplexF64, NH, 3)
     ψr = zeros(ComplexF64, NH, 3)
-    ψl[i, 1] = 1; ψr[i, 1] = 1      # (i, i)
-    ψl[j, 2] = 1; ψr[j, 2] = 1      # (j, j)
-    ψl[i, 3] = 1; ψr[j, 3] = 1      # (i, j)
+    ψl[i, 1] = 1;
+    ψr[i, 1] = 1      # (i, i)
+    ψl[j, 2] = 1;
+    ψr[j, 2] = 1      # (j, j)
+    ψl[i, 3] = 1;
+    ψr[j, 3] = 1      # (i, j)
     mu_all = zeros(ComplexF64, 3, NC)
     KPM.kpm_1d!(Hn, NC, 3, NH, mu_all, ψl, ψr)
     mu = permutedims(mu_all)         # (NC, 3) layout of the reconstruction
@@ -140,26 +143,41 @@ end
     E = collect(range(fx.b - 0.9 * fx.a, fx.b + 0.9 * fx.a; length = 41))
 
     G = KPM.greens(fx.mu, fx.a, E; b = fx.b, eta = η)
-    e_i = zeros(ComplexF64, fx.NH); e_i[fx.i] = 1
-    e_j = zeros(ComplexF64, fx.NH); e_j[fx.j] = 1
+    e_i = zeros(ComplexF64, fx.NH);
+    e_i[fx.i] = 1
+    e_j = zeros(ComplexF64, fx.NH);
+    e_j[fx.j] = 1
     @test G[:, 1] ≈ ed_greens(fx.H_phys, e_i, e_i, E; eta = η) atol = 1e-8
     @test G[:, 2] ≈ ed_greens(fx.H_phys, e_j, e_j, E; eta = η) atol = 1e-8
     @test G[:, 3] ≈ ed_greens(fx.H_phys, e_i, e_j, E; eta = η) atol = 1e-8
 
     # advanced branch against the ED advanced resolvent
     GA = KPM.greens(fx.mu, fx.a, E; b = fx.b, eta = η, branch = :advanced)
-    @test GA[:, 3] ≈ ed_greens(fx.H_phys, e_i, e_j, E; eta = η, branch = :advanced) atol = 1e-8
+    @test GA[:, 3] ≈ ed_greens(fx.H_phys, e_i, e_j, E; eta = η, branch = :advanced) atol =
+        1e-8
 
     # scalar-E and vector-mu conveniences agree with the batched call
     @test KPM.greens(fx.mu[:, 3], fx.a, E[7]; b = fx.b, eta = η) ≈ G[7, 3] atol = 1e-12
 
     # route exclusivity and argument validation
     @test_throws ArgumentError KPM.greens(fx.mu, fx.a, E; b = fx.b)
-    @test_throws ArgumentError KPM.greens(fx.mu, fx.a, E; b = fx.b, eta = η,
-                                          kernel = KPM.JacksonKernel)
+    @test_throws ArgumentError KPM.greens(
+        fx.mu,
+        fx.a,
+        E;
+        b = fx.b,
+        eta = η,
+        kernel = KPM.JacksonKernel,
+    )
     @test_throws ArgumentError KPM.greens(fx.mu, fx.a, E; b = fx.b, eta = -1.0)
-    @test_throws ArgumentError KPM.greens(fx.mu, fx.a, E; b = fx.b, eta = η,
-                                          branch = :sideways)
+    @test_throws ArgumentError KPM.greens(
+        fx.mu,
+        fx.a,
+        E;
+        b = fx.b,
+        eta = η,
+        branch = :sideways,
+    )
 end
 
 @testset "Lorentz-kernel route vs exact resolvent at η(E) = (aλ/NC)·√(1-x̃²)" begin
@@ -169,14 +187,20 @@ end
     E = collect(range(fx.b - 0.8 * fx.a, fx.b + 0.8 * fx.a; length = 31))
 
     G = KPM.greens(fx.mu, fx.a, E; b = fx.b, kernel = KPM.LorentzKernels(λ))
-    e_i = zeros(ComplexF64, fx.NH); e_i[fx.i] = 1
-    e_j = zeros(ComplexF64, fx.NH); e_j[fx.j] = 1
+    e_i = zeros(ComplexF64, fx.NH);
+    e_i[fx.i] = 1
+    e_j = zeros(ComplexF64, fx.NH);
+    e_j[fx.j] = 1
     # uniform damping of the θ-series is a Lorentzian of width λ/NC in θ, so
     # the equivalent physical broadening is position dependent:
     # η(E) = (aλ/NC)·√(1-x̃²), largest at band center.
     η_of = E -> (fx.a * λ / fx.NC) * sqrt(1 - ((E - fx.b) / fx.a)^2)
-    G_ed = hcat([[ed_greens(fx.H_phys, l, r, e; eta = η_of(e)) for e in E]
-                 for (l, r) in ((e_i, e_i), (e_j, e_j), (e_i, e_j))]...)
+    G_ed = hcat(
+        [
+            [ed_greens(fx.H_phys, l, r, e; eta = η_of(e)) for e in E] for
+            (l, r) in ((e_i, e_i), (e_j, e_j), (e_i, e_j))
+        ]...,
+    )
     # the sinh-kernel/Lorentzian correspondence is approximate; honest
     # scale-relative tolerance, calibrated once (not tuned to pass)
     scale = maximum(abs.(G_ed))
@@ -214,7 +238,7 @@ end
     A = -imag.(G) ./ pi
     dE = E[2] - E[1]
     k = 101                                   # probe interior points only
-    idx = k:200:(length(E) - k)
+    idx = k:200:(length(E)-k)
     for m in idx
         pv = sum(A[l] / (E[m] - E[l]) for l in eachindex(E) if l != m) * dE
         @test pv ≈ real(G[m]) atol = 0.02 * maximum(abs.(real.(G)))
@@ -232,7 +256,7 @@ end
     for kernel in (KPM.JacksonKernel, KPM.LorentzKernels(4.0))
         A = KPM.ldos(fx.mu[:, 1:2], fx.a, collect(E_φ); b = fx.b, kernel = kernel)
         @test minimum(A) > -1e-12             # positive diagonal spectral weight
-        for p in 1:2
+        for p = 1:2
             integrand = A[:, p] .* (fx.a .* sin.(φ))   # |dE| = a sinφ dφ
             w = sum(integrand) * step(φ)
             @test w ≈ 1.0 atol = 1e-4
@@ -250,7 +274,8 @@ end
     # spectral_function: diagonal matches ldos; off-diagonal is genuinely
     # complex and integrates to the overlap ⟨u|v⟩ = 0 for orthogonal probes
     Ashort = KPM.spectral_function(fx.mu, fx.a, E[1:200:end]; b = fx.b, eta = η)
-    @test real.(Ashort[:, 1]) ≈ KPM.ldos(fx.mu[:, 1], fx.a, E[1:200:end]; b = fx.b, eta = η) atol = 1e-12
+    @test real.(Ashort[:, 1]) ≈ KPM.ldos(fx.mu[:, 1], fx.a, E[1:200:end]; b = fx.b, eta = η) atol =
+        1e-12
     @test maximum(abs.(imag.(Ashort[:, 1]))) < 1e-12
     Aoff = KPM.spectral_function(fx.mu[:, 3], fx.a, E; b = fx.b, eta = η)
     @test sum(Aoff) * (E[2] - E[1]) ≈ 0.0 atol = 1e-2
@@ -261,7 +286,8 @@ end
     rng = Xoshiro(127)
     fx = _greens_fixture(rng)
     E_out = [fx.b - 1.6 * fx.a, fx.b + 1.3 * fx.a, fx.b + 2.5 * fx.a]
-    e_i = zeros(ComplexF64, fx.NH); e_i[fx.i] = 1
+    e_i = zeros(ComplexF64, fx.NH);
+    e_i[fx.i] = 1
 
     # kernel route at η = 0: G is exactly real outside the band, and close to
     # the exact resolvent (kernel damping perturbs the small-n coefficients)
@@ -290,7 +316,7 @@ end
 
     # Σ_sites ⟨i|T_n|i⟩ = Tr T_n(H_norm), against the ED eigenvalue sum
     λ = eigvals(Hermitian(Matrix(h.H)))
-    tr_ed = [sum(cos.(n .* acos.(clamp.(λ, -1, 1)))) for n in 0:(NC - 1)]
+    tr_ed = [sum(cos.(n .* acos.(clamp.(λ, -1, 1)))) for n = 0:(NC-1)]
     @test vec(sum(real.(m.mu), dims = 2)) ≈ tr_ed atol = 1e-8
     @test real.(KPM.spectral_weights(m)) ≈ ones(NH) atol = 1e-12
 
@@ -321,8 +347,10 @@ end
     h_p = KPM.rescale(sparse(H_phys))
     @test h_c.a != h_p.a   # genuinely different rescalings
 
-    u = zeros(ComplexF64, NH); u[2] = 1
-    v = zeros(ComplexF64, NH); v[NH - 3] = 1
+    u = zeros(ComplexF64, NH);
+    u[2] = 1
+    v = zeros(ComplexF64, NH);
+    v[NH-3] = 1
     m_c = KPM.green_moments(h_c, u, v; NC = 1024)
     m_p = KPM.green_moments(h_p, u, v; NC = 1024)
 
@@ -340,8 +368,10 @@ end
     NH = 24
     A = randn(rng, ComplexF64, NH, NH)
     h = KPM.rescale(sparse(Matrix((A + A') / 2)); center = true)
-    u = randn(rng, ComplexF64, NH); u ./= norm(u)
-    v = randn(rng, ComplexF64, NH); v ./= norm(v)
+    u = randn(rng, ComplexF64, NH);
+    u ./= norm(u)
+    v = randn(rng, ComplexF64, NH);
+    v ./= norm(v)
 
     m = KPM.green_moments(h, u, v; NC = 33)   # odd NC legal for pairs
     @test KPM.nc(m) == 33 && KPM.npairs(m) == 1
@@ -358,9 +388,18 @@ end
     @test_throws ArgumentError KPM.ldos_moments(h; sites = [1], NC = 33)
     @test_throws ArgumentError KPM.ldos_moments(h; sites = [0], NC = 32)
     @test_throws ArgumentError KPM.ldos_moments(h; sites = [1], NC = 32, batch_size = 0)
-    @test_throws ArgumentError KPM.green_moments(h, u, randn(rng, ComplexF64, NH, 2); NC = 32)
-    @test_throws ArgumentError KPM.green_moments(h, randn(rng, ComplexF64, NH + 1, 1),
-                                                 randn(rng, ComplexF64, NH + 1, 1); NC = 32)
+    @test_throws ArgumentError KPM.green_moments(
+        h,
+        u,
+        randn(rng, ComplexF64, NH, 2);
+        NC = 32,
+    )
+    @test_throws ArgumentError KPM.green_moments(
+        h,
+        randn(rng, ComplexF64, NH + 1, 1),
+        randn(rng, ComplexF64, NH + 1, 1);
+        NC = 32,
+    )
 
     # equal-probe constructor matches the pair constructor at left == right
     m_eq = KPM.green_moments(h, u; NC = 32)
@@ -375,23 +414,44 @@ end
     Hd = Matrix((A + A') / 2)
     Hd ./= maximum(abs, eigvals(Hermitian(Hd))) / 0.9
     h = KPM.rescale(sparse(Hd))
-    u = randn(rng, ComplexF64, NH); u ./= norm(u)
-    v = randn(rng, ComplexF64, NH); v ./= norm(v)
+    u = randn(rng, ComplexF64, NH);
+    u ./= norm(u)
+    v = randn(rng, ComplexF64, NH);
+    v ./= norm(v)
     m = KPM.green_moments(h, u, v; NC = 64)
 
     # an aliased ψl workspace would let the ket overwrite the bra and corrupt
     # every moment silently — must throw instead
     α_all = zeros(ComplexF64, NH, 1, 2)
     mu_buf = zeros(ComplexF64, 1, 8)
-    @test_throws ArgumentError KPM.kpm_1d!(h.H, 8, 1, NH, mu_buf,
-                                           reshape(u, NH, 1), reshape(v, NH, 1);
-                                           α_all = α_all, ψl = view(α_all, :, :, 1))
+    @test_throws ArgumentError KPM.kpm_1d!(
+        h.H,
+        8,
+        1,
+        NH,
+        mu_buf,
+        reshape(u, NH, 1),
+        reshape(v, NH, 1);
+        α_all = α_all,
+        ψl = view(α_all, :, :, 1),
+    )
 
     # branch cannot be smuggled into the fixed-branch reconstructions
     @test_throws ArgumentError KPM.ldos(m.mu, m.a, [0.0]; eta = 0.1, branch = :advanced)
-    @test_throws ArgumentError KPM.spectral_function(m.mu, m.a, [0.0]; eta = 0.1, branch = :advanced)
+    @test_throws ArgumentError KPM.spectral_function(
+        m.mu,
+        m.a,
+        [0.0];
+        eta = 0.1,
+        branch = :advanced,
+    )
     @test_throws ArgumentError KPM.ldos(m, [0.0]; eta = 0.1, branch = :advanced)
-    @test_throws ArgumentError KPM.spectral_function(m, [0.0]; eta = 0.1, branch = :advanced)
+    @test_throws ArgumentError KPM.spectral_function(
+        m,
+        [0.0];
+        eta = 0.1,
+        branch = :advanced,
+    )
 
     # order and metadata contracts fail fast with ArgumentError
     @test_throws ArgumentError KPM.green_moments(h, u, v; NC = 1)
@@ -411,8 +471,7 @@ end
 
     # the CPGF tail warning fires when NC·η̃ is insufficient (in-band check;
     # the warning uses the exact complex acos, so no edge blind spot)
-    @test_logs (:warn, r"CPGF series tail") KPM.greens(m.mu, m.a, [0.0];
-                                                       eta = 1e-4 * m.a)
+    @test_logs (:warn, r"CPGF series tail") KPM.greens(m.mu, m.a, [0.0]; eta = 1e-4 * m.a)
 end
 
 @testset "momentum-space G(k, E) on the clean chain (probes are user data)" begin

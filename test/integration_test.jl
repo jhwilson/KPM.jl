@@ -7,11 +7,10 @@ using LinearAlgebra
 
 mu = KPM.kpm_1d(H_norm, 2048, 21)
 rho_0 = KPM.dos0(mu, a)
-d2rho_0 = KPM.dos0(mu, a; dE_order=2)
+d2rho_0 = KPM.dos0(mu, a; dE_order = 2)
 println("rho_0 = $(rho_0)")
 println("d2rho_0 = $(d2rho_0)")
 @test abs(rho_0) < 1e-4
-
 
 NC=16
 NR=2
@@ -31,7 +30,7 @@ try
 catch e
     println("cpge not implemented correctly, failing by error $(e).")
     println("test implementation of Λnmp ...")
-    @test KPM.Λnmp([1,1,1], 0.1, -0.095) != nothing
+    @test KPM.Λnmp([1, 1, 1], 0.1, -0.095) != nothing
     println("test implementation of gn_A ...")
     @test KPM.gn_A(0.1, 1) != nothing
     println("test implementation of Δn ...")

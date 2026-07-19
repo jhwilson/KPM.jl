@@ -23,9 +23,14 @@ end
 
 # Sparse matrices go to CSR (CUSPARSE's preferred layout for SpMM) and are cast
 # to `expect_eltype` so mul! against the complex Chebyshev vectors is supported.
-KPM.to_device(::CUDADevice, x::SparseMatrixCSC, expect_eltype) = CuSparseMatrixCSR{expect_eltype}(x)
+KPM.to_device(::CUDADevice, x::SparseMatrixCSC, expect_eltype) =
+    CuSparseMatrixCSR{expect_eltype}(x)
 KPM.to_device(::CUDADevice, x::Array, expect_eltype) = CuArray{expect_eltype}(x)
-KPM.to_device(::CUDADevice, x::Union{AbstractCuSparseMatrix, CuSparseMatrixCSR, CuSparseMatrixCSC}, expect_eltype) = x
+KPM.to_device(
+    ::CUDADevice,
+    x::Union{AbstractCuSparseMatrix,CuSparseMatrixCSR,CuSparseMatrixCSC},
+    expect_eltype,
+) = x
 KPM.to_device(::CUDADevice, x::CuArray, expect_eltype) = x
 
 KPM.maybe_to_host(x::CuArray) = Array(x)
@@ -44,8 +49,8 @@ KPM.device_rand(::CUDADevice, args...) = CUDA.rand(args...)
 # sparse matrix rebuilt every SCF iteration — both stay on the host, and
 # every workspace follows them there via to_device_of/device_zeros_of.
 function KPM.to_device(dev::CUDADevice, op::KPM.BdGOperator, expect_eltype)
-    (KPM._bdg_assemblable(op) &&
-     getfield(op, :h) isa SparseArrays.AbstractSparseMatrix) || return op
+    (KPM._bdg_assemblable(op) && getfield(op, :h) isa SparseArrays.AbstractSparseMatrix) ||
+        return op
     return KPM.to_device(dev, KPM.bdg_assemble(op), expect_eltype)
 end
 
@@ -56,8 +61,7 @@ KPM.to_device(dev::CUDADevice, S::KPM.ScaledOperator, expect_eltype) =
 # CUDA.jl >= 5.11 rebases the CUSPARSE matrix types onto GPUArrays abstract
 # sparse types, so CuSparseMatrixCSR is no longer <: AbstractCuSparseMatrix;
 # list the concrete formats alongside the legacy abstract type.
-const _CuOpRef = Union{AbstractCuSparseMatrix, CuSparseMatrixCSR,
-                       CuSparseMatrixCSC, CuArray}
+const _CuOpRef = Union{AbstractCuSparseMatrix,CuSparseMatrixCSR,CuSparseMatrixCSC,CuArray}
 KPM.to_device_of(::_CuOpRef, x::Array) = CuArray(x)
 KPM.to_device_of(::_CuOpRef, x::CuArray) = x
 KPM.device_zeros_of(::_CuOpRef, T::Type, dims...) = CUDA.zeros(T, dims...)
@@ -84,13 +88,19 @@ function KPM.chebyshev_iter_single(H, V_all::CuArray, i_pp_in::Int64, i_p_in::In
     return nothing
 end
 
-function KPM.chebyshev_iter_single(H, V_all::CuArray, i_pp_in::Int64, i_p_in::Int64, i_out::Int64)
+function KPM.chebyshev_iter_single(
+    H,
+    V_all::CuArray,
+    i_pp_in::Int64,
+    i_p_in::Int64,
+    i_out::Int64,
+)
     view(V_all, :, :, i_out) .= view(V_all, :, :, i_pp_in)
     KPM.chebyshev_iter_single(H, V_all, i_out, i_p_in)
 end
 
 function KPM.chebyshev_iter(H, ψviews::Array{<:CuArray}, n::Int64)
-    for i in 3:n
+    for i = 3:n
         KPM.chebyshev_iter_single(H, ψviews[i-2], ψviews[i-1], ψviews[i])
     end
 end
@@ -102,22 +112,28 @@ end
 
 # --- moment reductions ------------------------------------------------------
 
-function KPM.broadcast_dot_1d_1d!(target::Union{Array, SubArray},
-                                  Vl_arr::Array{<:CuArray},
-                                  Vr_arr::Array{<:CuArray};
-                                  alpha::Number=1.0,
-                                  beta=0.0)
+function KPM.broadcast_dot_1d_1d!(
+    target::Union{Array,SubArray},
+    Vl_arr::Array{<:CuArray},
+    Vr_arr::Array{<:CuArray};
+    alpha::Number = 1.0,
+    beta = 0.0,
+)
     target .= dot.(Vl_arr, Vr_arr)
     target .*= alpha
     target .+= KPM.maybe_to_host(beta)
     return nothing
 end
 
-function KPM.broadcast_dot_reduce_avg_2d_1d!(target::Union{Array, SubArray},
-                                             Vls::Array{T, 1} where {T<:CuArray{Ts, 2} where Ts},
-                                             Vr::CuArray{T, 2} where T,
-                                             NR::Int64, NCcols::Int64;
-                                             NC0::Int64=1, NCstep::Int64=1)
+function KPM.broadcast_dot_reduce_avg_2d_1d!(
+    target::Union{Array,SubArray},
+    Vls::Array{T,1} where {T<:CuArray{Ts,2} where Ts},
+    Vr::CuArray{T,2} where {T},
+    NR::Int64,
+    NCcols::Int64;
+    NC0::Int64 = 1,
+    NCstep::Int64 = 1,
+)
     target[NC0:NCstep:NCcols] .= dot.(Vls[NC0:NCstep:NCcols], (Vr,))
     target ./= NR
     return nothing
@@ -125,7 +141,10 @@ end
 
 # --- Chebyshev polynomial evaluation (DoS reconstruction) -------------------
 
-function KPM.chebyshevT_xn(x_grid::CuArray{T, 1} where {T <: KPM.dt_num}, n_grid::CuArray{Int64, 1})
+function KPM.chebyshevT_xn(
+    x_grid::CuArray{T,1} where {T<:KPM.dt_num},
+    n_grid::CuArray{Int64,1},
+)
     Nx = length(x_grid)
     Nn = length(n_grid)
     T_xn = CUDA.zeros(KPM.dt_real, Nx, Nn)
@@ -155,7 +174,14 @@ function KPM.chebyshev_lin_trans(x_grid::CuArray, n_grid::CuArray, mu_tilde::CuA
     Nx == 0 && return y  # empty in-band grid: dos() permits this
     threads = 256
     blocks = min(cld(Nx, threads), 1024)
-    @cuda threads=threads blocks=blocks chebyshev_lin_trans_cuda!(x_grid, n_grid, mu_tilde, Nx, Nn, y)
+    @cuda threads=threads blocks=blocks chebyshev_lin_trans_cuda!(
+        x_grid,
+        n_grid,
+        mu_tilde,
+        Nx,
+        Nn,
+        y,
+    )
     return y
 end
 
@@ -207,10 +233,20 @@ end
 
 # --- dc_long accumulation ---------------------------------------------------
 
-function KPM.broadcast_assign!(y_all::CuArray, y_all_views, x::CuArray, c_all::CuArray, idx_max::Int)
+function KPM.broadcast_assign!(
+    y_all::CuArray,
+    y_all_views,
+    x::CuArray,
+    c_all::CuArray,
+    idx_max::Int,
+)
     threads = 512
     block_count_x = min(cld(length(x), threads), 1024)
-    CUDA.@sync @cuda threads=threads blocks=(block_count_x, idx_max) cu_broadcast_assign!(y_all, x, c_all)
+    CUDA.@sync @cuda threads=threads blocks=(block_count_x, idx_max) cu_broadcast_assign!(
+        y_all,
+        x,
+        c_all,
+    )
     return nothing
 end
 
@@ -220,7 +256,7 @@ function cu_broadcast_assign!(y_all, x, c_all)
     c_idx = blockIdx().y
     x_l = length(x)
     for i = index:stride:x_l
-        @inbounds y_all[i + (c_idx - 1) * x_l] += x[i] * c_all[c_idx]
+        @inbounds y_all[i+(c_idx-1)*x_l] += x[i] * c_all[c_idx]
     end
     return nothing
 end

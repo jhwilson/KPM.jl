@@ -29,52 +29,63 @@ G; only z̃ = ±1 exactly is singular.
 
 Exactly one of the two broadening routes must be chosen:
 
-- `kernel`: finite-order damping at real energies (η → 0⁺ implicit). Pass
-  `LorentzKernels(λ)` when the truncation should act as a Lorentzian lifetime
-  broadening; the damping is uniform in θ̃, so the equivalent half-width is
-  position dependent, η(E) ≈ (a λ / NC) √(1-x̃²) (≈ a λ / NC at band center).
-  That correspondence holds where the kernel's reflected `e^{-2λ}` term is
-  negligible — use λ ≳ 2, and expect few-percent accuracy only by λ ≈ 4.
-  `JacksonKernel` gives near-Gaussian resolution (positive spectral weight,
-  but *not* a constant imaginary self-energy).
-- `eta` (> 0, physical units): direct Chebyshev-polynomial Green function
-  (CPGF) at the complex energy E ± iη with undamped coefficients (gₙ = 1).
-  Strictly in band with η̃ = η/a ≪ 1-x̃², the series tail decays like
-  exp(-n η̃ / √(1-x̃²)); at the band edges the decay softens to
-  exp(-n √(2η̃)). The emitted warning uses the exact complex `acos`, so it
-  covers all regimes: heed it by increasing `NC` or `eta`.
+  - `kernel`: finite-order damping at real energies (η → 0⁺ implicit). Pass
+    `LorentzKernels(λ)` when the truncation should act as a Lorentzian lifetime
+    broadening; the damping is uniform in θ̃, so the equivalent half-width is
+    position dependent, η(E) ≈ (a λ / NC) √(1-x̃²) (≈ a λ / NC at band center).
+    That correspondence holds where the kernel's reflected `e^{-2λ}` term is
+    negligible — use λ ≳ 2, and expect few-percent accuracy only by λ ≈ 4.
+    `JacksonKernel` gives near-Gaussian resolution (positive spectral weight,
+    but *not* a constant imaginary self-energy).
 
-- `b` : center shift of the rescaling (default 0). `NC` : truncate to the
-  first NC moments (default: all).
+  - `eta` (> 0, physical units): direct Chebyshev-polynomial Green function
+    (CPGF) at the complex energy E ± iη with undamped coefficients (gₙ = 1).
+    Strictly in band with η̃ = η/a ≪ 1-x̃², the series tail decays like
+    exp(-n η̃ / √(1-x̃²)); at the band edges the decay softens to
+    exp(-n √(2η̃)). The emitted warning uses the exact complex `acos`, so it
+    covers all regimes: heed it by increasing `NC` or `eta`.
+
+  - `b` : center shift of the rescaling (default 0). `NC` : truncate to the
+    first NC moments (default: all).
 """
 function greens end
 
 function greens(
-                mu::AbstractVecOrMat, H_rescale_factor::Real, E;
-                b::Real=0.0,
-                kernel=nothing,
-                eta=nothing,
-                branch::Symbol=:retarded,
-                NC::Int=0,
-               )
+    mu::AbstractVecOrMat,
+    H_rescale_factor::Real,
+    E;
+    b::Real = 0.0,
+    kernel = nothing,
+    eta = nothing,
+    branch::Symbol = :retarded,
+    NC::Int = 0,
+)
     a = H_rescale_factor
     @assert a > 0
 
     if (kernel === nothing) == (eta === nothing)
-        throw(ArgumentError(
-            "choose exactly one broadening route: `kernel=` (finite-order " *
-            "damping at real energies) or `eta=` (> 0; direct CPGF at " *
-            "complex energy)."))
+        throw(
+            ArgumentError(
+                "choose exactly one broadening route: `kernel=` (finite-order " *
+                "damping at real energies) or `eta=` (> 0; direct CPGF at " *
+                "complex energy).",
+            ),
+        )
     end
     if eta !== nothing && !(eta > 0)
         throw(ArgumentError("`eta` must be positive (physical units); got $(eta)."))
     end
-    s = branch === :retarded ? 1 :
-        branch === :advanced ? -1 :
+    s = if branch === :retarded
+        1
+    elseif branch === :advanced
+        -1
+    else
         throw(ArgumentError("`branch` must be :retarded or :advanced; got $(branch)."))
+    end
 
     mu_mat = mu isa AbstractVector ? reshape(mu, :, 1) : mu
-    NC >= 0 || throw(ArgumentError("NC must be nonnegative (0 = use all moments); got $(NC)."))
+    NC >= 0 ||
+        throw(ArgumentError("NC must be nonnegative (0 = use all moments); got $(NC)."))
     size(mu_mat, 1) >= 1 || throw(ArgumentError("mu must contain at least one moment."))
     if NC == 0
         NC = size(mu_mat, 1)
@@ -85,8 +96,8 @@ function greens(
         NC = min(NC, size(mu_mat, 1))
     end
 
-    g = kernel === nothing ? ones(dt_real, NC) : kernel.(0:(NC - 1), NC)
-    μtilde = mu_mat[1:NC, :] .* (hn.(0:(NC - 1)) .* g)
+    g = kernel === nothing ? ones(dt_real, NC) : kernel.(0:(NC-1), NC)
+    μtilde = mu_mat[1:NC, :] .* (hn.(0:(NC-1)) .* g)
 
     E_vec = E isa Number ? [E] : E
     # signed zero matters on the real axis: s*0.0 = ±0.0 selects the side of
@@ -107,8 +118,8 @@ function greens(
     G = Matrix{dt_cplx}(undef, length(E_vec), size(μtilde, 2))
     # chunk the e^{-isnθ̃} phase matrix so memory stays bounded at ~16 MB
     chunk = max(1, cld(1_000_000, NC))
-    n_row = collect(0:(NC - 1))'
-    for lo in 1:chunk:length(E_vec)
+    n_row = collect(0:(NC-1))'
+    for lo = 1:chunk:length(E_vec)
         hi = min(lo + chunk - 1, length(E_vec))
         θc = view(θ̃, lo:hi)
         W = exp.((-im * s) .* θc .* n_row)
@@ -136,8 +147,9 @@ complex. With unit site probes and the per-state DOS convention, summing
 over all sites gives NH times the [`dos`](@ref) reconstruction.
 """
 function ldos(mu::AbstractVecOrMat, H_rescale_factor::Real, E; kwargs...)
-    :branch in keys(kwargs) && throw(ArgumentError("ldos is -Im G^R/π by definition; `branch` cannot be chosen"))
-    G = greens(mu, H_rescale_factor, E; kwargs..., branch=:retarded)
+    :branch in keys(kwargs) &&
+        throw(ArgumentError("ldos is -Im G^R/π by definition; `branch` cannot be chosen"))
+    G = greens(mu, H_rescale_factor, E; kwargs..., branch = :retarded)
     return -imag.(G) ./ pi
 end
 
@@ -156,8 +168,10 @@ zeroth moment ⟨u|v⟩. Both branches are reconstructed from the same moments �
 no extra Chebyshev recurrences.
 """
 function spectral_function(mu::AbstractVecOrMat, H_rescale_factor::Real, E; kwargs...)
-    :branch in keys(kwargs) && throw(ArgumentError("spectral_function uses both branches; `branch` cannot be chosen"))
-    GR = greens(mu, H_rescale_factor, E; kwargs..., branch=:retarded)
-    GA = greens(mu, H_rescale_factor, E; kwargs..., branch=:advanced)
+    :branch in keys(kwargs) && throw(
+        ArgumentError("spectral_function uses both branches; `branch` cannot be chosen"),
+    )
+    GR = greens(mu, H_rescale_factor, E; kwargs..., branch = :retarded)
+    GA = greens(mu, H_rescale_factor, E; kwargs..., branch = :advanced)
     return (im / (2 * pi)) .* (GR .- GA)
 end

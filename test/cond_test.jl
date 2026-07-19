@@ -14,8 +14,8 @@ using KPM
     NC = 32
     a = 2.3
     mu = randn(rng, ComplexF64, NC, NC)   # generic: μ_nm ≠ μ_mn
-    v0 = KPM.dc_cond0(mu, a; NC=NC)
-    v1 = KPM.dc_cond_single(mu, a, 0.0; NC=NC)
+    v0 = KPM.dc_cond0(mu, a; NC = NC)
+    v1 = KPM.dc_cond_single(mu, a, 0.0; NC = NC)
     @test v0 ≈ v1 atol = 1e-12
 end
 
@@ -24,7 +24,7 @@ end
     NC = 24
     mu = randn(rng, ComplexF64, NC, NC)
     for ε in (-0.83, 0.0, 0.37)
-        direct = sum(KPM.Γnm.(0:NC-1, (0:NC-1)', ε) .* mu)
+        direct = sum(KPM.Γnm.(0:(NC-1), (0:(NC-1))', ε) .* mu)
         @test KPM.Γnmμnmαβ(mu, ε, NC) ≈ direct rtol = 1e-11
     end
 end

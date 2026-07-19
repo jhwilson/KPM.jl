@@ -36,9 +36,15 @@ unstably — the rescaling margin was too tight. The guard sees only the
 propagated probe subspace, not the full spectrum; `check_every=0` disables
 it.
 """
-function chebyshev_action!(out::AbstractArray{<:Complex, 3}, Hn, V::AbstractMatrix,
-                           C::AbstractMatrix;
-                           slots=nothing, check_every::Integer=16, verbose::Integer=0)
+function chebyshev_action!(
+    out::AbstractArray{<:Complex,3},
+    Hn,
+    V::AbstractMatrix,
+    C::AbstractMatrix;
+    slots = nothing,
+    check_every::Integer = 16,
+    verbose::Integer = 0,
+)
     NH, NR = size(V)
     NC, K = size(C)
     NC >= 1 || throw(ArgumentError("C must have at least one coefficient row"))
@@ -52,20 +58,21 @@ function chebyshev_action!(out::AbstractArray{<:Complex, 3}, Hn, V::AbstractMatr
         throw(ArgumentError("size(out, 3) = $(size(out, 3)) must equal size(C, 2) = $K"))
     check_every >= 0 || throw(ArgumentError("check_every must be >= 0"))
     Base.mightalias(out, V) && throw(ArgumentError("out must not alias V"))
-    Hn isa AbstractArray && Base.mightalias(out, Hn) &&
+    Hn isa AbstractArray &&
+        Base.mightalias(out, Hn) &&
         throw(ArgumentError("out must not alias Hn"))
 
     if slots === nothing
-        slots = (device_zeros_of(Hn, dt_cplx, NH, NR),
-                 device_zeros_of(Hn, dt_cplx, NH, NR))
+        slots = (device_zeros_of(Hn, dt_cplx, NH, NR), device_zeros_of(Hn, dt_cplx, NH, NR))
     else
         length(slots) == 2 || throw(ArgumentError("slots must hold two workspaces"))
         all(s -> size(s) == (NH, NR) && eltype(s) <: Complex, slots) ||
             throw(ArgumentError("slots must be two complex $NH × $NR workspaces"))
-        (Base.mightalias(slots[1], slots[2]) ||
-         any(s -> Base.mightalias(s, out) || Base.mightalias(s, V), slots) ||
-         (Hn isa AbstractArray && any(s -> Base.mightalias(s, Hn), slots))) &&
-            throw(ArgumentError("slots must not alias each other, out, V, or Hn"))
+        (
+            Base.mightalias(slots[1], slots[2]) ||
+            any(s -> Base.mightalias(s, out) || Base.mightalias(s, V), slots) ||
+            (Hn isa AbstractArray && any(s -> Base.mightalias(s, Hn), slots))
+        ) && throw(ArgumentError("slots must not alias each other, out, V, or Hn"))
     end
 
     # K × NC transposed layout: each step's per-column coefficients are one
@@ -78,7 +85,7 @@ function chebyshev_action!(out::AbstractArray{<:Complex, 3}, Hn, V::AbstractMatr
     # deliberately does not move.
     slots[1][:, :] = to_device_of(Hn, Matrix{dt_cplx}(V))
     # Seed column norms: the stability guard measures growth relative to these.
-    ref_sq = sum(abs2, slots[1]; dims=1)
+    ref_sq = sum(abs2, slots[1]; dims = 1)
 
     fill!(out, zero(eltype(out)))
     out_views = map(k -> view(out, :, :, k), 1:K)
@@ -101,7 +108,8 @@ function chebyshev_action!(out::AbstractArray{<:Complex, 3}, Hn, V::AbstractMatr
         chebyshev_iter_single(Hn, slots[ipp], slots[ip])
         broadcast_assign!(out, out_views, slots[ipp], Ct[:, n], K)
         iteration = n - 1
-        check_every > 0 && (iteration % check_every == 0 || n == NC) &&
+        check_every > 0 &&
+            (iteration % check_every == 0 || n == NC) &&
             _check_chebyshev_columns(slots[ipp], iteration, ref_sq)
         ip = 3 - ip
         ipp = 3 - ipp
@@ -109,10 +117,20 @@ function chebyshev_action!(out::AbstractArray{<:Complex, 3}, Hn, V::AbstractMatr
     return nothing
 end
 
-function chebyshev_action!(out::AbstractMatrix{<:Complex}, Hn, V::AbstractMatrix,
-                           C::AbstractVector; kwargs...)
-    chebyshev_action!(reshape(out, size(out, 1), size(out, 2), 1), Hn, V,
-                      reshape(C, :, 1); kwargs...)
+function chebyshev_action!(
+    out::AbstractMatrix{<:Complex},
+    Hn,
+    V::AbstractMatrix,
+    C::AbstractVector;
+    kwargs...,
+)
+    chebyshev_action!(
+        reshape(out, size(out, 1), size(out, 2), 1),
+        Hn,
+        V,
+        reshape(C, :, 1);
+        kwargs...,
+    )
 end
 
 """
@@ -130,9 +148,9 @@ function chebyshev_action(Hn, V::AbstractMatrix, C::AbstractMatrix; kwargs...)
 end
 
 chebyshev_action(Hn, V::AbstractMatrix, C::AbstractVector; kwargs...) =
-    dropdims(chebyshev_action(Hn, V, reshape(C, :, 1); kwargs...); dims=3)
+    dropdims(chebyshev_action(Hn, V, reshape(C, :, 1); kwargs...); dims = 3)
 chebyshev_action(Hn, V::AbstractVector, C::AbstractMatrix; kwargs...) =
-    dropdims(chebyshev_action(Hn, reshape(V, :, 1), C; kwargs...); dims=2)
+    dropdims(chebyshev_action(Hn, reshape(V, :, 1), C; kwargs...); dims = 2)
 chebyshev_action(Hn, V::AbstractVector, C::AbstractVector; kwargs...) =
     vec(chebyshev_action(Hn, reshape(V, :, 1), reshape(C, :, 1); kwargs...))
 
@@ -140,14 +158,19 @@ chebyshev_action(Hn, V::AbstractVector, C::AbstractVector; kwargs...) =
 # y_all[j] .+= x .* c_all[j] for j = 1:idx_max; the CUDA extension adds the
 # CuArray method (one kernel launch over all output slots).
 
-function broadcast_assign!(y_all::Array, y_all_views::Array{T, 1} where {T<:Union{Array, SubArray}}, x::Union{Array, SubArray}, c_all::Array, idx_max::Int)
+function broadcast_assign!(
+    y_all::Array,
+    y_all_views::Array{T,1} where {T<:Union{Array,SubArray}},
+    x::Union{Array,SubArray},
+    c_all::Array,
+    idx_max::Int,
+)
     if idx_max > Threads.nthreads()
         mt_broadcast_assign!(y_all_views, x, c_all, 1:idx_max)
     else
         finer_mt_broadcast_assign!(y_all_views, x, c_all, 1:idx_max)
     end
 end
-
 
 function mt_broadcast_assign!(y_all, x, c_all, idx)
     # copying x to y_all (list of list), multiplying by kernel_vecs_Tn
@@ -176,7 +199,7 @@ function finer_mt_broadcast_assign!(y_all, x, c_all, idx)
             yjv_all = _split_vector(y_all[j], N_splits)
         end
         cj = c_all[j]
-        Threads.@threads for i in 1:length(xv_all)
+        Threads.@threads for i = 1:length(xv_all)
             @inbounds yjv_all[i] .+= xv_all[i] .* cj
         end
     end
@@ -191,8 +214,7 @@ function _split_vector(x, N)
     lb = ub - pieces
     lb .+= 1
 
-    return map((l,u)->view(x, l:u), lb, ub)
-
+    return map((l, u)->view(x, l:u), lb, ub)
 end
 
 function _partition_l(l, N)

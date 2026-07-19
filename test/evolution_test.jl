@@ -111,7 +111,7 @@ end
 
     # block states: columnwise scalar calls and dense ED on the block
     single = KPM.evolve(h, Ψ0, 3.3)
-    for j in 1:NR
+    for j = 1:NR
         @test single[:, j] ≈ KPM.evolve(h, Ψ0[:, j], 3.3) atol = 5e-12
     end
     @test single ≈ ed_evolve(Hd, Ψ0, 3.3) atol = 1e-10
@@ -152,7 +152,13 @@ end
     t = 50.0 / h.a
     ψ0 = randn(rng, ComplexF64, N)
     ψ0 ./= norm(ψ0)
-    C, NC_used, tail = @test_logs (:warn, r"evolution series tail") KPM.evolution_coefficients(h.a, h.b, [t]; NC = 8)
+    C, NC_used, tail =
+        @test_logs (:warn, r"evolution series tail") KPM.evolution_coefficients(
+            h.a,
+            h.b,
+            [t];
+            NC = 8,
+        )
     @test NC_used == 8
     @test maximum(tail) > 1e-12
     ψt = @test_logs (:warn, r"evolution series tail") KPM.evolve(h, ψ0, t; NC = 8)
@@ -185,7 +191,12 @@ end
     # at NC = 3116, |at| = 2989.2 the two leading dropped terms alone are just
     # below 1e-12 but the full tail is above it — the warning must still fire
     # (the adversarial review's false-negative case)
-    @test_logs (:warn, r"evolution series tail") KPM.evolution_coefficients(1.0, 0.0, [2989.2]; NC = 3116)
+    @test_logs (:warn, r"evolution series tail") KPM.evolution_coefficients(
+        1.0,
+        0.0,
+        [2989.2];
+        NC = 3116,
+    )
     # the adaptive order for the same time must be silent
     NC_ok = KPM.evolution_order(1.0, 2989.2)
     @test NC_ok > 3116

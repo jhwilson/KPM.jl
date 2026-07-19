@@ -3,19 +3,17 @@ using SparseArrays, Arpack, Random, LinearAlgebra
 """
 wrapAdd find the sum of x and y, with L+1=1
 """
-function wrapAdd(x::Int64,y::Int64,L::Int64)
-        return mod(x+y-1,L)+1
+function wrapAdd(x::Int64, y::Int64, L::Int64)
+    return mod(x+y-1, L)+1
 end
-
 
 """
 give 0 for OBC=1 direction if i,i_ is on boundary. Otherwise 1
 """
-function isNotBoundary(ijk,ijk_,sizes,OBC)
-	f(x,L,OBC) = (abs(div(x,L-1))) & OBC # is on boundary and has OBC requirement
-	return 1-reduce(|, map(f,ijk-ijk_,sizes,OBC))
+function isNotBoundary(ijk, ijk_, sizes, OBC)
+    f(x, L, OBC) = (abs(div(x, L-1))) & OBC # is on boundary and has OBC requirement
+    return 1-reduce(|, map(f, ijk-ijk_, sizes, OBC))
 end
-
 
 """
     normalizeH(H; eps=0.1, fixed_a=0.0, center=false)
@@ -40,7 +38,7 @@ it is incompatible with `center=true`.
 """
 eps_float(H) = eps(real(float(eltype(H))))
 
-function normalizeH(H; eps::Float64=0.1, fixed_a::Number=0.0, center::Bool=false)
+function normalizeH(H; eps::Float64 = 0.1, fixed_a::Number = 0.0, center::Bool = false)
     # exact check first; fall back to a roundoff-level tolerance so
     # floating-point construction noise does not reject a physical H
     if !ishermitian(H)
@@ -52,14 +50,18 @@ function normalizeH(H; eps::Float64=0.1, fixed_a::Number=0.0, center::Bool=false
     end
 
     if fixed_a != 0
-        center && throw(ArgumentError("normalizeH: center=true is incompatible with fixed_a — the center shift is derived from the spectral edges, which fixed_a skips."))
+        center && throw(
+            ArgumentError(
+                "normalizeH: center=true is incompatible with fixed_a — the center shift is derived from the spectral edges, which fixed_a skips.",
+            ),
+        )
         a = fixed_a
         return a, H / a
     end
 
     if center
-        es_max, _ = eigs(H; nev=1, which=:LR, tol=0.001, maxiter=300)
-        es_min, _ = eigs(H; nev=1, which=:SR, tol=0.001, maxiter=300)
+        es_max, _ = eigs(H; nev = 1, which = :LR, tol = 0.001, maxiter = 300)
+        es_min, _ = eigs(H; nev = 1, which = :SR, tol = 0.001, maxiter = 300)
         Emax = real(es_max[1])
         Emin = real(es_min[1])
         a = (Emax - Emin) / (2 - eps)
@@ -67,19 +69,29 @@ function normalizeH(H; eps::Float64=0.1, fixed_a::Number=0.0, center::Bool=false
         return a, b, (H - b * I) / a
     end
 
-    es, _ = eigs(H; tol=0.001, maxiter=300)
+    es, _ = eigs(H; tol = 0.001, maxiter = 300)
     Emax = maximum(abs.(es))
     a = 2 * Emax / (2 - eps)
     return a, H / a
 end
 
-function timestamp(text; t = [time(), time()], r = 0, init = false, rank=0)
+function timestamp(text; t = [time(), time()], r = 0, init = false, rank = 0)
     curr_time = time()
     if init
         t[1] = curr_time
         t[2] = curr_time
     end
-    println("TIME-",text, ",Δt=", curr_time - t[2], "; total elapsed=", curr_time - t[1],  "at round ", r,"@rank", rank)
+    println(
+        "TIME-",
+        text,
+        ",Δt=",
+        curr_time - t[2],
+        "; total elapsed=",
+        curr_time - t[1],
+        "at round ",
+        r,
+        "@rank",
+        rank,
+    )
     t[2] = curr_time
-
 end
