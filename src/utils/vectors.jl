@@ -95,6 +95,32 @@ function broadcast_dot_1d_1d!(
     return nothing
 end
 
+# Moment reductions stay on the recurrence device. On the CPU `target` is the
+# caller's host matrix; the CUDA extension supplies a device accumulator and
+# copies it back once after the recurrence.
+moment_accumulator(::Union{Array,SubArray}, target::Union{Array,SubArray}) = target
+
+function columnwise_dot!(
+    target::Union{Array,SubArray},
+    n::Int,
+    A::Union{Array,SubArray},
+    B::Union{Array,SubArray};
+    alpha::Number = 1,
+    beta_col::Int = 0,
+    beta_scale::Number = 0,
+)
+    for i in axes(A, 2)
+        beta = beta_col == 0 ? zero(eltype(target)) : beta_scale * target[i, beta_col]
+        target[i, n] = alpha * dot(view(A, :, i), view(B, :, i)) + beta
+    end
+    return nothing
+end
+
+copy_moment_accumulator!(
+    target::Union{Array,SubArray},
+    source::Union{Array,SubArray},
+) = (copyto!(target, source); nothing)
+
 # Ring-buffer index helpers: 3-slot ring ...
 r_i(n) = mod(n - 1, 3) + 1
 r_ip(n) = mod(n - 2, 3) + 1

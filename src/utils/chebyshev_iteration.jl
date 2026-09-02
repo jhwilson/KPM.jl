@@ -160,6 +160,8 @@ function chebyshev_iter_single(
     V_p_in::Union{SubArray,ASA},
     V_out::Union{SubArray,ASA},
 )
-    V_out .= V_pp_in
+    # A 2-slot left ring (arr_size = 2) wraps with V_out ≡ V_pp_in; the
+    # broadcast would then unalias-copy a full NH×NR block per step.
+    V_out === V_pp_in || (V_out .= V_pp_in)
     chebyshev_iter_single(H, V_out, V_p_in)
 end

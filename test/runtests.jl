@@ -34,6 +34,10 @@ end
     include("cond_test.jl")
 end
 
+@testset "kpm_2d blocking (moment.jl)" begin
+    include("kpm2d_blocking_test.jl")
+end
+
 @testset "Kubo–Bastin vs exact diagonalization" begin
     include("kubo_bastin_test.jl")
 end

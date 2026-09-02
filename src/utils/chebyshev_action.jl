@@ -83,10 +83,9 @@ function chebyshev_action!(
         ) && throw(ArgumentError("slots must not alias each other, out, V, or Hn"))
     end
 
-    # K × NC transposed layout: each step's per-column coefficients are one
-    # contiguous column, and column getindex yields the plain-array copy that
-    # broadcast_assign! dispatches on for both devices.
+    # K × NC transposed layout gives each step one contiguous coefficient view.
     Ct = to_device_of(Hn, permutedims(Matrix{dt_cplx}(C)))
+    Ct_views = map(n -> view(Ct, :, n), 1:NC)
 
     _seed_slot!(slots[1], Hn, V)
     # Seed column norms: the stability guard measures growth relative to these.
@@ -95,11 +94,11 @@ function chebyshev_action!(
     fill!(out, zero(eltype(out)))
     out_views = map(k -> view(out, :, :, k), 1:K)
 
-    broadcast_assign!(out, out_views, slots[1], Ct[:, 1], K)
+    broadcast_assign!(out, out_views, slots[1], Ct_views[1], K)
     NC == 1 && return nothing
 
     mul!(slots[2], Hn, slots[1])
-    broadcast_assign!(out, out_views, slots[2], Ct[:, 2], K)
+    broadcast_assign!(out, out_views, slots[2], Ct_views[2], K)
     NC == 2 && check_every > 0 && _check_chebyshev_columns(slots[2], 1, ref_sq)
 
     ip = 2
@@ -111,7 +110,7 @@ function chebyshev_action!(
     end
     for n in n_enum
         chebyshev_iter_single(Hn, slots[ipp], slots[ip])
-        broadcast_assign!(out, out_views, slots[ipp], Ct[:, n], K)
+        broadcast_assign!(out, out_views, slots[ipp], Ct_views[n], K)
         iteration = n - 1
         check_every > 0 &&
             (iteration % check_every == 0 || n == NC) &&
@@ -167,7 +166,7 @@ function broadcast_assign!(
     y_all::Array,
     y_all_views::Array{T,1} where {T<:Union{Array,SubArray}},
     x::Union{Array,SubArray},
-    c_all::Array,
+    c_all::Union{Array,SubArray},
     idx_max::Int,
 )
     if idx_max > Threads.nthreads()
@@ -191,18 +190,16 @@ function finer_mt_broadcast_assign!(y_all, x, c_all, idx)
     split_by_col = x_cols >= Threads.nthreads()
     if split_by_col
         N_splits = x_cols
-        xv_all = map(i->view(x, :, i), 1:x_cols)
+        xv_all = map(i -> view(x, :, i), 1:x_cols)
+        yv_all = map(j -> map(i -> view(y_all[j], :, i), 1:x_cols), idx)
     else
         N_splits = Threads.nthreads()
         xv_all = _split_vector(x, N_splits)
+        yv_all = map(j -> _split_vector(y_all[j], N_splits), idx)
     end
 
-    for j in idx
-        if split_by_col
-            yjv_all = map(i->view(y_all[j], :, i), 1:x_cols)
-        else
-            yjv_all = _split_vector(y_all[j], N_splits)
-        end
+    for (j_idx, j) in enumerate(idx)
+        yjv_all = yv_all[j_idx]
         cj = c_all[j]
         Threads.@threads for i = 1:length(xv_all)
             @inbounds yjv_all[i] .+= xv_all[i] .* cj

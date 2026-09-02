@@ -1,0 +1,24 @@
+{
+  "label": "gpu-KPM.jl-833988",
+  "julia_version": "1.12.6",
+  "nthreads": 8,
+  "git_rev": "unknown",
+  "cases": {
+    "chebyshev_iter_single_NH262144_NR8": 0.005135421,
+    "kpm_2d_cond_NH16384_NC64_NR4_default": 0.010318251,
+    "kpm_2d_cond_NH16384_NC64_NR4_arr_size3": 0.079784355,
+    "kpm_1d_dos_NH262144_NC512_NR4": 0.058475161,
+    "kpm_1d_dos_NH65536_NC1024_NR8": 0.056766432,
+    "kpm_2d_cond_NH16384_NC64_NR4_arr_size64": 0.006348302,
+    "chebyshev_action_NH65536_NC1024_NR8_K2": 1.8632278
+  },
+  "workloads": {
+    "chebyshev_iter_single_NH262144_NR8": "NH=262144 (512x512 periodic square), NR=8, one raw recurrence step",
+    "kpm_2d_cond_NH16384_NC64_NR4_default": "NH=16384 (128x128 periodic square), NC=64 (shrunk from 256), NR=4, default",
+    "kpm_2d_cond_NH16384_NC64_NR4_arr_size3": "NH=16384 (128x128 periodic square), NC=64 (shrunk from 256), NR=4, arr_size3",
+    "kpm_1d_dos_NH262144_NC512_NR4": "NH=262144 (512x512 periodic square), NC=512, NR=4",
+    "kpm_1d_dos_NH65536_NC1024_NR8": "NH=65536 (256x256 periodic square), NC=1024, NR=8",
+    "kpm_2d_cond_NH16384_NC64_NR4_arr_size64": "NH=16384 (128x128 periodic square), NC=64 (shrunk from 256), NR=4, arr_size64",
+    "chebyshev_action_NH65536_NC1024_NR8_K2": "NH=65536 (256x256 periodic square), NC=1024, NR=8, K=2"
+  }
+}

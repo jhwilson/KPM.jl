@@ -109,8 +109,7 @@ function kpm_1d_current end
 """
 $(METHODLIST)
 
-In place KPM2D. This is also the main building block for KPM_2D. This
-method only provide NR=1.
+In place KPM2D. This is also the main building block for KPM_2D.
 
 Calculates `ψ0l * Tm(H) * Jβ * Tn(H) * Jα * ψ0r`.  When `ψ0r` and `ψ0l` are
 chosen to be random and identical, the output approximates `tr(Tm(H) Jβ Tn(H) Jα)`.
@@ -152,16 +151,26 @@ Output: nothing. Result is saved on μ.
 
 **KWARGS**
 
-  - `arr_size` : The buffer array size. Minimum is 3. Determines the number of
-    left states to be kept in memory for each loop of right states. The time
-    complexity is reduced from ``O(N\\times NC^2)`` to ``O(N\\times NC\\times arr\\_size)`` while space
-    complexity is increased from ``O(N\\times NC)`` to ``O(N\\times NC\\times arr\\_size)``.
+  - `arr_size=:auto` : Number `K_left` of consecutive left Chebyshev states
+    retained for each recurrence pass (minimum 2). Larger blocks reduce sparse
+    matvecs from approximately `NC^2 / 3` to `NC^2 / K_left`.
+
+  - `right_block=:auto` : Number `K_right` of consecutive transformed right
+    states contracted at once. The default is `min(NC, 16)`.
+
+  - `workspace_bytes=:auto` : Memory budget used by [`kpm_2d_blocking`](@ref).
+    The automatic budget is 25% of total host memory or 50% of available device
+    memory. Explicit block sizes take precedence over the budget.
+
+The `NC^2` inner products are evaluated as blocked dense GEMMs. Space is
+`O(NH * NR * (K_left + K_right))`, plus the small dense result block.
 
   - `moment_parity` : The condition enforced on μmn. Choose from `:NONE`, `:ODD` and `:EVEN`.
-    `:NONE` will calculate all μmn; `:ODD` will calculate μmn such that `mod(m+n, 2)==1`;
-    `:EVEN` will calculate μmn such that `mod(m+n, 2)==0`. As an example, `moment_parity=:EVEN`
-    can be used when calculating longitudinal conductivity on model with
-    particle-hole symmetry to save time and increase accuracy.
+    `:NONE` keeps all μmn; `:ODD` keeps only μmn with `mod(m+n, 2)==1` and
+    `:EVEN` only `mod(m+n, 2)==0`, zeroing the rest. The blocked GEMM computes
+    every entry regardless, so parity costs nothing and saves nothing in time;
+    `moment_parity=:EVEN` on a particle-hole symmetric model removes the
+    stochastic noise in the entries that vanish by symmetry.
 
 **working spaces KWARGS**: The following keyword args are simply providing working
 place arrays to avoid repetitive allocation and GC. They are automatically
@@ -171,11 +180,12 @@ working space arr.
 
   - `ψ0r=maybe_on_device_zeros(NH, NR)`
   - `Jψ0r=maybe_on_device_zeros(NH, NR)`
-  - `JTnHJψr=maybe_on_device_zeros(NH, NR)`
-  - `ψall_r=maybe_on_device_zeros(3, NH, NR)`
+  - `JTnHJψr=maybe_on_device_zeros(NH, NR, right_block)`
+  - `ψall_r=maybe_on_device_zeros(NH, NR, 3)`
   - `ψ0l=maybe_on_device_zeros(NH, NR)`
-  - `ψall_l=maybe_on_device_zeros(arr_size, NH, NR)`
+  - `ψall_l=maybe_on_device_zeros(NH, NR, arr_size)`
   - `ψw=maybe_on_device_zeros(NH, NR)`
+  - `μblock=maybe_on_device_zeros(right_block, arr_size)`
 """
 function kpm_2d! end
 
@@ -216,17 +226,22 @@ Output: μ, a 2D array in ComplexF64. μ[n, m] is the momentum for 2D KPM.
 
   - `psi_in_l`
 
-Passes value to ψ0l. The array is not updated. Size should be
-(NH, NR) (preferred) or (NR, NH) if set.
+Passes value to ψ0l. The array is not updated. Size must be (NH, NR).
 
   - `psi_in_r`
 
-Passes value to ψ0r. The array is not updated. Size should be
-(NH, NR) (preferred) or (NR, NH) if set.
+Passes value to ψ0r. The array is not updated. Size must be (NH, NR).
 
   - `psi_in`
 
 Cannot be used together with psi_in_l and psi_in_r. Sets psi_in_l=psi_in_r=psi_in if set.
+
+  - `arr_size=:auto`, `right_block=:auto`, `workspace_bytes=:auto`
+
+Choose the left recurrence block, right GEMM block, and workspace budget as
+documented for [`kpm_2d!`](@ref). Automatic blocking reduces sparse matvecs to
+approximately `NC^2 / arr_size`, while all `NC^2` inner products run in dense
+BLAS blocks.
 
   - `kwargs`
 
@@ -274,13 +289,11 @@ Output: μ, a 3D array in ComplexF64. μ[n3, n2, n1] is the momentum for 2D KPM.
 
   - `psi_in_l`
 
-Passes value to ψ0l. The array is not updated. Size should be
-(NH, NR) (preferred) or (NR, NH) if set.
+Passes value to ψ0l. The array is not updated. Size must be (NH, NR).
 
   - `psi_in_r`
 
-Passes value to ψ0r. The array is not updated. Size should be
-(NH, NR) (preferred) or (NR, NH) if set.
+Passes value to ψ0r. The array is not updated. Size must be (NH, NR).
 
   - `psi_in`
 
@@ -404,19 +417,12 @@ function kpm_1d!(
 
     mul!((@view α_all[:, :, 2]), H, (@view α_all[:, :, 1]))
 
-    # μ0 = ⟨ψ|ψ⟩ (1 for normalized input) and μ1 = ⟨ψ|H̃|ψ⟩; both feed the
-    # doubling identities below, so unnormalized psi_in stays consistent.
-    mu0 = on_host_zeros(dt_cplx, NR)
-    mu1 = on_host_zeros(dt_cplx, NR)
-    for NRi = 1:NR
-        mu0[NRi] = dot((@view α_all[:, NRi, 1]), (@view α_all[:, NRi, 1]))
-        mu1[NRi] = dot((@view α_all[:, NRi, 1]), (@view α_all[:, NRi, 2]))
-    end
-
-    @. mu_all[:, 1] = mu0
-    @. mu_all[:, 2] = mu1
-    neg_mu0 = -mu0
-    neg_mu1 = -mu1
+    # μ0 and μ1 feed the doubling identities below. The accumulator follows
+    # α_all, so GPU reductions remain asynchronous until the final host copy.
+    mu_acc = moment_accumulator(α_all, mu_all)
+    α_views = [view(α_all, :, :, 1), view(α_all, :, :, 2)]
+    columnwise_dot!(mu_acc, 1, α_views[1], α_views[1])
+    columnwise_dot!(mu_acc, 2, α_views[1], α_views[2])
 
     ip = 2
     ipp = 1
@@ -427,34 +433,36 @@ function kpm_1d!(
         n_enum = ProgressBar(n_enum)
     end
 
-    α_views = [view(α_all, :, :, 1), view(α_all, :, :, 2)]
-    split_views = x -> (map(i -> view(x, :, i), 1:NR))
-    α_view_views = map(split_views, α_views) # array of CuArrays or array of SubArrays
-    mu_all_views = map(i -> view(mu_all, :, i), 1:NC)
     for n in n_enum
         chebyshev_iter_single(H, α_views[ipp], α_views[ip])
 
         # doubling trick: μ_{2n-2} = 2⟨α_{n-1}|α_{n-1}⟩ - μ0,
         #                 μ_{2n-1} = 2⟨α_n|α_{n-1}⟩ - μ1
-        broadcast_dot_1d_1d!(
-            mu_all_views[2n-1],
-            α_view_views[ip],
-            α_view_views[ip];
+        columnwise_dot!(
+            mu_acc,
+            2n - 1,
+            α_views[ip],
+            α_views[ip];
             alpha = 2.0,
-            beta = neg_mu0,
+            beta_col = 1,
+            beta_scale = -1,
         )
 
-        broadcast_dot_1d_1d!(
-            mu_all_views[2n],
-            α_view_views[ip],
-            α_view_views[ipp];
+        columnwise_dot!(
+            mu_acc,
+            2n,
+            α_views[ip],
+            α_views[ipp];
             alpha = 2.0,
-            beta = neg_mu1,
+            beta_col = 2,
+            beta_scale = -1,
         )
 
         ip = 3-ip
         ipp = 3-ipp
     end
+
+    copy_moment_accumulator!(mu_all, mu_acc)
 
     return nothing
 end
@@ -496,14 +504,11 @@ function kpm_1d!(
     α_all[:, :, 1] = maybe_to_device(psi_in_r)
     mul!((@view α_all[:, :, 2]), H, (@view α_all[:, :, 1]))
 
-    ψl_views = map(i -> view(ψl, :, i), 1:NR)
     α_views = [view(α_all, :, :, 1), view(α_all, :, :, 2)]
-    split_views = x -> (map(i -> view(x, :, i), 1:NR))
-    α_view_views = map(split_views, α_views)
-    mu_all_views = map(i -> view(mu_all, :, i), 1:NC)
+    mu_acc = moment_accumulator(α_all, mu_all)
 
-    broadcast_dot_1d_1d!(mu_all_views[1], ψl_views, α_view_views[1])
-    broadcast_dot_1d_1d!(mu_all_views[2], ψl_views, α_view_views[2])
+    columnwise_dot!(mu_acc, 1, ψl, α_views[1])
+    columnwise_dot!(mu_acc, 2, ψl, α_views[2])
 
     ip = 2
     ipp = 1
@@ -516,10 +521,12 @@ function kpm_1d!(
 
     for n in n_enum
         chebyshev_iter_single(H, α_views[ipp], α_views[ip])
-        broadcast_dot_1d_1d!(mu_all_views[n], ψl_views, α_view_views[ipp])
+        columnwise_dot!(mu_acc, n, ψl, α_views[ipp])
         ip = 3 - ip
         ipp = 3 - ipp
     end
+
+    copy_moment_accumulator!(mu_all, mu_acc)
 
     return nothing
 end
@@ -648,20 +655,13 @@ function kpm_1d_current!(
     # Apply current operator to left vector once: <ψ|J_α
     mul!(Jα_psi, Jα, α_all[:, :, 1])
 
-    mu0 = on_host_zeros(dt_cplx, NR)
+    mu_acc = moment_accumulator(α_all, mu_all)
     # Compute first moment: <ψ|J_α T_0(H)|ψ> = <ψ|J_α|ψ>
-    for NRi = 1:NR
-        mu0[NRi] = dot((@view Jα_psi[:, NRi]), (@view α_all[:, NRi, 1]))
-    end
-    mu_all[:, 1] .= mu0
+    columnwise_dot!(mu_acc, 1, Jα_psi, view(α_all, :, :, 1))
     # Compute T_1(H)|ψ> = H|ψ>
     mul!((@view α_all[:, :, 2]), H, (@view α_all[:, :, 1]))
-    mu1 = on_host_zeros(dt_cplx, NR)
     # Compute second moment: <ψ|J_α T_1(H)|ψ>
-    for NRi = 1:NR
-        mu1[NRi] = dot((@view Jα_psi[:, NRi]), (@view α_all[:, NRi, 2]))
-    end
-    mu_all[:, 2] .= mu1
+    columnwise_dot!(mu_acc, 2, Jα_psi, view(α_all, :, :, 2))
 
     n_enum = 3:NC
     if verbose >= 1
@@ -677,14 +677,14 @@ function kpm_1d_current!(
         # Chebyshev iteration: T_{n+1}(H) = 2H T_n(H) - T_{n-1}(H)
         chebyshev_iter_single(H, α_views[ipp], α_views[ip])
         # cannot use the moment doubling trick here.
-        # Compute moments: <ψ|J_α T_{2n-1}(H)|ψ> and <ψ|J_α T_{2n}(H)|ψ>
-        for NRi = 1:NR
-            mu_all[NRi, n] = dot((@view Jα_psi[:, NRi]), (@view α_views[ipp][:, NRi]))
-        end
+        # Compute moment <ψ|J_α T_{n-1}(H)|ψ>.
+        columnwise_dot!(mu_acc, n, Jα_psi, α_views[ipp])
 
         ip = 3-ip
         ipp = 3-ipp
     end
+
+    copy_moment_accumulator!(mu_all, mu_acc)
 
     return nothing
 end
@@ -710,6 +710,81 @@ function kpm_1d_current!(
     throw("unimplemented.")
 end
 
+# Host budget is a fraction of *total* (cgroup-constrained) memory, not free
+# memory: macOS and Linux both report only truly idle pages as free (a few
+# hundred MB on a busy laptop), which would collapse the left block to 2.
+_kpm2d_auto_budget(::CPUDevice) = div(Sys.total_memory(), 4)
+_kpm2d_auto_budget(device::AbstractDevice) = div(device_free_memory(device), 2)
+
+"""
+    kpm_2d_blocking(NH, NR, NC; workspace_bytes=:auto,
+                    arr_size=:auto, right_block=:auto)
+
+Choose the dense blocking for [`kpm_2d!`](@ref). One recurrence block costs
+`NH * NR * sizeof(ComplexF64)` bytes. The automatic workspace budget is 25%
+of total host memory (cgroup-limited where one applies; on a shared node
+without a cgroup set `KPM_WORKSPACE_BYTES` in the environment or pass
+`workspace_bytes`) or 50% of currently available device memory. The right
+block defaults to `min(NC, 16)`; the left block is the largest that fits
+`(arr_size + right_block + 7)` recurrence blocks plus the
+`right_block × arr_size` result buffer in the budget, capped at `NC`. Explicit
+integer block sizes always take precedence and are not checked against the
+budget. The returned `bytes` is the footprint of that choice (the host
+`NC × NC` moment matrix is extra).
+"""
+function kpm_2d_blocking(
+    NH::Integer,
+    NR::Integer,
+    NC::Integer;
+    workspace_bytes = :auto,
+    arr_size = :auto,
+    right_block = :auto,
+)
+    NH > 0 || throw(ArgumentError("NH must be positive (got $NH)"))
+    NR > 0 || throw(ArgumentError("NR must be positive (got $NR)"))
+    NC >= 2 || throw(ArgumentError("NC must be at least 2 (got $NC)"))
+    block_bytes = Int(NH) * Int(NR) * sizeof(dt_cplx)
+
+    budget = if workspace_bytes === :auto
+        env = get(ENV, "KPM_WORKSPACE_BYTES", "")
+        isempty(env) ? Int(_kpm2d_auto_budget(ACTIVE_DEVICE[])) : parse(Int, env)
+    elseif workspace_bytes isa Integer
+        Int(workspace_bytes)
+    else
+        throw(ArgumentError("workspace_bytes must be :auto or an integer"))
+    end
+    budget >= 0 || throw(ArgumentError("workspace_bytes must be nonnegative"))
+
+    K_right = if right_block === :auto
+        min(Int(NC), 16)
+    elseif right_block isa Integer && right_block >= 1
+        Int(right_block)
+    else
+        throw(ArgumentError("right_block must be :auto or a positive integer"))
+    end
+    # Footprint: (K_left + K_right + 7) recurrence blocks plus the
+    # K_right × K_left GEMM result buffer, so each left slot costs
+    # block_bytes + K_right * sizeof(dt_cplx).
+    base = (K_right + 7) * block_bytes
+    per_left = block_bytes + K_right * sizeof(dt_cplx)
+    K_left = if arr_size === :auto
+        K_left_max = fld(budget - base, per_left)
+        K_left_max >= 2 || throw(
+            ArgumentError(
+                "workspace_bytes=$budget cannot fit the minimum kpm_2d workspace ($(base + 2 * per_left) bytes at right_block=$K_right)",
+            ),
+        )
+        min(K_left_max, Int(NC))
+    elseif arr_size isa Integer && arr_size >= 2
+        Int(arr_size)
+    else
+        throw(ArgumentError("arr_size must be :auto or an integer at least 2"))
+    end
+
+    bytes = base + K_left * per_left
+    return (arr_size = K_left, right_block = K_right, bytes = bytes)
+end
+
 function kpm_2d(
     H,
     Jα,
@@ -720,9 +795,12 @@ function kpm_2d(
     psi_in = nothing,
     psi_in_l = nothing,
     psi_in_r = nothing,
-    arr_size = 3,
+    arr_size = :auto,
+    right_block = :auto,
+    workspace_bytes = :auto,
     moment_parity = :NONE,
     verbose = 0,
+    kwargs...,
 )
     mu = on_host_zeros(dt_cplx, NC, NC)
     if isnothing(psi_in) & isnothing(psi_in_l) & isnothing(psi_in_r)
@@ -735,8 +813,11 @@ function kpm_2d(
             NH,
             mu;
             arr_size = arr_size,
+            right_block = right_block,
+            workspace_bytes = workspace_bytes,
             verbose = verbose,
             moment_parity = moment_parity,
+            kwargs...,
         )
     elseif !isnothing(psi_in) & isnothing(psi_in_l) & isnothing(psi_in_r)
         kpm_2d!(
@@ -749,8 +830,11 @@ function kpm_2d(
             mu,
             psi_in;
             arr_size = arr_size,
+            right_block = right_block,
+            workspace_bytes = workspace_bytes,
             verbose = verbose,
             moment_parity = moment_parity,
+            kwargs...,
         )
     elseif isnothing(psi_in) & !isnothing(psi_in_l) & !isnothing(psi_in_r)
         kpm_2d!(
@@ -764,8 +848,11 @@ function kpm_2d(
             psi_in_l,
             psi_in_r;
             arr_size = arr_size,
+            right_block = right_block,
+            workspace_bytes = workspace_bytes,
             verbose = verbose,
             moment_parity = moment_parity,
+            kwargs...,
         )
     else
         throw("unimplemented")
@@ -783,34 +870,99 @@ function kpm_2d!(
     μ,
     psi_in_l,
     psi_in_r;
-    arr_size::Int64 = 3,
+    arr_size = :auto,
+    right_block = :auto,
+    workspace_bytes = :auto,
     verbose = 0,
     mn_sym = false,
     moment_parity = :NONE,
     # workspace kwargs
-    ψ0r = maybe_on_device_zeros(dt_cplx, NH, NR),
-    Jψ0r = maybe_on_device_zeros(dt_cplx, NH, NR),
-    JTnHJψr = maybe_on_device_zeros(dt_cplx, NH, NR),
-    ψall_r = maybe_on_device_zeros(dt_cplx, NH, NR, 3),
-    ψ0l = maybe_on_device_zeros(dt_cplx, NH, NR),
-    ψall_l = maybe_on_device_zeros(dt_cplx, NH, NR, arr_size),
-    ψw = maybe_on_device_zeros(dt_cplx, NH, NR),
+    ψ0r = nothing,
+    Jψ0r = nothing,
+    JTnHJψr = nothing,
+    ψall_r = nothing,
+    ψ0l = nothing,
+    ψall_l = nothing,
+    ψw = nothing,
+    μblock = nothing,
 )
-    if moment_parity == :NONE
-        _NC_offset = 0
-        NCstep = 1
-    elseif moment_parity == :ODD # odd means we only consider terms that mod(m-n, 2)==1 (even-odd or odd-even)
-        _NC_offset = 1
-        NCstep = 2
-    elseif moment_parity == :EVEN # even means we only consider terms that mod(m-n, 2)==0 (even-even or odd-odd)
-        _NC_offset = 0
-        NCstep = 2
-    else
+    if !(moment_parity in (:NONE, :ODD, :EVEN))
         throw(ArgumentError("moment_parity=$(moment_parity) not understood."))
     end
-    moment_parity == :NONE || fill!(μ, 0)
-    NC0(m1, n) = mod(m1 + n + _NC_offset, NCstep) + 1
+    fill!(μ, 0)
 
+    block_workspaces_supplied =
+        ψall_l !== nothing || JTnHJψr !== nothing || μblock !== nothing
+    if block_workspaces_supplied
+        K_left = if ψall_l !== nothing
+            ndims(ψall_l) == 3 || throw(ArgumentError("ψall_l must be three-dimensional"))
+            size(ψall_l, 3)
+        elseif μblock !== nothing
+            size(μblock, 2)
+        elseif arr_size isa Integer
+            Int(arr_size)
+        else
+            throw(ArgumentError("supplied block workspaces must determine arr_size"))
+        end
+        K_right = if JTnHJψr !== nothing
+            ndims(JTnHJψr) == 3 ||
+                throw(ArgumentError("JTnHJψr must be three-dimensional"))
+            size(JTnHJψr, 3)
+        elseif μblock !== nothing
+            size(μblock, 1)
+        elseif right_block isa Integer
+            Int(right_block)
+        else
+            throw(ArgumentError("supplied block workspaces must determine right_block"))
+        end
+    else
+        blocking = kpm_2d_blocking(
+            NH,
+            NR,
+            NC;
+            workspace_bytes = workspace_bytes,
+            arr_size = arr_size,
+            right_block = right_block,
+        )
+        K_left = blocking.arr_size
+        K_right = blocking.right_block
+    end
+    K_left >= 2 || throw(ArgumentError("ψall_l must have at least two slots"))
+    K_right >= 1 || throw(ArgumentError("JTnHJψr must have at least one slot"))
+
+    ψ0r === nothing && (ψ0r = maybe_on_device_zeros(dt_cplx, NH, NR))
+    Jψ0r === nothing && (Jψ0r = maybe_on_device_zeros(dt_cplx, NH, NR))
+    JTnHJψr === nothing &&
+        (JTnHJψr = maybe_on_device_zeros(dt_cplx, NH, NR, K_right))
+    ψall_r === nothing && (ψall_r = maybe_on_device_zeros(dt_cplx, NH, NR, 3))
+    ψ0l === nothing && (ψ0l = maybe_on_device_zeros(dt_cplx, NH, NR))
+    ψall_l === nothing &&
+        (ψall_l = maybe_on_device_zeros(dt_cplx, NH, NR, K_left))
+    ψw === nothing && (ψw = maybe_on_device_zeros(dt_cplx, NH, NR))
+    μblock === nothing && (μblock = maybe_on_device_zeros(dt_cplx, K_right, K_left))
+
+    size(JTnHJψr) == (NH, NR, K_right) ||
+        throw(ArgumentError("JTnHJψr workspace has incompatible size"))
+    size(ψall_l) == (NH, NR, K_left) ||
+        throw(ArgumentError("ψall_l workspace has incompatible size"))
+    size(μblock, 1) >= K_right && size(μblock, 2) >= K_left ||
+        throw(ArgumentError("μblock workspace must be at least ($K_right, $K_left)"))
+
+    footprint = (K_left + K_right + 7) * NH * NR * sizeof(dt_cplx) +
+                K_left * K_right * sizeof(dt_cplx)
+    verbose >= 1 && println(
+        "kpm_2d blocking: arr_size=$K_left, right_block=$K_right, workspace=$footprint bytes",
+    )
+
+    # Function barrier: the workspace kwargs default to `nothing` and are
+    # reassigned above, so their types are unions here; the blocked loop
+    # must see concrete array types or every moment write boxes.
+    return _kpm_2d_blocked!(H, Jα, Jβ, NC, NR, NH, μ, psi_in_l, psi_in_r, K_left, K_right, mn_sym, moment_parity, verbose, ψ0r, Jψ0r, JTnHJψr, ψall_r, ψ0l, ψall_l, ψw, μblock)
+end
+
+function _kpm_2d_blocked!(
+    H, Jα, Jβ, NC, NR, NH, μ, psi_in_l, psi_in_r, K_left, K_right, mn_sym, moment_parity, verbose, ψ0r, Jψ0r, JTnHJψr, ψall_r, ψ0l, ψall_l, ψw, μblock,
+)
     # do not enforce normalization
     @assert (size(psi_in_r) == (NH, NR)) "`psi_in_r` has size $(size(psi_in_r)) but expecting $(NH), $(NR)"
     @assert (size(psi_in_l) == (NH, NR)) "`psi_in_l` has size $(size(psi_in_l)) but expecting $(NH), $(NR)"
@@ -828,8 +980,10 @@ function kpm_2d!(
     Jβ = maybe_to_device(Jβ, dt_cplx)
 
     # generate all views
-    ψall_l_views = map(x -> view(ψall_l, :, :, x), 1:arr_size)
+    ψall_l_views = map(x -> view(ψall_l, :, :, x), 1:K_left)
     ψall_r_views = map(x -> view(ψall_r, :, :, x), 1:3)
+    L = reshape(ψall_l, NH * NR, K_left)
+    R = reshape(JTnHJψr, NH * NR, K_right)
 
     # left starter
     ψall_l_views[1] .= ψ0l
@@ -842,88 +996,59 @@ function kpm_2d!(
     # right starter
     mul!(Jψ0r, Jα, ψ0r)
 
-    reps = Integer(ceil(NC/arr_size - 1))
-    # println(typeof(H))
-    # println(typeof(Jα))
-    # println(typeof(ψall_r))
-    # println(typeof(ψall_l))
-
-    for rep = 1:(reps+1)
-        m1 = (rep - 1) * arr_size + 1
-        m2 = min(rep * arr_size, NC)
+    reps = cld(NC, K_left)
+    for rep = 1:reps
+        m1 = (rep - 1) * K_left + 1
+        m2 = min(rep * K_left, NC)
         if verbose >= 1
-            println("step $(rep)/$(reps+1): $(m1) to $(m2)")
+            println("step $(rep)/$reps: $(m1) to $(m2)")
         end
         rep_size = m2 - m1 + 1
-        if mn_sym
-            μ_rep_all = map(n -> view(μ, n, m1:m2), 1:m2)
-        else
-            μ_rep_all = map(n -> view(μ, n, m1:m2), 1:NC) # μ should be on host!!
-        end
-        # loop over l
         chebyshev_iter(H, ψall_l_views, rep_size)
 
-        # loop over r
-        n = 1
-        ψall_r_views[n] .= Jψ0r
-        mul!(JTnHJψr, Jβ, ψall_r_views[n])
+        nmax = mn_sym ? m2 : NC
+        for n1 = 1:K_right:nmax
+            n2 = min(n1 + K_right - 1, nmax)
+            n_count = n2 - n1 + 1
+            for j = 1:n_count
+                n = n1 + j - 1
+                if n == 1
+                    ψall_r_views[1] .= Jψ0r
+                elseif n == 2
+                    mul!(ψall_r_views[2], H, Jψ0r)
+                else
+                    chebyshev_iter_single(
+                        H,
+                        ψall_r_views[r_ipp(n)],
+                        ψall_r_views[r_ip(n)],
+                        ψall_r_views[r_i(n)],
+                    )
+                end
+                mul!(view(JTnHJψr, :, :, j), Jβ, ψall_r_views[r_i(n)])
+            end
 
-        broadcast_dot_reduce_avg_2d_1d!(
-            μ_rep_all[n],
-            ψall_l_views,
-            JTnHJψr,
-            NR,
-            rep_size;
-            NC0 = NC0(m1, n),
-            NCstep = NCstep,
-        )
-        ## TODO: IMPROVE THIS?
-
-        # n = 2
-        n = 2
-        mul!(ψall_r_views[n], H, Jψ0r) # use initial values to calc Hψ0r
-        mul!(JTnHJψr, Jβ, ψall_r_views[n])
-
-        broadcast_dot_reduce_avg_2d_1d!(
-            μ_rep_all[n],
-            ψall_l_views,
-            JTnHJψr,
-            NR,
-            rep_size;
-            NC0 = NC0(m1, n),
-            NCstep = NCstep,
-        )
-
-        if mn_sym
-            n_enum = 3:m2
-        else
-            n_enum = 3:NC
-        end
-        if verbose >= 1
-            n_enum = ProgressBar(n_enum)
-        end
-        for n in n_enum # TODO : save memory possible here. We do not need 3 vectors for psi 2
-            chebyshev_iter_single(
-                H,
-                ψall_r_views[r_ipp(n)],
-                ψall_r_views[r_ip(n)],
-                ψall_r_views[r_i(n)],
+            μb = view(μblock, 1:n_count, 1:rep_size)
+            mul!(
+                μb,
+                adjoint(view(R, :, 1:n_count)),
+                view(L, :, 1:rep_size),
+                inv(dt_real(NR)),
+                zero(dt_cplx),
             )
-            mul!(JTnHJψr, Jβ, ψall_r_views[r_i(n)])
-
-            broadcast_dot_reduce_avg_2d_1d!(
-                μ_rep_all[n],
-                ψall_l_views,
-                JTnHJψr,
-                NR,
-                rep_size;
-                NC0 = NC0(m1, n),
-                NCstep = NCstep,
-            )
+            host_block = maybe_to_host(μb)
+            for jm = 1:rep_size
+                m = m1 + jm - 1
+                for jn = 1:n_count
+                    n = n1 + jn - 1
+                    keep = moment_parity == :NONE ||
+                           (moment_parity == :ODD && isodd(m + n)) ||
+                           (moment_parity == :EVEN && iseven(m + n))
+                    keep && (μ[n, m] += conj(host_block[jn, jm]))
+                end
+            end
         end
 
-        # wrap around to prepare for next
-        chebyshev_iter_wrap(H, ψall_l_views, arr_size) #timed
+        rep < reps && chebyshev_iter_wrap(H, ψall_l_views, K_left)
     end
 
     if mn_sym
@@ -966,6 +1091,7 @@ function kpm_3d!(
     psi_in_l,
     psi_in_r;
     arr_size::Int64 = 3,
+    right_block::Int64 = min(NC, 16),
     verbose = 0,
     # workspace kwargs
     ψ0r = maybe_on_device_zeros(dt_cplx, NH, NR),
@@ -975,11 +1101,12 @@ function kpm_3d!(
     # workspace for sub problem (kpm_2d)
     sub_ψ0r = maybe_on_device_zeros(dt_cplx, NH, NR),
     sub_Jψ0r = maybe_on_device_zeros(dt_cplx, NH, NR),
-    sub_JTnHJψr = maybe_on_device_zeros(dt_cplx, NH, NR),
+    sub_JTnHJψr = maybe_on_device_zeros(dt_cplx, NH, NR, right_block),
     sub_ψall_r = maybe_on_device_zeros(dt_cplx, NH, NR, 3),
     sub_ψ0l = maybe_on_device_zeros(dt_cplx, NH, NR),
     sub_ψall_l = maybe_on_device_zeros(dt_cplx, NH, NR, arr_size),
     sub_ψw = maybe_on_device_zeros(dt_cplx, NH, NR),
+    sub_μblock = maybe_on_device_zeros(dt_cplx, right_block, arr_size),
 )
     #println("Developing")
 
@@ -1011,6 +1138,7 @@ function kpm_3d!(
         ψ0l, # psi_in_l
         ψall_r_views[r_i(n1)]; # psi_in_r
         arr_size = arr_size,
+        right_block = right_block,
         ψ0r = sub_ψ0r,
         Jψ0r = sub_Jψ0r,
         JTnHJψr = sub_JTnHJψr,
@@ -1018,6 +1146,7 @@ function kpm_3d!(
         ψ0l = sub_ψ0l,
         ψall_l = sub_ψall_l,
         ψw = sub_ψw,
+        μblock = sub_μblock,
     )
 
     n1 = 2
@@ -1033,6 +1162,7 @@ function kpm_3d!(
         ψ0l, # psi_in_l
         ψall_r_views[r_i(n1)]; # psi_in_r
         arr_size = arr_size,
+        right_block = right_block,
         ψ0r = sub_ψ0r,
         Jψ0r = sub_Jψ0r,
         JTnHJψr = sub_JTnHJψr,
@@ -1040,6 +1170,7 @@ function kpm_3d!(
         ψ0l = sub_ψ0l,
         ψall_l = sub_ψall_l,
         ψw = sub_ψw,
+        μblock = sub_μblock,
     )
 
     for n1 = 3:NC
@@ -1058,6 +1189,7 @@ function kpm_3d!(
             ψ0l, # psi_in_l
             ψall_r_views[r_i(n1)]; # psi_in_r
             arr_size = arr_size,
+            right_block = right_block,
             ψ0r = sub_ψ0r,
             Jψ0r = sub_Jψ0r,
             JTnHJψr = sub_JTnHJψr,
@@ -1065,6 +1197,7 @@ function kpm_3d!(
             ψ0l = sub_ψ0l,
             ψall_l = sub_ψall_l,
             ψw = sub_ψw,
+            μblock = sub_μblock,
         )
     end
 end
@@ -1078,6 +1211,7 @@ function kpm_3d(
     NR::Int64,
     NH::Int64;
     arr_size::Int64 = 3,
+    right_block::Int64 = min(NC, 16),
     verbose = 0,
     psi_in_l = nothing,
     psi_in_r = nothing,
@@ -1115,6 +1249,7 @@ function kpm_3d(
         psi_in_l,
         psi_in_r;
         arr_size = arr_size,
+        right_block = right_block,
         verbose = verbose,
     )
     return μ

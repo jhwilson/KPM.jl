@@ -257,6 +257,9 @@ function cond_moments(
     NR::Integer = 8,
     rng = nothing,
     psi_in = nothing,
+    arr_size = :auto,
+    right_block = :auto,
+    workspace_bytes = :auto,
     kwargs...,
 )
     rng !== nothing &&
@@ -275,9 +278,32 @@ function cond_moments(
     end
 
     mu = if psi_in === nothing
-        kpm_2d(h.H, Jα, Jβ, NC_int, NR_int, NH; kwargs...)
+        kpm_2d(
+            h.H,
+            Jα,
+            Jβ,
+            NC_int,
+            NR_int,
+            NH;
+            arr_size = arr_size,
+            right_block = right_block,
+            workspace_bytes = workspace_bytes,
+            kwargs...,
+        )
     else
-        kpm_2d(h.H, Jα, Jβ, NC_int, NR_int, NH; psi_in = psi_in, kwargs...)
+        kpm_2d(
+            h.H,
+            Jα,
+            Jβ,
+            NC_int,
+            NR_int,
+            NH;
+            psi_in = psi_in,
+            arr_size = arr_size,
+            right_block = right_block,
+            workspace_bytes = workspace_bytes,
+            kwargs...,
+        )
     end
     return ConductivityMoments(mu, h.a, h.b, NH, NR_int)
 end
