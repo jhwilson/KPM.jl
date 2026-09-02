@@ -815,7 +815,8 @@ end
     end
 
     function fixed_optical_reference(mu)
-        mu_tilde = KPM.mu2D_apply_kernel_and_h(mu, NCsmall, KPM.JacksonKernel)
+        # host copy: with the GPU active the kernel application returns a device array
+        mu_tilde = KPM.maybe_to_host(KPM.mu2D_apply_kernel_and_h(mu, NCsmall, KPM.JacksonKernel))
         delta = zeros(ComplexF64, NCsmall)
         gR = similar(delta)
         gA = similar(delta)
