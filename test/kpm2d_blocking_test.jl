@@ -51,7 +51,7 @@ function _kpm3d_dense_reference(H, Jα, Jβ, Jγ, ψl, ψr, NC)
     for n1 = 1:NC, n3 = 1:NC, n2 = 1:NC, i = 1:NR
         μ[n2, n3, n1] += dot(
             T[n3] * ψl[:, i],
-            Jγ * T[n2] * Jβ * T[n1] * Jα * ψr[:, i],
+            Jβ * T[n2] * Jγ * T[n1] * Jα * ψr[:, i],
         ) / NR
     end
     return μ

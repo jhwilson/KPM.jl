@@ -130,6 +130,7 @@ function _spectral_integral(
     atol::Real = 0.0,
     maxevals::Integer = 10^6,
     order::Integer = 7,
+    breakpoints = (),
 )
     NC > 0 || throw(ArgumentError("NC must be positive"))
     lambda >= 0 || throw(ArgumentError("lambda must be nonnegative (got $lambda)"))
@@ -161,6 +162,9 @@ function _spectral_integral(
     end
     if !isinf(beta_a) && beta_a > 50 && -1 < xF < 1
         push!(points, theta_F)
+    end
+    for theta in breakpoints
+        theta_lo < theta < theta_hi && push!(points, Float64(theta))
     end
     points = _deduplicate_sorted(points)
     singular = _deduplicate_sorted(singular)

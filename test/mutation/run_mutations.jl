@@ -85,6 +85,20 @@ const MUTATIONS = [
         ["optical_cond_test.jl"],
     ),
     Mutation(
+        "cpge_orientation",
+        "replace the CPGE coefficient-to-moment slot map by the identity map",
+        "src/applications/cpge.jl",
+        ["const _CPGE_SLOTS = (2, 1, 3)" => "const _CPGE_SLOTS = (1, 2, 3)"],
+        ["cpge_test.jl"],
+    ),
+    Mutation(
+        "cpge_drop_aa",
+        "drop the advanced-advanced term from the CPGE node integrand",
+        "src/applications/cpge.jl",
+        ["        out[1] = rr + ra + aa" => "        out[1] = rr + ra"],
+        ["cpge_test.jl"],
+    ),
+    Mutation(
         "jackson_identity",
         "replace the Jackson kernel by the identity kernel g_n = 1",
         "src/kernels/jackson_kernel.jl",
