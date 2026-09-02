@@ -80,8 +80,9 @@ Tmat = _chebyshev_matrices(H_norm, NC)
     @test maximum(abs, eigvals(Hermitian(Matrix(H_norm)))) < 1
 
     mu = KPM.kpm_1d_current(H_norm, Jxx, NC, D, D; psi_in = psi)
-    ref = [real(tr(Jxx * Tmat[n]) / D) for n = 1:NC]
+    ref = [tr(Jxx * Tmat[n]) / D for n = 1:NC]
     @test mu ≈ ref rtol = 1e-12
+    @test maximum(abs, imag.(mu)) < 1e-14
 
     # NR_parallel = false takes a different loop; same numbers
     mu_ser = KPM.kpm_1d_current(H_norm, Jxx, NC, D, D; psi_in = psi, NR_parallel = false)
@@ -90,7 +91,7 @@ Tmat = _chebyshev_matrices(H_norm, NC)
     # per-probe output sums back to the average
     mu_all = KPM.kpm_1d_current(H_norm, Jxx, NC, D, D; psi_in = psi, avg_output = false)
     @test size(mu_all) == (D, NC)
-    @test vec(real.(sum(mu_all, dims = 1) ./ D)) ≈ mu rtol = 1e-12
+    @test vec(sum(mu_all, dims = 1) ./ D) ≈ mu rtol = 1e-12
 
     # force_norm on unnormalized columns == pre-normalizing them
     rng = Xoshiro(4242)
@@ -106,17 +107,7 @@ Tmat = _chebyshev_matrices(H_norm, NC)
     @test mu_forced ≈ mu_pre rtol = 1e-12
 end
 
-@testset "kpm_1d_current: implemented operator convention (Jα†, real part)" begin
-    # PINNED BEHAVIOUR, NOT A DERIVED RESULT. The `kpm_1d_current` docstring
-    # says "Γ_n^α = Tr[J_α T_n(H)]", but the moment is formed as
-    # dot(J_α ψ, T_n ψ) — `LinearAlgebra.dot` conjugates its first argument —
-    # so the implemented quantity is ⟨ψ|J_α† T_n(H)|ψ⟩, and `avg_output=true`
-    # additionally returns only its real part. For the package's own bond
-    # current J_α = iħv_α (anti-Hermitian) Tr[J_α T_n] is purely imaginary, so
-    # the default output is identically zero. This is checked below on a flux
-    # ring, whose persistent current makes Tr[J_x T_n] demonstrably nonzero;
-    # if this test starts failing, the source convention changed — read this
-    # comment before "fixing" the test.
+@testset "kpm_1d_current: Tr[J T_n] for an anti-Hermitian bond current" begin
     N = 12
     hring, ringpos, ringdisp = flux_ring_model(N; t = 1.0, phi = 0.35)
     Jring = sparse([hring[i, j] * ringdisp(i, j)[1] for i = 1:N, j = 1:N])
@@ -133,15 +124,17 @@ end
     @test maximum(abs, real.(tr_J)) < 1e-14     # ...purely imaginary
 
     mu_default = KPM.kpm_1d_current(hn_ring, Jring, NCr, N, N; psi_in = psir)
-    @test maximum(abs, mu_default) < 1e-14      # entire signal discarded by `real`
+    @test mu_default isa Vector{ComplexF64}
+    @test mu_default ≈ tr_J rtol = 1e-12 atol = 1e-14
+    @test maximum(abs, real.(mu_default)) < 1e-14
+    @test maximum(abs, mu_default) > 0.5
 
     mu_all = KPM.kpm_1d_current(hn_ring, Jring, NCr, N, N; psi_in = psir,
         avg_output = false)
     mu_cplx = vec(sum(mu_all, dims = 1) ./ N)
-    @test mu_cplx ≈ [tr(Jring' * Tr_[n]) / N for n = 1:NCr] rtol = 1e-12 atol = 1e-14
-    @test mu_cplx ≈ -tr_J rtol = 1e-12 atol = 1e-14   # = Tr[J† T_n] = -Tr[J T_n]
-    # review: kpm_1d_current contracts J† instead of the documented J.
-    @test_broken mu_cplx ≈ tr_J rtol = 1e-12 atol = 1e-14
+    @test mu_cplx ≈ tr_J rtol = 1e-12 atol = 1e-14
+    @test maximum(abs, real.(mu_cplx)) < 1e-14
+    @test maximum(abs, mu_cplx) > 0.5
 end
 
 @testset "kpm_1d_current: independent bra/ket is documented as unimplemented" begin

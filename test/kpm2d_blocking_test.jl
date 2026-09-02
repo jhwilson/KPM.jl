@@ -240,7 +240,7 @@ end
     A = randn(rng, ComplexF64, NH, NH)
     H = Matrix(Hermitian(A))
     H ./= 1.2 * opnorm(H)
-    J = Matrix(Hermitian(randn(rng, ComplexF64, NH, NH)))
+    J = randn(rng, ComplexF64, NH, NH)
     ψ = KPM.random_phase_vectors(rng, NH, NR)
     ψl = KPM.random_phase_vectors(rng, NH, NR)
     ψr = KPM.random_phase_vectors(rng, NH, NR)
@@ -262,7 +262,8 @@ end
     )
     @test got_lr ≈ ref_lr rtol = 1e-12 atol = 1e-12
 
-    ref_current = [dot(J * ψ[:, i], T[n] * ψ[:, i]) for i = 1:NR, n = 1:NC]
+    @test norm(J - J') > 1
+    ref_current = [dot(ψ[:, i], J * (T[n] * ψ[:, i])) for i = 1:NR, n = 1:NC]
     got_current = KPM.kpm_1d_current(H, J, NC, NR, NH; psi_in = ψ, avg_output = false)
     @test got_current ≈ ref_current rtol = 1e-12 atol = 1e-12
 end

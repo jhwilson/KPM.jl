@@ -61,8 +61,12 @@ function kpm_1d end
 $(METHODLIST)
 
 The in-place version of 1D KPM with current operator.
-Calculate the moments μ defined in KPM: Γ_n^α = Tr[J_α T_n(H)].
-Output is saved in `mu`.
+Calculate the moments
+`Γ_n^α = ⟨ψ|J_α T_n(H)|ψ⟩ ≈ Tr[J_α T_n(H)] / D` for unit-norm
+random-phase probes. The output is complex and saved in `mu`; `J_α` is not
+conjugated. For the package's anti-Hermitian bond currents the moments are
+purely imaginary, while for Hermitian operators such as diamagnetic `J_αβ`
+they are real up to roundoff.
 
   - `H`           -- Hamiltonian. A matrix or sparse matrix.
 
@@ -84,7 +88,12 @@ function kpm_1d_current! end
 $(METHODLIST)
 
 The simple version of 1D KPM with current operator that returns the moment.
-Calculate moments Γ_n^α = Tr[J_α T_n(H)].
+Calculate moments
+`Γ_n^α = ⟨ψ|J_α T_n(H)|ψ⟩ ≈ Tr[J_α T_n(H)] / D` for unit-norm
+random-phase probes. The output is complex; `J_α` is not conjugated. For the
+package's anti-Hermitian bond currents the moments are purely imaginary, while
+for Hermitian operators such as diamagnetic `J_αβ` they are real up to
+roundoff.
 
   - `H`           -- Hamiltonian. A matrix or sparse matrix
 
@@ -623,7 +632,7 @@ function kpm_1d_current(
     end
 
     if avg_output
-        return maybe_to_host(real.(dropdims(sum(mu_all, dims = 1), dims = 1) ./ NR))
+        return maybe_to_host(dropdims(sum(mu_all, dims = 1), dims = 1) ./ NR)
     end
 
     return mu_all
@@ -652,8 +661,8 @@ function kpm_1d_current!(
     # Initialize right vector for Chebyshev iteration: T_0(H)|ψ> = |ψ>
     α_all[:, :, 1] = maybe_to_device(psi_in)
 
-    # Apply current operator to left vector once: <ψ|J_α
-    mul!(Jα_psi, Jα, α_all[:, :, 1])
+    # Apply the adjoint once so dot(J_α†ψ, T_nψ) = <ψ|J_α T_n|ψ>.
+    mul!(Jα_psi, Jα', view(α_all, :, :, 1))
 
     mu_acc = moment_accumulator(α_all, mu_all)
     # Compute first moment: <ψ|J_α T_0(H)|ψ> = <ψ|J_α|ψ>

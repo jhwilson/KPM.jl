@@ -55,6 +55,14 @@ const MUTATIONS = [
         ["dos_test.jl"],
     ),
     Mutation(
+        "current_adjoint",
+        "apply J instead of its adjoint before the current-moment dot product",
+        "src/moment.jl",
+        ["    mul!(Jα_psi, Jα', view(α_all, :, :, 1))" =>
+            "    mul!(Jα_psi, Jα, view(α_all, :, :, 1))"],
+        ["optical_cond_test.jl"],
+    ),
+    Mutation(
         "jackson_identity",
         "replace the Jackson kernel by the identity kernel g_n = 1",
         "src/kernels/jackson_kernel.jl",
