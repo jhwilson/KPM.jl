@@ -1,254 +1,286 @@
-"""
-  - beta : Inf is zero temperature. beta = 1/T.
-
-  - E_f : Fermi energy. Between -1 and 1 because Hamiltonian is normalized.
-"""
-function Λn(
-    ntuple;
-    E_f = 0.0,
-    beta = Inf,
-    δ = 1e-5,
-    λ = 0.0,
-    quad = (f->quadgk(f, -1+δ, 1-δ)),
-)
-    # Equation 41, 
-    # The integral will cover [-1+δ, 1-δ], where Fermi energy is taken care of by fermi function.
-    # λ should be much smaller than δ to ensure the value of gn match with the λ->0
-    # but usually not be too small to avoid floating point error dominated by large number near 1
-    # future plan: if possible, try taking λ→0 analytically.
-    #λ = δ / 100
-    ff = fermiFunctions(E_f, beta)
-
-    n = ntuple[1]
-    # apply cutoffs
-    _Δn(ϵ; n) = Δn(ϵ, n, δ)
-    f_Δ(ϵ) = _Δn(ϵ; n = n)
-    Λn_integrand(ϵ) = f_Δ(ϵ) * ff(ϵ)
-
-    #I, E = quadgk(Λnmp_integrand, -1, E_f) # numerical integration, E is error
-    I, E = quad(Λn_integrand)
-    return I
-end
-
-function Λnm(
-    nm,
-    ω;
-    E_f = 0.0,
-    beta = Inf,
-    δ = 1e-5,
-    λ = 0.0,
-    quad = (f->quadgk(f, -1+δ, 1-δ)),
-)
-    # Equation 42, 
-    # The integral will cover [-1+δ, 1-δ], where Fermi energy is taken care of by fermi function.
-    # λ should be much smaller than δ to ensure the value of gn match with the λ->0
-    # but usually not be too small to avoid floating point error dominated by large number near 1
-    # future plan: if possible, try taking λ→0 analytically.
-    #λ = δ / 100
-    ff = fermiFunctions(E_f, beta)
-
-    n, m = nm
-
-    # apply cutoffs
-    _gn_R(ϵ; n) = gn_R(ϵ, n, λ, δ)
-    _gn_A(ϵ; n) = gn_A(ϵ, n, λ, δ)
-    _Δn(ϵ; n) = Δn(ϵ, n, δ)
-
-    f_r(ϵ) = _gn_R(ϵ + ω; n = n) * _Δn(ϵ; n = m)
-    f_a(ϵ) = _Δn(ϵ; n = n) * _gn_A(ϵ - ω; n = m)
-    Λnm_integrand(ϵ) = (f_r(ϵ) + f_a(ϵ)) * ff(ϵ)
-
-    #I, E = quadgk(Λnmp_integrand, -1, E_f) # numerical integration, E is error
-    I, E = quad(Λnm_integrand)
-    return I
+function _check_optical_inputs(mu, NC, lambda = 0.0; omega_tilde = nothing)
+    lambda >= 0 || throw(ArgumentError("lambda must be nonnegative (got $lambda)"))
+    NC > 0 || throw(ArgumentError("NC must be positive"))
+    all(size(mu, d) >= NC for d = 1:ndims(mu)) ||
+        throw(ArgumentError("NC exceeds the supplied moment dimensions"))
+    if omega_tilde !== nothing && iszero(lambda) && abs(omega_tilde) == 2
+        throw(
+            ArgumentError(
+                "the shifted band edge coincides with the bare-band endpoint at " *
+                "|omega_tilde| = 2; lambda > 0 (λ > 0) is required to " *
+                "regularize the logarithmic singularity.",
+            ),
+        )
+    end
+    return nothing
 end
 
 """
-Single-index (Λ_n, Eq. 41) contribution to the optical conductivity, Eq. 44,
-in units of -ie²/(ħ²ω). Note: unlike `kubo_bastin_cond`, this normalization
-has not been validated against exact diagonalization.
+    optical_cond1(mu1, NC, omega_tilde; E_f=0, beta=Inf,
+                  kernel=JacksonKernel, quad_rtol=1e-8, quad_atol=0,
+                  maxevals=10^6)
+
+Return the bare diamagnetic optical term
+`(-im/omega_tilde) sum_n mu1_tilde[n] Lambda_n` in rescaled energy units.
+`E_f` and `omega_tilde` are rescaled, and `beta` is inverse rescaled energy
+(`beta = beta_physical*a`). For a two-dimensional physical result in `e^2/h`,
+multiply by `2pi*D/(A*a)`, or use [`optical_cond`](@ref).
+
+The moments are kernel- and `hn`-improved on the host. At zero temperature
+`Lambda_n` is analytic; finite-temperature quadrature enforces
+`error <= quad_atol + quad_rtol*abs(I)` on the scalar contracted integrand and
+throws if `maxevals` is insufficient. A nonzero `quad_atol` is needed for a
+component that vanishes by cancellation.
 """
 function optical_cond1(
-    Gamma,
-    NC,
-    ω;
-    beta = Inf,
-    E_f = 0.0,
+    mu1,
+    NC::Integer,
+    omega_tilde::Real;
+    E_f::Real = 0.0,
+    beta::Real = Inf,
     kernel = JacksonKernel,
-    δ = 1e-5,
-    Ω = ω/20,
+    quad_rtol::Real = 1e-8,
+    quad_atol::Real = 0.0,
+    maxevals::Integer = 10^6,
 )
-    # Single-index (Λ_n, Eq. 41) contribution to the optical conductivity, Eq. 44.
-    # Gamma is calculated using Hamiltonian that is
-    # normalized to have energy bounded by [-1, 1]
-    #
-    # Unit of -ie^2 / (ħ^2 * ω) is used.
-
-    Gamma_tilde = muND_apply_kernel_and_h(Gamma, NC, kernel; dims = [1])
-
-    # applying specified quad
-    nodes, weights = gausschebyshevt(NC * 8)
-    quad(f) = (
-        dot(weights, f.(nodes)),
-        nothing, # THIS SHOULD BE AN ESTIMATION OF ERROR
-    )
-
-    Λn_all = map(
-        n -> Λn(n; δ = δ, E_f = E_f, beta = beta, quad = quad),
-        Iterators.product(0:(NC-1)),
-    )
-
-    Gamma_tilde .*= Λn_all
-
-    return -1im * sum(Gamma_tilde) / ω
+    iszero(omega_tilde) &&
+        throw(ArgumentError("optical conductivity is singular at omega = 0"))
+    _check_optical_inputs(mu1, NC)
+    mu_tilde = maybe_to_host(muND_apply_kernel_and_h(view(mu1, 1:NC), Int(NC), kernel; dims = [1]))
+    integral = if isinf(beta)
+        sum(mu_tilde .* _lambda_coefficients(NC, E_f))
+    else
+        active = findall(!iszero, mu_tilde)
+        function node(theta)
+            return sum(
+                mu_tilde[n] * cos((n - 1) * theta) for n in active
+            ) / pi / (1 + exp(beta * (cos(theta) - E_f)))
+        end
+        value, estimate = try
+            quadgk(
+                node,
+                0.0,
+                pi;
+                rtol = quad_rtol / 10,
+                atol = quad_atol / 10,
+                maxevals = maxevals,
+                order = 31,
+                norm = abs,
+            )
+        catch err
+            err isa InterruptException && rethrow()
+            _quad_contract_error(
+                quad_rtol,
+                quad_atol,
+                maxevals,
+                0.0,
+                sprint(showerror, err),
+            )
+        end
+        estimate <= quad_atol + quad_rtol * abs(value) || _quad_contract_error(
+            quad_rtol,
+            quad_atol,
+            maxevals,
+            0.0,
+            "estimated error $estimate",
+        )
+        value
+    end
+    return ComplexF64(-im * integral / omega_tilde)
 end
 
-function d_optical_cond1(
-    Gamma,
-    NC;
-    δ = 1e-5,
-    λ = 0.0,
-    kernel = JacksonKernel,
-    N_int = NC*2,
-    e_range = [-1.0, 1.0],
-)
-    ϵ_grid = collect((((0.5:N_int))/N_int * (e_range[2]-e_range[1]) .+ e_range[1])')
-
-    Gamma = maybe_to_device(Gamma)
-
-    res = d_optical_cond1.([Gamma], NC, ϵ_grid; δ = δ, λ = λ, kernel = kernel)
-    return (ϵ_grid, res)
-end
-
-function d_optical_cond1(
-    Gamma,
-    NC,
-    ϵ::Float64;
-    δ = 1e-5,
-    λ = 0.0,
-    kernel = JacksonKernel,
-    # pre-allocated arrays
-)
-    Gamma = maybe_to_device(Gamma)
-
-    n_grid = collect((0:(NC-1)))
-
-    kernel_vec = kernel.(n_grid, NC)
-    kernel_vec .*= hn.(n_grid)
-    kernel_vec = maybe_to_device(kernel_vec)
-
-    n_grid = convert(Vector{Float64}, n_grid)
-    n_grid = maybe_to_device(n_grid)
-
-    # each of the following have size (NC,)
-    _Δn_ϵ = Δn.(ϵ, n_grid, δ)
-    # indices n, m
-    f_r = maybe_on_device_zeros(ComplexF64, NC)
-    f_r .= reshape(kernel_vec, NC)
-    f_r .*= reshape(_Δn_ϵ, NC)
-
-    res = sum(f_r .* Gamma)
-    return res
+function _optical_node_function(mus, NC, omega_tilde, lambda)
+    delta = zeros(ComplexF64, NC)
+    gR = similar(delta)
+    gA = similar(delta)
+    rightR = [similar(delta) for _ in mus]
+    rightD = [similar(delta) for _ in mus]
+    function F!(out, theta)
+        chebyshev_delta_theta!(delta, theta)
+        x = cos(theta)
+        green_coefficients!(gR, x + omega_tilde, lambda, Val(:R))
+        green_coefficients!(gA, x - omega_tilde, lambda, Val(:A))
+        @inbounds for k in eachindex(mus)
+            mul!(rightR[k], mus[k], delta)
+            mul!(rightD[k], mus[k], gA)
+            out[k] = sum(gR .* rightR[k]) + sum(delta .* rightD[k])
+        end
+        return out
+    end
+    return _SpectralNodeFunction(F!, length(mus), [all(iszero, mu) for mu in mus])
 end
 
 """
-Double-index (Λ_nm, Eq. 42) contribution to the optical conductivity, Eq. 44,
-in units of -ie²/(ħ²ω). Note: unlike `kubo_bastin_cond`, this normalization
-has not been validated against exact diagonalization.
+    optical_cond2(mu2, NC, omega_tilde; E_f=0, beta=Inf, lambda=0,
+                  kernel=JacksonKernel, quad_rtol=1e-8, quad_atol=0,
+                  maxevals=10^6)
+
+Return the bare paramagnetic optical term `(-im/omega_tilde) integral B` in
+rescaled units. Here
+`B = gR'*(mu2_tilde*Delta) + Delta'*(mu2_tilde*gA)`, with plain transposes.
+The package table `mu2[n,m] = Tr[Jalpha T_m Jbeta T_n]/D` is contracted
+directly with `Lambda_nm`. This orientation reproduces [`kubo_bastin_cond`](@ref)
+as `omega_tilde -> 0`, including the package's ED/FHS-anchored Hall convention:
+`Jalpha` is the response direction, `Jbeta` is the field direction, and
+`sigma_xy = +C`. In the labels of Joao--Lopes Eqs. 26, 42, and 44, the same
+quantity is their `sigma^{beta alpha}` because the two textbook Kubo forms
+differ by exactly this index relabeling.
+
+`E_f`, `omega_tilde`, and `lambda` are rescaled, while `beta` is inverse
+rescaled energy (`beta = beta_physical*a`); finite `lambda` replaces JL's
+`i0` by `i*lambda`. For a two-dimensional result in `e^2/h`, multiply by
+`2pi*D/(A*a^2)`, or use [`optical_cond`](@ref). The adaptive integral
+enforces `error[k] <= quad_atol + quad_rtol*abs(I[k])` for every batched
+component and throws if `maxevals` is insufficient. Exact-zero components are
+returned as zero, while components that vanish by cancellation require a
+nonzero `quad_atol`. When `abs(omega_tilde) == 2`, the unregularized integral
+has a logarithmic endpoint singularity and therefore requires `lambda > 0`.
+Cost is `O(N_nodes*NC^2)`.
 """
 function optical_cond2(
-    Gamma,
-    NC,
-    ω;
-    beta = Inf,
-    E_f = 0.0,
+    mu2,
+    NC::Integer,
+    omega_tilde::Real;
+    E_f::Real = 0.0,
+    beta::Real = Inf,
+    lambda::Real = 0.0,
     kernel = JacksonKernel,
-    δ = 1e-5,
-    Ω = ω/20,
+    quad_rtol::Real = 1e-8,
+    quad_atol::Real = 0.0,
+    maxevals::Integer = 10^6,
 )
-    # Double-index (Λ_nm, Eq. 42) contribution to the optical conductivity, Eq. 44.
-    # Gamma is calculated using Hamiltonian that is
-    # normalized to have energy bounded by [-1, 1]
-    #
-    # Unit of -ie^2 / (ħ^2 * ω) is used.
-
-    Gamma_tilde = mu2D_apply_kernel_and_h(Gamma, NC, kernel)
-
-    # applying specified quad
-    nodes, weights = gausschebyshevt(NC * 8)
-    quad(f) = (
-        dot(weights, f.(nodes)),
-        nothing, # THIS SHOULD BE AN ESTIMATION OF ERROR
+    return only(
+        optical_cond2(
+            (mu2,),
+            NC,
+            omega_tilde;
+            E_f = E_f,
+            beta = beta,
+            lambda = lambda,
+            kernel = kernel,
+            quad_rtol = quad_rtol,
+            quad_atol = quad_atol,
+            maxevals = maxevals,
+        ),
     )
-
-    Λnm_all = map(
-        nm -> Λnm(nm, ω; δ = δ, E_f = E_f, beta = beta, quad = quad),
-        Iterators.product(0:(NC-1), 0:(NC-1)),
-    )
-
-    Gamma_tilde .*= Λnm_all
-
-    return -1im * sum(Gamma_tilde) / ω
 end
 
-function d_optical_cond2(
-    Gamma,
-    NC,
-    ω;
-    δ = 1e-5,
-    λ = 0.0,
+function optical_cond2(
+    mus::Tuple,
+    NC::Integer,
+    omega_tilde::Real;
+    E_f::Real = 0.0,
+    beta::Real = Inf,
+    lambda::Real = 0.0,
     kernel = JacksonKernel,
-    N_int = NC*2,
+    quad_rtol::Real = 1e-8,
+    quad_atol::Real = 0.0,
+    maxevals::Integer = 10^6,
+)
+    isempty(mus) && return ComplexF64[]
+    iszero(omega_tilde) &&
+        throw(ArgumentError("optical conductivity is singular at omega = 0"))
+    for mu in mus
+        _check_optical_inputs(mu, NC, lambda; omega_tilde = omega_tilde)
+    end
+    mu_tilde = tuple(
+        (maybe_to_host(mu2D_apply_kernel_and_h(view(mu, 1:NC, 1:NC), Int(NC), kernel)) for mu in mus)...,
+    )
+    F! = _optical_node_function(mu_tilde, NC, omega_tilde, lambda)
+    integral, _ = _spectral_integral(
+        F!,
+        NC,
+        (omega_tilde, -omega_tilde),
+        E_f,
+        beta,
+        lambda;
+        rtol = quad_rtol,
+        atol = quad_atol,
+        maxevals = maxevals,
+    )
+    return ComplexF64.((-im / omega_tilde) .* integral)
+end
+
+function _delta_coefficients_x(NC, x)
+    -1 < x < 1 || throw(DomainError(x, "the resolved integrand requires -1 < x < 1"))
+    delta = zeros(ComplexF64, NC)
+    chebyshev_delta_theta!(delta, acos(x))
+    delta ./= sqrt(1 - x^2)
+    return delta
+end
+
+"""
+    d_optical_cond1(mu1, NC, x; kernel=JacksonKernel)
+
+The rescaled-energy integrand `sum_n mu1_tilde[n] Delta_n(x)` per unit `dx`,
+for `x` strictly inside `(-1,1)`. The Fermi weight is omitted, so this
+resolved function takes no `beta`; in a manual integral, `beta` is inverse
+rescaled energy.
+"""
+function d_optical_cond1(mu1, NC::Integer, x::Real; kernel = JacksonKernel)
+    _check_optical_inputs(mu1, NC)
+    mu_tilde = maybe_to_host(muND_apply_kernel_and_h(view(mu1, 1:NC), Int(NC), kernel; dims = [1]))
+    return ComplexF64(sum(mu_tilde .* _delta_coefficients_x(NC, x)))
+end
+
+function d_optical_cond1(
+    mu1,
+    NC::Integer;
+    kernel = JacksonKernel,
+    N_int::Integer = 2NC,
     e_range = [-1.0, 1.0],
 )
-    ϵ_grid = collect((((0.5:N_int))/N_int * (e_range[2]-e_range[1]) .+ e_range[1])')
+    grid = collect(((0.5:N_int) ./ N_int) .* (e_range[2] - e_range[1]) .+ e_range[1])
+    return grid, [d_optical_cond1(mu1, NC, x; kernel = kernel) for x in grid]
+end
 
-    Gamma = maybe_to_device(Gamma)
+"""
+    d_optical_cond2(mu2, NC, omega_tilde, x; lambda=0, kernel=JacksonKernel)
 
-    res = d_optical_cond2.([Gamma], NC, ω, ϵ_grid; δ = δ, λ = λ, kernel = kernel)
-    return (ϵ_grid, res)
+The rescaled-energy paramagnetic integrand per unit `dx`. The package layout
+`mu2[n,m] = Tr[Jalpha T_m Jbeta T_n]/D` is contracted directly with
+`Lambda_nm`. This is the orientation whose zero-frequency limit matches
+[`kubo_bastin_cond`](@ref): `Jalpha` is response, `Jbeta` is field, and
+`sigma_xy = +C` in the package's ED/FHS-anchored convention. In the labels of
+Joao--Lopes Eqs. 26, 42, and 44, this is their `sigma^{beta alpha}` because
+the two textbook Kubo forms differ by exactly this relabeling.
+`lambda >= 0` is the rescaled Green broadening. The Fermi weight is omitted,
+so this resolved function takes no `beta`; in a manual integral, `beta` is
+inverse rescaled energy. Unlike [`optical_cond2`](@ref), the resolved
+integrand is finite and accepted at `omega_tilde = 0` away from its Green
+singular points.
+"""
+function d_optical_cond2(
+    mu2,
+    NC::Integer,
+    omega_tilde::Real,
+    x::Real;
+    lambda::Real = 0.0,
+    kernel = JacksonKernel,
+)
+    _check_optical_inputs(mu2, NC, lambda)
+    mu_tilde = maybe_to_host(mu2D_apply_kernel_and_h(view(mu2, 1:NC, 1:NC), Int(NC), kernel))
+    delta = _delta_coefficients_x(NC, x)
+    gR = zeros(ComplexF64, NC)
+    gA = similar(gR)
+    green_coefficients!(gR, x + omega_tilde, lambda, Val(:R))
+    green_coefficients!(gA, x - omega_tilde, lambda, Val(:A))
+    return ComplexF64(sum(gR .* (mu_tilde * delta)) + sum(delta .* (mu_tilde * gA)))
 end
 
 function d_optical_cond2(
-    Gamma,
-    NC,
-    ω::Float64,
-    ϵ::Float64;
-    δ = 1e-5,
-    λ = 0.0,
+    mu2,
+    NC::Integer,
+    omega_tilde::Real;
+    lambda::Real = 0.0,
     kernel = JacksonKernel,
-    # pre-allocated arrays
+    N_int::Integer = 2NC,
+    e_range = [-1.0, 1.0],
 )
-    Gamma = maybe_to_device(Gamma)
-
-    n_grid = collect((0:(NC-1)))
-
-    kernel_vec = kernel.(n_grid, NC)
-    kernel_vec .*= hn.(n_grid)
-    kernel_vec = maybe_to_device(kernel_vec)
-
-    n_grid = convert(Vector{Float64}, n_grid)
-    n_grid = maybe_to_device(n_grid)
-
-    # each of the following have size (NC,)
-    _Δn_ϵ = Δn.(ϵ, n_grid, δ)
-
-    # indices n, m
-    f_r = maybe_on_device_zeros(ComplexF64, NC, NC)
-    f_r .= reshape(kernel_vec, NC, 1)
-    f_r .*= reshape(kernel_vec, 1, NC)
-    f_a = copy(f_r)
-
-    gn_ϵ_r = gn_R.(ϵ + ω, n_grid, λ, δ)
-    f_r .*= reshape(gn_ϵ_r, NC, 1)
-
-    f_r .*= reshape(_Δn_ϵ, 1, NC)
-
-    f_a .*= reshape(_Δn_ϵ, NC, 1)
-
-    gn_ϵ_a = gn_A.(ϵ .- ω, n_grid, λ, δ)
-    f_a .*= reshape(gn_ϵ_a, 1, NC)
-
-    res = sum((f_r + f_a) .* Gamma)
-    return res
+    grid = collect(((0.5:N_int) ./ N_int) .* (e_range[2] - e_range[1]) .+ e_range[1])
+    values = [
+        d_optical_cond2(mu2, NC, omega_tilde, x; lambda = lambda, kernel = kernel) for
+        x in grid
+    ]
+    return grid, values
 end

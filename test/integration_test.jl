@@ -110,6 +110,6 @@ end
     # third-order response is not expected to be large; what is asserted here
     # is that the whole chain returns a finite number (the sharp checks of the
     # kpm_3d convention and the cpge reconstruction live in cpge_test.jl)
-    cpge_val = KPM.cpge(Gamma, NC, 0.1)
+    cpge_val = KPM.cpge(Gamma, NC, 0.1, 0.05; lambda = 0.02)
     @test isfinite(cpge_val)
 end

@@ -42,8 +42,8 @@ end
 
 @testset "d_dc_cond(dE_order=1) vs central finite differences" begin
     # The dE_order = 1 path differentiates the same reconstruction through
-    # Zygote.forwarddiff, so it must reproduce a finite-difference derivative
-    # of the dE_order = 0 curve.
+    # ForwardDiff, so it must reproduce a finite-difference derivative of the
+    # dE_order = 0 curve.
     #
     # Step size: the fourth-order central stencil
     #   f'(E) ≈ [f(E-2h) - 8f(E-h) + 8f(E+h) - f(E+2h)] / (12h)
@@ -70,11 +70,7 @@ end
           KPM.d_dc_cond(mu, a, [b + 0.3a]; b = b, NC = NC, dE_order = 1)
 end
 
-@testset "d_dc_cond(dE_order=2) is currently unsupported" begin
-    # PINNED LIMITATION. The throw originates in Zygote's `forward_jacobian`
-    # when Zygote.forwarddiff is nested, not mutation in Γnmμnmαβ (which is
-    # now a pure matvec pair in src/applications/dc_cond_util.jl:21). The
-    # replacement check is the fourth-order second-derivative stencil below.
+@testset "d_dc_cond second derivative matches a finite-difference stencil" begin
     rng = Xoshiro(8)
     NC = 16
     a = 1.7
@@ -82,15 +78,15 @@ end
     mu = randn(rng, ComplexF64, NC, NC)
     E = b
     f0(E) = KPM.d_dc_cond(mu, a, [E]; b = b, NC = NC)[1]
-    h = 1e-3 * a  # documented step: balances this stencil's O(h⁴) truncation and roundoff
-    stencil = (-f0(E + 2h) + 16f0(E + h) - 30f0(E) + 16f0(E - h) - f0(E - 2h)) /
-              (12h^2)
-    d2 = try
-        KPM.d_dc_cond(mu, a, [E]; b = b, NC = NC, dE_order = 2)[1]
-    catch
-        NaN
-    end
-    @test_broken d2 ≈ stencil rtol = 1e-7
+    # This step balances the stencil's O(h⁴) truncation and roundoff.
+    h = 1e-3 * a
+    # Use explicit multiplication because Julia parses `16f0` as a Float32 literal.
+    stencil = (
+        -f0(E + 2h) + 16 * f0(E + h) - 30 * f0(E) + 16 * f0(E - h) -
+        f0(E - 2h)
+    ) / (12h^2)
+    d2 = KPM.d_dc_cond(mu, a, [E]; b = b, NC = NC, dE_order = 2)[1]
+    @test d2 ≈ stencil rtol = 1e-7
 end
 
 @testset "kpm_2d moment_parity selects the documented index parity" begin
@@ -114,9 +110,12 @@ end
     mu_even = KPM.kpm_2d(H, Jα, Jβ, NC, D, D; psi_in = psi, moment_parity = :EVEN)
 
     mask_odd = [mod((n - 1) + (m - 1), 2) == 1 for n = 1:NC, m = 1:NC]
-    @test mu_odd == mu_none .* mask_odd
-    @test mu_even == mu_none .* .!mask_odd
-    @test mu_odd .+ mu_even == mu_none
+    # rtol contract (not bit-exact): device reductions may reorder the sums
+    @test mu_odd ≈ mu_none .* mask_odd rtol = 1e-12
+    @test mu_even ≈ mu_none .* .!mask_odd rtol = 1e-12
+    @test mu_odd .+ mu_even ≈ mu_none rtol = 1e-12
+    @test all(iszero, mu_odd[.!mask_odd])
+    @test all(iszero, mu_even[mask_odd])
     @test count(!iszero, mu_odd) == NC^2 ÷ 2
 
     @test_throws ArgumentError KPM.kpm_2d(

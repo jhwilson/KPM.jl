@@ -61,8 +61,12 @@ function kpm_1d end
 $(METHODLIST)
 
 The in-place version of 1D KPM with current operator.
-Calculate the moments μ defined in KPM: Γ_n^α = Tr[J_α T_n(H)].
-Output is saved in `mu`.
+Calculate the moments
+`Γ_n^α = ⟨ψ|J_α T_n(H)|ψ⟩ ≈ Tr[J_α T_n(H)] / D` for unit-norm
+random-phase probes. The output is complex and saved in `mu`; `J_α` is not
+conjugated. For the package's anti-Hermitian bond currents the moments are
+purely imaginary, while for Hermitian operators such as diamagnetic `J_αβ`
+they are real up to roundoff.
 
   - `H`           -- Hamiltonian. A matrix or sparse matrix.
 
@@ -84,7 +88,12 @@ function kpm_1d_current! end
 $(METHODLIST)
 
 The simple version of 1D KPM with current operator that returns the moment.
-Calculate moments Γ_n^α = Tr[J_α T_n(H)].
+Calculate moments
+`Γ_n^α = ⟨ψ|J_α T_n(H)|ψ⟩ ≈ Tr[J_α T_n(H)] / D` for unit-norm
+random-phase probes. The output is complex; `J_α` is not conjugated. For the
+package's anti-Hermitian bond currents the moments are purely imaginary, while
+for Hermitian operators such as diamagnetic `J_αβ` they are real up to
+roundoff.
 
   - `H`           -- Hamiltonian. A matrix or sparse matrix
 
@@ -252,15 +261,20 @@ function kpm_2d end
 """
 $(METHODLIST)
 
-The simple version of tripple KPM that returns the moment.
-Calculate moments for tripple KPM.
+In-place three-dimensional KPM moment calculation.
 
-Calculates `ψ0l * Tn3(H) * Jγ * Tn2(H) * Jβ * Tn1(H) * Jα * ψ0r`.
+Calculates `psi0l' * T_m(H) * Jbeta * T_n(H) * Jgamma * T_p(H) *
+Jalpha * psi0r`.
 When ψ0r and ψ0l are chosen to be random and identical, the output approximates
-tr(Tn3(H) Jγ Tn2(H) Jβ Tn1(H) Jα). The accuracy is ~ O(1/sqrt(NR * NH)). NC controls the
+`Tr[Jalpha T_m(H) Jbeta T_n(H) Jgamma T_p(H)]/D`. Thus the operator order in
+the trace is the argument order `(Jalpha, Jbeta, Jgamma)`. The accuracy is
+`O(1/sqrt(NR * NH))`. NC controls the
 energy resolution of the result.
 
-Output: μ, a 3D array in ComplexF64. μ[n3, n2, n1] is the momentum for 2D KPM.
+Output: `mu`, a 3D `ComplexF64` array with implemented layout
+`mu[n,m,p] = Tr[Jalpha T_m Jbeta T_n Jgamma T_p]/D`. In the paper convention
+`Gamma[n,m,p] = Tr[Jalpha T_n Jbeta T_m Jgamma T_p]/D`, so
+`Gamma[n,m,p] = mu[m,n,p]`.
 
 **ARGS**
 
@@ -301,14 +315,24 @@ Cannot be used together with psi_in_l and psi_in_r. Sets psi_in_l=psi_in_r=psi_i
 
   - `kwargs`
 
-other kwargs in KPM_2D!
+other kwargs in `kpm_3d!`.
 """
 function kpm_3d! end
 
 """
-$(METHODLIST)
+    kpm_3d(H, Jalpha, Jbeta, Jgamma, NC, NR, NH; kwargs...)
 
-TODO: add doc.
+Allocate and return the three-dimensional KPM moment table. With identical
+unit-norm random probes, the implemented layout is
+`mu[n,m,p] = Tr[Jalpha T_m(H) Jbeta T_n(H) Jgamma T_p(H)]/D`, up to stochastic
+trace error `O(1/sqrt(NR*NH))`. The operator order in the trace is the argument
+order `(Jalpha, Jbeta, Jgamma)`. For the paper tensor
+`Gamma[n,m,p] = Tr[Jalpha T_n Jbeta T_m Jgamma T_p]/D`, use
+`Gamma[n,m,p] = mu[m,n,p]`.
+
+`psi_in` supplies identical left and right probes. Alternatively,
+`psi_in_l` and `psi_in_r` may be supplied separately. `arr_size` and
+`right_block` control the blocked recurrence workspaces; see [`kpm_3d!`](@ref).
 """
 function kpm_3d end
 
@@ -623,7 +647,7 @@ function kpm_1d_current(
     end
 
     if avg_output
-        return maybe_to_host(real.(dropdims(sum(mu_all, dims = 1), dims = 1) ./ NR))
+        return maybe_to_host(dropdims(sum(mu_all, dims = 1), dims = 1) ./ NR)
     end
 
     return mu_all
@@ -652,8 +676,8 @@ function kpm_1d_current!(
     # Initialize right vector for Chebyshev iteration: T_0(H)|ψ> = |ψ>
     α_all[:, :, 1] = maybe_to_device(psi_in)
 
-    # Apply current operator to left vector once: <ψ|J_α
-    mul!(Jα_psi, Jα, α_all[:, :, 1])
+    # Apply the adjoint once so dot(J_α†ψ, T_nψ) = <ψ|J_α T_n|ψ>.
+    mul!(Jα_psi, Jα', view(α_all, :, :, 1))
 
     mu_acc = moment_accumulator(α_all, mu_all)
     # Compute first moment: <ψ|J_α T_0(H)|ψ> = <ψ|J_α|ψ>
@@ -1129,8 +1153,8 @@ function kpm_3d!(
     mul!(ψall_r_views[n1], Jα, ψ0r)
     kpm_2d!(
         H,
-        Jβ,
         Jγ,
+        Jβ,
         NC,
         NR,
         NH,
@@ -1153,8 +1177,8 @@ function kpm_3d!(
     mul!(ψall_r_views[n1], H, ψall_r_views[r_ip(n1)])
     kpm_2d!(
         H,
-        Jβ,
         Jγ,
+        Jβ,
         NC,
         NR,
         NH,
@@ -1180,8 +1204,8 @@ function kpm_3d!(
         chebyshev_iter_single(H, ψall_r, r_ipp(n1), r_ip(n1), r_i(n1))
         kpm_2d!(
             H,
-            Jβ,
             Jγ,
+            Jβ,
             NC,
             NR,
             NH,

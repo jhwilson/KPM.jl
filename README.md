@@ -49,17 +49,19 @@ h = KPM.rescale(H; center=true)           # RescaledHamiltonian: H_norm, a, b
 m = KPM.dos_moments(h; NC=1024, NR=12)    # DosMoments (records a, b, NH, NR)
 E, rho = KPM.dos(m)                       # a, b applied automatically
 
-m2  = KPM.cond_moments(h, Jx, Jy; NC=256, NR=8)   # J from the UNRESCALED H (bond convention)
-σxy = KPM.kubo_bastin_cond(m2, Ef; area=A)        # in e²/h
+m2  = KPM.cond_moments(h, Jx, Jy; NC=256, NR=8)   # J from the UNRESCALED H
+σxy = KPM.kubo_bastin_cond(m2, Ef; area=A)        # DC, in e²/h
+σxyω = KPM.optical_cond(m2, ω; area=A, Ef=Ef) # optical, physical ω and Ef
 dσE = KPM.d_dc_cond(m2, E_values)                 # Kubo–Bastin integrand
 ```
 
 For reproducible random-phase probe vectors pass an explicit RNG:
 `KPM.dos_moments(h; NC, NR, rng=Xoshiro(42))` (`using Random`). The raw-array
-interface below remains fully supported; the typed methods are thin wrappers
-over the same code paths. Typed wrappers for the optical (`optical_cond1/2`)
-and nonlinear (`cpge`) responses are not yet available — those functions take
-energies in rescaled units (see their docstrings).
+interface below remains fully supported; the typed methods use the same code
+paths. `optical_cond` accepts physical frequency, Fermi energy, and broadening,
+with `beta` in inverse physical energy, and returns the two-dimensional
+conductivity in e²/h. The bare `optical_cond1/2` and nonlinear `cpge`
+interfaces use rescaled energies and inverse-rescaled-energy `beta`.
 
 ## Capability
 
@@ -86,13 +88,28 @@ sample area); its normalization is validated against exact diagonalization
 (quantized Hall plateaus on the Haldane model — see
 `test/kubo_bastin_test.jl`).
 
-KPM for frequency-dependent nonlinear response (arXiv:1810.03732):
+For linear optical conductivity, use typed conductivity moments with physical
+frequency and energy arguments:
+```julia
+mxx = KPM.cond_moments(h, Jx, Jx; NC=256, NR=8, rng=Xoshiro(42))
+m1xx = KPM.current_moments(h, Jxx, 256, 8; rng=Xoshiro(42))
+σxx = KPM.optical_cond(mxx, ω; area=A, Ef=Ef, m1=m1xx, lambda=λ) # e²/h
+```
+`Jxx`, like the bond currents, is model data built from the unrescaled
+Hamiltonian. The package moment table is contracted in the same response/field
+orientation as `kubo_bastin_cond`, so its Hall limit follows
+`σ_xy = +C e²/h`. The raw `optical_cond1/2` methods remain available in
+rescaled units.
+
+The bare three-current CPGE response uses rescaled frequencies:
 ```julia
 mu_3d_xyz = KPM.kpm_3d(H_norm, Jx, Jy, Jz, NC, NR, NH)
-dchi_xyz = KPM.d_cpge(mu_3d_xyz, NC, w1, w2, E)
+chi_xyz = KPM.cpge(mu_3d_xyz, NC, w1, w2; E_f=Ef_tilde, lambda=lambda_tilde)
+E, dchi_xyz = KPM.d_cpge(mu_3d_xyz, NC, w1, w2)
 ```
-where `dchi_xyz` is the differential second-order conductivity
-(arXiv:2312.14244) and `w1, w2` are the two drive frequencies.
+Form `y(w1,w2) = imag((chi_xyz(w1,w2) + chi_yxz(w2,w1))/(w1*w2))`, then
+`beta(w) = lim(Omega->0, Omega*y(w,Omega-w))`; see `cpge` for the Ω=0
+regularization recipe.
 
 ### Self-consistent BdG + superfluid stiffness
 

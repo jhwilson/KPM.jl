@@ -1,6 +1,6 @@
 using DocStringExtensions
 using ProgressBars
-using Zygote
+using ForwardDiff
 
 """
 $(METHODLIST)
@@ -23,8 +23,8 @@ with gₙ the damping kernel (Jackson by default) and h₀=1, hₙ=2 for n ≥ 1
   - `b` : center shift of the rescaling, `H_norm = (H - b I)/a`. Default 0.
     Use `normalizeH(H; center=true)` to obtain `(a, b, H_norm)`.
 
-  - `dE_order` : return the dE_order-th energy derivative instead (currently
-    ≤ 1; use `dos0(μ, a; dE_order=2)` at the band center).
+  - `dE_order` : return the dE_order-th energy derivative instead via nested
+    ForwardDiff derivatives.
 
   - `NR` : number of random vectors (only used when `H` is passed).
 """
@@ -132,15 +132,14 @@ function dos(
         denom = @. (a * pi * sqrt(1 - x_grid_inrange^2))
         rhoE ./= denom
     else
-        # The ForwardDiff/Zygote derivative path evaluates one dual-typed
-        # energy at a time; run it on host moments (same pattern as the
-        # documented d_dc_cond GPU limitation, but with a working fallback).
+        # ForwardDiff evaluates one dual-typed energy at a time; run it on
+        # host moments so the derivative path remains CPU-side.
         μtilde_host = maybe_to_host(μtilde)
-        f(E) = _dos_single(μtilde_host, a, b, E, NC)
-        g(E) = real(Zygote.forwarddiff(f, E))
-        @assert (dE_order <= 1) "There is a Zygote support problem for higher order derivative. You can use `KPM.dos0(; dE_order=2)` for second derivative at the band center temporarily."
-        for dE_order_i = 1:dE_order
-            g = real ∘ g'
+        g(E) = real(_dos_single(μtilde_host, a, b, E, NC))
+        for _ = 1:dE_order
+            g = let h = g
+                E -> ForwardDiff.derivative(h, E)
+            end
         end
         rhoE = g.(E_grid[idx])
     end

@@ -161,6 +161,37 @@ end
     @test drho ≈ fd rtol = 1e-5
 end
 
+@testset "dos second derivative matches finite differences and dos0" begin
+    rng = Xoshiro(23)
+    NC = 48
+    a = 1.7
+    b = 0.35
+    mu = randn(rng, NC)
+    E_grid = b .+ a .* [-0.45, 0.2, 0.55]
+    h = 1e-3 * a
+
+    rho0(E) = only(KPM.dos(mu, a; b = b, E_grid = [E], N_tilde = 1)[2])
+    stencil = [
+        (
+            -rho0(E + 2h) + 16 * rho0(E + h) - 30 * rho0(E) + 16 * rho0(E - h) -
+            rho0(E - 2h)
+        ) / (12h^2) for E in E_grid
+    ]
+    _, d2rho = KPM.dos(
+        mu,
+        a;
+        b = b,
+        E_grid = E_grid,
+        N_tilde = length(E_grid),
+        dE_order = 2,
+    )
+    @test d2rho ≈ stencil rtol = 1e-7
+
+    _, d2rho_center =
+        KPM.dos(mu, a; b = b, E_grid = [b], N_tilde = 1, dE_order = 2)
+    @test only(d2rho_center) ≈ KPM.dos0(mu, a; dE_order = 2) rtol = 1e-10
+end
+
 @testset "normalizeH: hermiticity check and center shift" begin
     rng = Xoshiro(3)
     A = sprandn(rng, ComplexF64, 100, 100, 0.05)

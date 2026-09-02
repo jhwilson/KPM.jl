@@ -55,6 +55,58 @@ const MUTATIONS = [
         ["dos_test.jl"],
     ),
     Mutation(
+        "current_adjoint",
+        "apply J instead of its adjoint before the current-moment dot product",
+        "src/moment.jl",
+        ["    mul!(Jα_psi, Jα', view(α_all, :, :, 1))" =>
+            "    mul!(Jα_psi, Jα, view(α_all, :, :, 1))"],
+        ["optical_cond_test.jl"],
+    ),
+    Mutation(
+        "optical_orientation",
+        "transpose the stored 2D moment table in the optical node contraction",
+        "src/applications/optical_cond.jl",
+        [
+            "            mul!(rightR[k], mus[k], delta)" =>
+                "            mul!(rightR[k], transpose(mus[k]), delta)",
+            "            mul!(rightD[k], mus[k], gA)" =>
+                "            mul!(rightD[k], transpose(mus[k]), gA)",
+        ],
+        ["optical_cond_test.jl"],
+    ),
+    Mutation(
+        "optical_delta_pi",
+        "drop the package-normalized 1/pi factor from delta(theta)",
+        "src/applications/spectral_coefficients.jl",
+        [
+            "    delta[1] = inv(pi)" => "    delta[1] = 1",
+            "    delta[2] = c / pi" => "    delta[2] = c",
+        ],
+        ["optical_cond_test.jl"],
+    ),
+    Mutation(
+        "factor2_convention",
+        "square hn: the paper's 2/(1+delta_n0) applied on top of the package's hn",
+        "src/kernels/kernels.jl",
+        ["hn(n::Integer) = (n!=0) + 1 # h(0) = 1, otherwise 2" =>
+            "hn(n::Integer) = ((n!=0) + 1)^2 # h(0) = 1, otherwise 2"],
+        ["optical_cond_test.jl", "cpge_test.jl"],
+    ),
+    Mutation(
+        "cpge_orientation",
+        "replace the CPGE coefficient-to-moment slot map by the identity map",
+        "src/applications/cpge.jl",
+        ["const _CPGE_SLOTS = (2, 1, 3)" => "const _CPGE_SLOTS = (1, 2, 3)"],
+        ["cpge_test.jl"],
+    ),
+    Mutation(
+        "cpge_drop_aa",
+        "drop the advanced-advanced term from the CPGE node integrand",
+        "src/applications/cpge.jl",
+        ["        out[1] = rr + ra + aa" => "        out[1] = rr + ra"],
+        ["cpge_test.jl"],
+    ),
+    Mutation(
         "jackson_identity",
         "replace the Jackson kernel by the identity kernel g_n = 1",
         "src/kernels/jackson_kernel.jl",

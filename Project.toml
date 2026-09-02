@@ -1,12 +1,13 @@
 name = "KPM"
 uuid = "479eba37-df18-4d3d-9d60-66182c7f1954"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Yixing Fu, Angkun Wu"]
 
 [deps]
 Arpack = "7d9fca2a-8960-54d3-9f78-7d1dccf2cb97"
 DocStringExtensions = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
 FastGaussQuadrature = "442a2c76-b920-505d-bb47-c5924d526838"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
@@ -18,7 +19,6 @@ Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
-Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
@@ -31,12 +31,12 @@ Arpack = "0.5"
 CUDA = "5"
 DocStringExtensions = "0.9"
 FastGaussQuadrature = "1"
+ForwardDiff = "0.10, 1"
 LoopVectorization = "0.12"
 Polynomials = "4"
 ProgressBars = "1"
 QuadGK = "2"
 SpecialFunctions = "2"
-Zygote = "0.7"
 julia = "1.10"
 
 [extras]

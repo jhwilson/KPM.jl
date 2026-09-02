@@ -109,9 +109,17 @@ in physical units; prefer `kubo_bastin_cond` for quantitative work.
 `d_dc_cond` returns the Kubo–Bastin integrand dσ(E), related to the physical
 conductivity by σ = -(2e²/h)·(D/(A·a))·∫dE f(E) dσ(E).
 
-The optical (`optical_cond1/2`) and nonlinear (`cpge`) responses are quoted
-in the natural units stated in their docstrings; their absolute
-normalizations have **not** been validated against exact diagonalization.
+`KPM.optical_cond(m2, omega; area, Ef, m1, lambda)` accepts physical energies
+and returns the two-dimensional optical conductivity in e²/h. The optional
+`m1::CurrentMoments` supplies the diamagnetic term. The stored table
+`mu[n,m] = Tr[Jalpha T_m Jbeta T_n]/D` is contracted directly with the optical
+kernel in the same response/field orientation as `kubo_bastin_cond`; its
+zero-frequency Hall limit therefore uses the ED/FHS-anchored convention
+`sigma_xy = +C`. The bare `optical_cond1/2` methods instead use rescaled
+energies and the unit conversions in their docstrings. The nonlinear `cpge`
+method returns the bare three-current ``\chi_{\alpha\beta\gamma}`` bracket in
+rescaled units, with no ``\Omega`` or ``1/(\omega_1\omega_2)`` prefactor; see
+its docstring for the physical conversion and Ω=0 regularization.
 
 ```@docs; canonical=false
 kubo_bastin_cond
@@ -195,6 +203,11 @@ rho0 = KPM.dos0(m)                       # DOS at E = h.b
 m2  = KPM.cond_moments(h, Jx, Jy; NC=256, NR=8)
 σxy = KPM.kubo_bastin_cond(m2, Ef; area=A)   # e²/h; NH, a, b come from m2
 dσE = KPM.d_dc_cond(m2, E_values)
+σxyω = KPM.optical_cond(m2, ω; area=A, Ef=Ef) # physical energies, e²/h
+
+mxx = KPM.cond_moments(h, Jx, Jx; NC=256, NR=8, rng=Xoshiro(42))
+m1xx = KPM.current_moments(h, Jxx, 256, 8; rng=Xoshiro(42))
+σxxω = KPM.optical_cond(mxx, ω; area=A, Ef=Ef, m1=m1xx, lambda=λ)
 ```
 
 Notes:
@@ -203,7 +216,8 @@ Notes:
   unrescaled** Hamiltonian with the bond convention
   `(J_α)_ij = H_ij (r_i - r_j)_α` (building them from `h.H` divides
   conductivities by `a²`).
-- Pass `rng=Xoshiro(seed)` to `dos_moments` / `cond_moments` for reproducible
+- Pass `rng=Xoshiro(seed)` to `dos_moments`, `cond_moments`, or
+  `current_moments` for reproducible
   random-phase probe vectors; pass `psi_in` to supply your own.
 - The typed methods are thin wrappers over the raw-array functions documented
   below — same code paths, same conventions — and the raw interface remains
@@ -211,16 +225,22 @@ Notes:
 - Kwargs stored in the objects (`b`, `NH`) cannot be overridden in the typed
   calls; passing them raises an `ArgumentError` instead of silently
   disagreeing with the stored provenance.
-- `optical_cond1/2` and `cpge` do not have typed wrappers yet and take
-  energies in rescaled units — see their docstrings.
+- `optical_cond` uses physical energies and returns e²/h in two dimensions;
+  the bare `optical_cond1/2`, `cpge`, and `d_cpge` methods use rescaled
+  energies — see their docstrings. For CPGE, form
+  ``y=\operatorname{Im}[(\chi_{\alpha\beta\gamma}+\chi_{\beta\alpha\gamma})/(\omega_1\omega_2)]``
+  and ``\beta(\omega)=\lim_{\Omega\to0}\Omega y(\omega,\Omega-\omega)``.
 
 ```@docs; canonical=false
 rescale
 RescaledHamiltonian
 dos_moments
 cond_moments
+current_moments
 DosMoments
 ConductivityMoments
+CurrentMoments
+optical_cond
 ```
 
 ## Bogoliubov–de Gennes and superfluid stiffness
@@ -442,98 +462,31 @@ plot!(E, rho_exact, c=:black, ls=:dash, label=L"\mathrm{Analytic}")
 ### 2) Optical conductivity (graphene) — concise example
 
 ```julia
-using KPM, Plots
+using KPM, Plots, Random
 include("examples/GrapheneModel.jl") # provides GrapheneLattice
 
-L = 60
-Ham, Jx, Jy, Jxx, Jxy, Jyy = GrapheneLattice(L, L)
-a = 3.5
-Hn = Ham / a
-NC = 256; NR = 6
-mu2d = zeros(ComplexF64, NC, NC)
-psi = exp.(2π*1im*rand(Hn.n, NR))
-KPM.normalize_by_col(psi, NR)
-KPM.kpm_2d!(Hn, Jy, Jy, NC, NR, Hn.n, mu2d, psi, psi)
-
-# compute a sample optical conductivity (2D contribution) at ω=0.5
-ω = 0.5
-σ2 = KPM.d_optical_cond2(mu2d, NC, ω, 0.0)
-println("Optical conductivity (2D part) at ω=", ω, " : ", σ2)
-```
-
-Reference (full example):
-
-```julia
-using Plots
-using LaTeXStrings
-using KPM
-
-include("GrapheneModel.jl") # Include the GrapheneLattice function and related structures
-
-function full_optical_condT0(mu1d,mu2d, NC, ω; δ=1e-5, λ=0.0, kernel=KPM.JacksonKernel,
-    h = 0.001, Emin= -0.8, Emax = 0.0
-    )
-    # This function is used to calculate the full optical conductivity
-    # by combining the 1D and 2D contributions.
-    x_all = collect(Emin:h:Emax)
-    y_1 = zeros(ComplexF64, length(x_all))
-    y_2 = zeros(ComplexF64, length(x_all))
-    mu1d_dev = KPM.maybe_to_device(mu1d[1:NC])
-    mu2d_dev = KPM.maybe_to_device(mu2d[1:NC, 1:NC])
-
-    for (i, x) in enumerate(x_all)
-        y_1[i] += KPM.d_optical_cond1(mu1d_dev, NC, x; δ=δ, λ=λ, kernel=kernel)
-        y_2[i] += KPM.d_optical_cond2(mu2d_dev, NC, ω, x; δ=δ, λ=λ, kernel=kernel)
-    end
-    return (sum(y_1) * h * (-1im / ω), sum(y_2) * h * (-1im / ω))
-    #y_all = y_1 .+ y_2;
-    #y_integral = sum(y_all) * h;
-    
-    #return y_integral*(-1im / ω) # -ie^2 / (ħ^2 * ω)
-end
-
-L = 200
-Ham, Jx, Jy,Jxx,Jxy,Jyy = GrapheneLattice(L,L);
-
-a = 3.5
-H_norm = Ham ./ a
-NC = 512 #512
-NR = 10
-NH = H_norm.n
-mu_2d_yy = zeros(ComplexF64, NC, NC)
-psi_in_l = exp.(2pi * 1im * rand(NH, NR));
-KPM.normalize_by_col(psi_in_l, NR)
-psi_in_r = psi_in_l
-@time KPM.kpm_2d!(H_norm, Jy, Jy, NC, NR, NH, mu_2d_yy, psi_in_l, psi_in_r; verbose=1);
-
-mu_1d_yy = KPM.kpm_1d_current(H_norm,Jyy, NC, NR; verbose=1)
-
+L = 40
 t = 2.3
-μ = 0.466
-Ef = μ/t/a
-λ = 38.8*10^(-3)/t/a
-ωs = collect(LinRange(0.03, 0.982, 100))
-res = zeros(ComplexF64, length(ωs))
-res2 = zeros(ComplexF64, length(ωs))
-for (i, ω) in enumerate(ωs)
-    res[i], res2[i] = full_optical_condT0(mu_1d_yy,mu_2d_yy, NC, ω;λ=λ,Emax=Ef)
-    #res[i] = full_optical_condT0(mu_1d_yy,mu_2d_yy, NC, ω;λ=λ,Emax=Ef)
-    println(i)
-end
-σyyreal = real.(res2)./a
-σyyimag = imag.(t*a*res.+res2)./a
-ωsreno = ωs*t*a
+Ham, Jx, Jy, Jxx, Jxy, Jyy = GrapheneLattice(L, L; t=t)
+h = KPM.rescale(Ham; center=true)
+NC = 128; NR = 4
+psi = KPM.random_phase_vectors(Xoshiro(42), size(Ham, 1), NR)
+m2yy = KPM.cond_moments(h, Jy, Jy; NC=NC, psi_in=copy(psi))
+m1yy = KPM.current_moments(h, Jyy, NC, NR; psi_in=copy(psi))
 
-plot(ylabel = L"\sigma^{yy}/\sigma_0",xlabel = L"\hbar \omega(\mathrm{eV})",
-     framestyle = :box,grid=false,legend=:topright,
-        xtickfontsize=12, ytickfontsize=12,
-        xguidefontsize=12, yguidefontsize=12,
-        legendfontsize=12,#titlefontsize=12,
-         ylim=(-2,8)
-        )
-scatter!(ωs*t*a, σyyreal, label="real",markerstrokewidth=0.0)
-scatter!(ωs*t*a, σyyimag, label="imag",markerstrokewidth=0.0)
+area = L^2 * 3sqrt(3) / 2
+ω = 1.0       # eV
+Ef = 0.466    # eV
+λ = 38.8e-3  # eV
+σyy = KPM.optical_cond(m2yy, ω; area=area, Ef=Ef, m1=m1yy, lambda=λ)
+println("σyy(ω) = ", σyy, " e²/h")
 ```
+
+`omega`, `Ef`, and `lambda` are in the original Hamiltonian's energy units.
+`area` is explicit geometry supplied by the model. The wrapper combines the
+diamagnetic and paramagnetic terms in one adaptive integral and returns e²/h
+for a two-dimensional sample. See `examples/OpticalGraphene.jl` for a
+frequency sweep.
 
 ## Unitary time evolution
 
@@ -724,10 +677,11 @@ Below is a concise list of the main public APIs provided by the package.
 
 - Typed front end (recommended):
   - `rescale` → `RescaledHamiltonian`
-  - `dos_moments` → `DosMoments`; `cond_moments` → `ConductivityMoments`
+  - `dos_moments` → `DosMoments`; `cond_moments` → `ConductivityMoments`;
+    `current_moments` → `CurrentMoments`
   - reconstruction via the same names as the raw interface: `dos(m)`,
     `dos0(m)`, `kubo_bastin_cond(m, Ef; area)`, `d_dc_cond(m, E)`,
-    `dc_cond0(m)`, `dc_cond_single(m, Ef)`
+    `dc_cond0(m)`, `dc_cond_single(m, Ef)`, `optical_cond(m2, omega; area)`
   - thermoelectric reconstruction: `transport_distribution(m, E; volume)`,
     `transport_integrals(m, mu; beta, volume)`,
     `thermoelectric(m, mu; beta, volume)` → `ThermoelectricResult`,
@@ -753,12 +707,12 @@ Below is a concise list of the main public APIs provided by the package.
 - Conductivity (DC / optical):
   - `kubo_bastin_cond` (absolute units, e²/h; ED-validated)
   - `d_dc_cond`, `dc_cond0`, `dc_cond_single`
+  - `optical_cond` (typed, physical energies, e²/h in 2D)
   - `optical_cond1`, `d_optical_cond1`
   - `optical_cond2`, `d_optical_cond2`
 
 - Nonlinear / CPGE:
   - `cpge`, `d_cpge`
-  - Integration helpers: `Λnmp`, `Λn`, `Λnm`, `gn_R`, `gn_A`, `Δn`
 
 - Kernels:
   - `JacksonKernel`, `LorentzKernels`

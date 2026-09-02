@@ -389,7 +389,8 @@ function diamagnetic_term(
         ),
     )
 
-    Gamma = kpm_1d_current(Hs, Dhat, NC_int, NR_int, NH; psi_in = psi_in)
+    # The diamagnetic vertex is Hermitian, so its trace is real.
+    Gamma = real.(kpm_1d_current(Hs, Dhat, NC_int, NR_int, NH; psi_in = psi_in))
     Np_int = Int(Np)
     gh = kernel.(0:(NC_int-1), NC_int) .* hn.(0:(NC_int-1))
     nodes, _ = gausschebyshevt(Np_int)

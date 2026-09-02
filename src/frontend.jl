@@ -1,5 +1,5 @@
-# Typed KPM front end. Typed wrappers for optical_cond*, cpge, and dc_long
-# remain follow-up work because those APIs take rescaled-unit energies.
+# Typed KPM front end. Typed wrappers for cpge, dc_long, and ldos_mu remain
+# follow-up work because those APIs take rescaled-unit energies.
 
 """
     RescaledHamiltonian(H, a, b)
@@ -72,6 +72,21 @@ struct ConductivityMoments{M<:AbstractMatrix{<:Complex}} <: AbstractMoments
 end
 
 """
+    CurrentMoments(mu, a, b, NH, NR)
+
+One-dimensional current moments `mu[n] = Tr[J*T_n(H_norm)]/NH` for
+`H_norm = (H_original - b*I)/a`. `NH` is the Hilbert-space dimension and
+`NR` the number of stochastic-trace probes.
+"""
+struct CurrentMoments{T} <: AbstractMoments
+    mu::Vector{T}
+    a::Float64
+    b::Float64
+    NH::Int
+    NR::Int
+end
+
+"""
     GreenMoments(mu, a, b, NH)
 
 Matrix-element moments `mu[n, p] = ⟨u_p|T_{n-1}(H_norm)|v_p⟩` (size
@@ -103,6 +118,7 @@ end
 # number of Chebyshev moments (NC is derived from the stored moments, not stored)
 nc(m::DosMoments) = length(m.mu)
 nc(m::ConductivityMoments) = size(m.mu, 1)
+nc(m::CurrentMoments) = length(m.mu)
 nc(m::GreenMoments) = size(m.mu, 1)
 npairs(m::GreenMoments) = size(m.mu, 2)
 
@@ -117,6 +133,8 @@ Base.show(io::IO, m::ConductivityMoments) = print(
     io,
     "ConductivityMoments(NC=$(nc(m)), NR=$(m.NR), NH=$(m.NH), a=$(m.a), b=$(m.b))",
 )
+Base.show(io::IO, m::CurrentMoments) =
+    print(io, "CurrentMoments(NC=$(nc(m)), NR=$(m.NR), NH=$(m.NH), a=$(m.a), b=$(m.b))")
 Base.show(io::IO, m::GreenMoments) = print(
     io,
     "GreenMoments(NC=$(nc(m)), npairs=$(npairs(m)), NH=$(m.NH), a=$(m.a), b=$(m.b))",
@@ -306,6 +324,221 @@ function cond_moments(
         )
     end
     return ConductivityMoments(mu, h.a, h.b, NH, NR_int)
+end
+
+"""
+    current_moments(h, J, NC, NR; rng=nothing, kwargs...)
+
+Compute one-dimensional current moments for the rescaled Hamiltonian in `h`.
+With `rng`, probes follow [`random_phase_vectors`](@ref), so equal fresh RNG
+states reproduce equal moments. `J` is user data and must be built from the
+original, unrescaled Hamiltonian; building it from `h.H` changes its physical
+normalization. Extra keywords are forwarded to [`kpm_1d_current`](@ref).
+"""
+function current_moments(
+    h::RescaledHamiltonian,
+    J,
+    NC::Integer,
+    NR::Integer;
+    rng = nothing,
+    kwargs...,
+)
+    NH = size(h.H, 1)
+    NC_int = Int(NC)
+    NR_int = Int(NR)
+    mu = if rng === nothing
+        kpm_1d_current(h.H, J, NC_int, NR_int, NH; kwargs...)
+    else
+        psi = random_phase_vectors(rng, NH, NR_int)
+        kpm_1d_current(h.H, J, NC_int, NR_int, NH; psi_in = psi, kwargs...)
+    end
+    return CurrentMoments(mu, h.a, h.b, NH, NR_int)
+end
+
+function _check_optical_metadata(m2::ConductivityMoments, m1::CurrentMoments)
+    (m1.a, m1.b, m1.NH) == (m2.a, m2.b, m2.NH) || throw(
+        ArgumentError("current and conductivity moments must share a, b, and NH"),
+    )
+    return nothing
+end
+
+function _typed_optical_node_function(mu2s, mu1s, NC, omega_tilde, lambda_tilde, a)
+    delta = zeros(ComplexF64, NC)
+    gR = similar(delta)
+    gA = similar(delta)
+    rightR = [similar(delta) for _ in mu2s]
+    rightD = [similar(delta) for _ in mu2s]
+    function F!(out, theta)
+        chebyshev_delta_theta!(delta, theta)
+        x = cos(theta)
+        green_coefficients!(gR, x + omega_tilde, lambda_tilde, Val(:R))
+        green_coefficients!(gA, x - omega_tilde, lambda_tilde, Val(:A))
+        @inbounds for k in eachindex(mu2s)
+            mul!(rightR[k], mu2s[k], delta)
+            mul!(rightD[k], mu2s[k], gA)
+            paramagnetic = sum(gR .* rightR[k]) + sum(delta .* rightD[k])
+            diamagnetic = mu1s[k] === nothing ? 0.0 + 0.0im : sum(mu1s[k] .* delta)
+            out[k] = diamagnetic + paramagnetic / a
+        end
+        return out
+    end
+    structural_zero = [
+        all(iszero, mu2s[k]) && (mu1s[k] === nothing || all(iszero, mu1s[k])) for
+        k in eachindex(mu2s)
+    ]
+    return _SpectralNodeFunction(F!, length(mu2s), structural_zero)
+end
+
+"""
+    optical_cond(m2, omega; area, Ef=0, beta=Inf, m1=nothing, lambda=0,
+                 kernel=JacksonKernel, quad_rtol=1e-8, quad_atol=0,
+                 maxevals=10^6)
+
+Reconstruct the physical linear optical conductivity at physical frequency
+`omega`, returning `sigma/(e^2/h)` for a two-dimensional sample of `area`.
+`Ef`, `omega`, and `lambda` use the original Hamiltonian's energy units, and
+`beta` is inverse physical energy; `lambda` implements JL's
+`i0 -> i*lambda`. Current operators used to produce the moments must be built
+from the unrescaled Hamiltonian.
+
+The package table
+`mu2[n,m] = Tr[Jalpha*T_m(H_norm)*Jbeta*T_n(H_norm)]/NH` is contracted
+directly with `Lambda_nm`. This orientation reproduces
+[`kubo_bastin_cond`](@ref) as `omega -> 0`, including the package's
+ED/FHS-anchored convention: `Jalpha` is response, `Jbeta` is field, and
+`sigma_xy = +C`. In the labels of Joao--Lopes Eqs. 26, 42, and 44, this is
+their `sigma^{beta alpha}` because the two textbook Kubo forms differ by
+exactly this relabeling.
+
+The reconstruction integrates the diamagnetic term from optional `m1` and
+the `1/a`-weighted paramagnetic term in one node function, preserving their
+low-frequency cancellation before the quadrature error estimate. The integral
+must satisfy `error[k] <= quad_atol + quad_rtol*abs(I[k])` for every batched
+component; otherwise it throws with the available tolerance,
+evaluation-budget, and broadening knobs. A nonzero `quad_atol` is needed for
+components that vanish by cancellation; exact-zero components are returned as
+zero. When `abs(omega) == 2a`, the unregularized integral has a logarithmic
+endpoint singularity and therefore requires `lambda > 0`. Cost is
+`O(N_nodes*NC^2)` per tensor component.
+"""
+function optical_cond(
+    m2::ConductivityMoments,
+    omega::Real;
+    area::Real,
+    Ef::Real = 0.0,
+    beta::Real = Inf,
+    m1::Union{CurrentMoments,Nothing} = nothing,
+    lambda::Real = 0.0,
+    kernel = JacksonKernel,
+    quad_rtol::Real = 1e-8,
+    quad_atol::Real = 0.0,
+    maxevals::Integer = 10^6,
+)
+    values = optical_cond(
+        (m2,),
+        omega;
+        area = area,
+        Ef = Ef,
+        beta = beta,
+        m1s = m1 === nothing ? nothing : (m1,),
+        lambda = lambda,
+        kernel = kernel,
+        quad_rtol = quad_rtol,
+        quad_atol = quad_atol,
+        maxevals = maxevals,
+    )
+    return only(values)
+end
+
+function optical_cond(
+    m2::ConductivityMoments,
+    omega::AbstractVector{<:Real};
+    kwargs...,
+)
+    return ComplexF64[optical_cond(m2, frequency; kwargs...) for frequency in omega]
+end
+
+function optical_cond(
+    m2s::Tuple{Vararg{ConductivityMoments}},
+    omega::Real;
+    area::Real,
+    Ef::Real = 0.0,
+    beta::Real = Inf,
+    m1s = nothing,
+    lambda::Real = 0.0,
+    kernel = JacksonKernel,
+    quad_rtol::Real = 1e-8,
+    quad_atol::Real = 0.0,
+    maxevals::Integer = 10^6,
+)
+    isempty(m2s) && return ComplexF64[]
+    iszero(omega) && throw(ArgumentError("optical conductivity is singular at omega = 0"))
+    area > 0 || throw(ArgumentError("area must be positive"))
+    lambda >= 0 || throw(ArgumentError("lambda must be nonnegative (got $lambda)"))
+
+    reference = first(m2s)
+    NC = nc(reference)
+    for moments in m2s
+        (moments.a, moments.b, moments.NH, nc(moments)) ==
+            (reference.a, reference.b, reference.NH, NC) || throw(
+            ArgumentError("batched conductivity moments must share a, b, NH, and NC"),
+        )
+    end
+    current = if m1s === nothing
+        ntuple(_ -> nothing, length(m2s))
+    else
+        length(m1s) == length(m2s) ||
+            throw(ArgumentError("m1s and m2s must have the same length"))
+        for (m2, m1) in zip(m2s, m1s)
+            m1 === nothing || _check_optical_metadata(m2, m1)
+        end
+        m1s
+    end
+
+    omega_tilde = omega / reference.a
+    lambda_tilde = lambda / reference.a
+    for moments in m2s
+        _check_optical_inputs(
+            moments.mu,
+            NC,
+            lambda_tilde;
+            omega_tilde = omega_tilde,
+        )
+    end
+    mu2s = tuple(
+        (maybe_to_host(mu2D_apply_kernel_and_h(m.mu, NC, kernel)) for m in m2s)...,
+    )
+    mu1s = tuple(
+        (
+            m === nothing ?
+            nothing :
+            maybe_to_host(muND_apply_kernel_and_h(view(m.mu, 1:NC), NC, kernel; dims = [1])) for
+            m in current
+        )...,
+    )
+    xF = (Ef - reference.b) / reference.a
+    beta_a = beta * reference.a
+    F! = _typed_optical_node_function(
+        mu2s,
+        mu1s,
+        NC,
+        omega_tilde,
+        lambda_tilde,
+        reference.a,
+    )
+    integral, _ = _spectral_integral(
+        F!,
+        NC,
+        (omega_tilde, -omega_tilde),
+        xF,
+        beta_a,
+        lambda_tilde;
+        rtol = quad_rtol,
+        atol = quad_atol,
+        maxevals = maxevals,
+    )
+    prefactor = -2pi * im * reference.NH / (area * omega)
+    return ComplexF64.(prefactor .* integral)
 end
 
 """
@@ -588,12 +821,15 @@ operator is not a legal position observable on a torus. At `beta = Inf` the
 marker summed over the whole finite sample converges to the exact identity
 ``\\mathrm{Im}\\,\\mathrm{Tr}[PXQYP] = 0`` — topology is read from a bulk
 average with the boundary excluded, never the full trace. At finite `beta`
-that identity does **not** hold (the Fermi–Dirac operator is not
-idempotent): the thermal marker is a smooth diagnostic whose whole-sample
-sum is genuinely nonzero, while its bulk average still tracks `C` for
-temperatures well below the gap. Cost is two `NC`-step recurrences per
-`batch_size` sites (five complex `NH × batch_size` device workspaces,
-≈ `80·NH·batch_size` bytes); for a regional average that does not need
+the routine returns the marker built from the smoothed Fermi operator, not
+the finite-temperature Hall conductivity ``\\sigma_{xy}(T)``: its local
+spectral weight is ``f_a f_c(1-f_b)`` rather than the Kubo--Bastin
+``[\\min(f_a,f_c)-f_b]_+``, and the two coincide only at zero temperature.
+The finite-`beta` whole-sample sum can therefore be genuinely nonzero because
+the Fermi--Dirac operator is not idempotent, while its bulk average still
+tracks `C` for temperatures well below the gap. Cost is two `NC`-step
+recurrences per `batch_size` sites (five complex `NH × batch_size` device
+workspaces, ≈ `80·NH·batch_size` bytes); for a regional average that does not need
 every site, see [`chern_marker_region`](@ref).
 """
 function chern_marker(
