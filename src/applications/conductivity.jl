@@ -1,6 +1,6 @@
 using DocStringExtensions
 using ProgressBars
-using Zygote
+using ForwardDiff
 using Logging
 include("dc_cond_util.jl")
 include("dc_cond_long.jl")
@@ -10,8 +10,8 @@ $(METHODLIST)
 
 Kubo–Bastin conductivity integrand at the energies `E` (physical units):
 dσ(E) = Re[Σ_nm Γnm(x) μ̃nm] / ((1-x²)² a²) with x = (E - b)/a. Pass `b` when
-the rescaling was centered. `dE_order ≥ 1` returns energy derivatives instead
-(via ForwardDiff).
+the rescaling was centered. `dE_order ≥ 1` returns energy derivatives of any
+order via nested ForwardDiff derivatives.
 
 Units: the physical conductivity is the Fermi-weighted integral of this
 quantity,
@@ -222,10 +222,11 @@ function d_dc_cond(
     #process μtilde
     μtilde = mu2D_apply_kernel_and_h(μ, NC, kernel)
 
-    f(x) = _d_dc_cond_single(μtilde, a, b, x, NC)
-    g(x) = real(Zygote.forwarddiff(f, x))
-    for dE_order_i = 1:dE_order
-        g = real ∘ g'
+    g(x) = _d_dc_cond_single(μtilde, a, b, x, NC)
+    for _ = 1:dE_order
+        g = let h = g
+            x -> ForwardDiff.derivative(h, x)
+        end
     end
 
     idx = abs.(E .- b) .< abs(a)
