@@ -400,24 +400,36 @@ function diamagnetic_term(
 end
 
 """
-    _kpm2d_workspace(NH::Integer, NR::Integer; arr_size::Integer=3) -> NamedTuple
+    _kpm2d_workspace(NH::Integer, NR::Integer;
+                     arr_size::Integer=3, right_block::Integer=16) -> NamedTuple
 
 Allocate the complete workspace keyword set consumed by `kpm_2d!`.
 """
-function _kpm2d_workspace(NH::Integer, NR::Integer; arr_size::Integer = 3)
+function _kpm2d_workspace(
+    NH::Integer,
+    NR::Integer;
+    arr_size::Integer = 3,
+    right_block::Integer = 16,
+)
     NH > 0 || throw(ArgumentError("_kpm2d_workspace: NH must be positive (got $NH)"))
     NR > 0 || throw(ArgumentError("_kpm2d_workspace: NR must be positive (got $NR)"))
     arr_size >= 2 || throw(
         ArgumentError("_kpm2d_workspace: arr_size must be at least 2 (got $arr_size)"),
     )
+    right_block >= 1 || throw(
+        ArgumentError(
+            "_kpm2d_workspace: right_block must be at least 1 (got $right_block)",
+        ),
+    )
     return (
         ψ0r = maybe_on_device_zeros(dt_cplx, NH, NR),
         Jψ0r = maybe_on_device_zeros(dt_cplx, NH, NR),
-        JTnHJψr = maybe_on_device_zeros(dt_cplx, NH, NR),
+        JTnHJψr = maybe_on_device_zeros(dt_cplx, NH, NR, right_block),
         ψall_r = maybe_on_device_zeros(dt_cplx, NH, NR, 3),
         ψ0l = maybe_on_device_zeros(dt_cplx, NH, NR),
         ψall_l = maybe_on_device_zeros(dt_cplx, NH, NR, arr_size),
         ψw = maybe_on_device_zeros(dt_cplx, NH, NR),
+        μblock = maybe_on_device_zeros(dt_cplx, right_block, arr_size),
     )
 end
 
@@ -496,6 +508,7 @@ function superfluid_stiffness(
     Np::Integer = 2 * NC,
     moment_parity::Symbol = :NONE,
     arr_size::Integer = 3,
+    right_block::Integer = 16,
     rescale_eps::Real = 0.2,
     verbose::Integer = 0,
     include_diamagnetic::Bool = false,
@@ -580,7 +593,13 @@ function superfluid_stiffness(
         )
     end
     arr_size_int = Int(arr_size)
-    ws = _kpm2d_workspace(NH, NR_int; arr_size = arr_size_int)
+    right_block_int = Int(right_block)
+    ws = _kpm2d_workspace(
+        NH,
+        NR_int;
+        arr_size = arr_size_int,
+        right_block = right_block_int,
+    )
     mu_sc = zeros(dt_cplx, NC_int, NC_int)
     mu_n = zeros(dt_cplx, NC_int, NC_int)
     kpm_2d!(
@@ -595,6 +614,7 @@ function superfluid_stiffness(
         ws...,
         moment_parity = moment_parity,
         arr_size = arr_size_int,
+        right_block = right_block_int,
         verbose = verbose,
     )
     kpm_2d!(
@@ -609,6 +629,7 @@ function superfluid_stiffness(
         ws...,
         moment_parity = moment_parity,
         arr_size = arr_size_int,
+        right_block = right_block_int,
         verbose = verbose,
     )
 

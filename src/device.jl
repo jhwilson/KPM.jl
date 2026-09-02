@@ -57,6 +57,15 @@ maybe_on_device_rand(args...) = device_rand(ACTIVE_DEVICE[], args...)
 device_zeros(::CPUDevice, args...) = zeros(args...)
 device_rand(::CPUDevice, args...) = rand(args...)
 
+"""
+    device_free_memory([device])
+
+Return the number of bytes currently available for workspace allocations on
+`device`. The no-argument form queries the active device.
+"""
+device_free_memory() = device_free_memory(ACTIVE_DEVICE[])
+device_free_memory(::CPUDevice) = Sys.free_memory()
+
 on_host_rand(args...) = rand(args...)
 on_host_zeros(args...) = zeros(args...)
 

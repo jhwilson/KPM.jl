@@ -34,11 +34,15 @@ KPM.to_device(
 KPM.to_device(::CUDADevice, x::CuArray, expect_eltype) = x
 
 KPM.maybe_to_host(x::CuArray) = Array(x)
+# Views of device arrays (e.g. the kpm_2d! GEMM result block) must copy too;
+# the base SubArray method would hand a device view to host code.
+KPM.maybe_to_host(x::SubArray{<:Any,<:Any,<:CuArray}) = Array(x)
 KPM.maybe_to_host(x::CuSparseMatrixCSR) = SparseMatrixCSC(x)
 KPM.maybe_to_host(x::CuSparseMatrixCSC) = SparseMatrixCSC(x)
 
 KPM.device_zeros(::CUDADevice, args...) = CUDA.zeros(args...)
 KPM.device_rand(::CUDADevice, args...) = CUDA.rand(args...)
+KPM.device_free_memory(::CUDADevice) = CUDA.available_memory()
 
 # --- BdG operators -----------------------------------------------------------
 
@@ -84,7 +88,7 @@ function KPM.chebyshev_iter_single(H, V_pp_in::CuArray, V_p_in::CuArray)
 end
 
 function KPM.chebyshev_iter_single(H, V_pp_in::CuArray, V_p_in::CuArray, V_out::CuArray)
-    V_out .= V_pp_in
+    V_out === V_pp_in || (V_out .= V_pp_in)
     KPM.chebyshev_iter_single(H, V_out, V_p_in)
 end
 
@@ -117,6 +121,33 @@ function KPM.chebyshev_iter_wrap(H, ψviews::Array{<:CuArray}, n::Int64)
 end
 
 # --- moment reductions ------------------------------------------------------
+
+KPM.moment_accumulator(A::CuArray, target::Union{Array,SubArray}) =
+    CUDA.zeros(eltype(target), size(target))
+
+function KPM.columnwise_dot!(
+    target::CuArray,
+    n::Int,
+    A::CuArray,
+    B::CuArray;
+    alpha::Number = 1,
+    beta_col::Int = 0,
+    beta_scale::Number = 0,
+)
+    # fused reduction: no NH×NR temporary per Chebyshev step
+    reduced = vec(mapreduce((a, b) -> conj(a) * b, +, A, B; dims = 1))
+    if beta_col == 0
+        view(target, :, n) .= alpha .* reduced
+    else
+        view(target, :, n) .= alpha .* reduced .+ beta_scale .* view(target, :, beta_col)
+    end
+    return nothing
+end
+
+function KPM.copy_moment_accumulator!(target::Union{Array,SubArray}, source::CuArray)
+    copyto!(target, Array(source))
+    return nothing
+end
 
 function KPM.broadcast_dot_1d_1d!(
     target::Union{Array,SubArray},
@@ -248,7 +279,7 @@ function KPM.broadcast_assign!(
 )
     threads = 512
     block_count_x = min(cld(length(x), threads), 1024)
-    CUDA.@sync @cuda threads=threads blocks=(block_count_x, idx_max) cu_broadcast_assign!(
+    @cuda threads=threads blocks=(block_count_x, idx_max) cu_broadcast_assign!(
         y_all,
         x,
         c_all,

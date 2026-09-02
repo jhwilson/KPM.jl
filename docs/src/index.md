@@ -682,6 +682,7 @@ kpm_1d
 kpm_1d!
 kpm_2d
 kpm_2d!
+kpm_2d_blocking
 ```
 
 # Applications
