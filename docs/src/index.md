@@ -117,7 +117,9 @@ kernel in the same response/field orientation as `kubo_bastin_cond`; its
 zero-frequency Hall limit therefore uses the ED/FHS-anchored convention
 `sigma_xy = +C`. The bare `optical_cond1/2` methods instead use rescaled
 energies and the unit conversions in their docstrings. The nonlinear `cpge`
-response remains in its documented natural units.
+method returns the bare three-current ``\chi_{\alpha\beta\gamma}`` bracket in
+rescaled units, with no ``\Omega`` or ``1/(\omega_1\omega_2)`` prefactor; see
+its docstring for the physical conversion and Ω=0 regularization.
 
 ```@docs; canonical=false
 kubo_bastin_cond
@@ -224,8 +226,10 @@ Notes:
   calls; passing them raises an `ArgumentError` instead of silently
   disagreeing with the stored provenance.
 - `optical_cond` uses physical energies and returns e²/h in two dimensions;
-  the bare `optical_cond1/2` and `cpge` methods use rescaled energies — see
-  their docstrings.
+  the bare `optical_cond1/2`, `cpge`, and `d_cpge` methods use rescaled
+  energies — see their docstrings. For CPGE, form
+  ``y=\operatorname{Im}[(\chi_{\alpha\beta\gamma}+\chi_{\beta\alpha\gamma})/(\omega_1\omega_2)]``
+  and ``\beta(\omega)=\lim_{\Omega\to0}\Omega y(\omega,\Omega-\omega)``.
 
 ```@docs; canonical=false
 rescale
@@ -709,7 +713,6 @@ Below is a concise list of the main public APIs provided by the package.
 
 - Nonlinear / CPGE:
   - `cpge`, `d_cpge`
-  - Integration helpers: `Λnmp`, `gn_R`, `gn_A`, `Δn`
 
 - Kernels:
   - `JacksonKernel`, `LorentzKernels`

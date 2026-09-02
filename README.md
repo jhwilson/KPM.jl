@@ -101,13 +101,15 @@ orientation as `kubo_bastin_cond`, so its Hall limit follows
 `σ_xy = +C e²/h`. The raw `optical_cond1/2` methods remain available in
 rescaled units.
 
-KPM for frequency-dependent nonlinear response (arXiv:1810.03732):
+The bare three-current CPGE response uses rescaled frequencies:
 ```julia
 mu_3d_xyz = KPM.kpm_3d(H_norm, Jx, Jy, Jz, NC, NR, NH)
-dchi_xyz = KPM.d_cpge(mu_3d_xyz, NC, w1, w2, E)
+chi_xyz = KPM.cpge(mu_3d_xyz, NC, w1, w2; E_f=Ef_tilde, lambda=lambda_tilde)
+E, dchi_xyz = KPM.d_cpge(mu_3d_xyz, NC, w1, w2)
 ```
-where `dchi_xyz` is the differential second-order conductivity
-(arXiv:2312.14244) and `w1, w2` are the two drive frequencies.
+Form `y(w1,w2) = imag((chi_xyz(w1,w2) + chi_yxz(w2,w1))/(w1*w2))`, then
+`beta(w) = lim(Omega->0, Omega*y(w,Omega-w))`; see `cpge` for the Ω=0
+regularization recipe.
 
 ### Self-consistent BdG + superfluid stiffness
 
