@@ -537,6 +537,10 @@ end
     mu1_high = zeros(ComplexF64, NCscale)
     mu1_high[end] = 1
     beta_high, xF_high = 12.0, 0.2
+    # quad_rtol a decade below the assertion (the contract bounds the error
+    # *estimate*, and the adaptive path differs between platforms), with a
+    # roundoff floor: the integral is O(1e-7) and pure relative 1e-10 sits
+    # below machine precision
     value_high = KPM.optical_cond1(
         mu1_high,
         NCscale,
@@ -544,7 +548,8 @@ end
         E_f = xF_high,
         beta = beta_high,
         kernel = identity_kernel,
-        quad_rtol = 1e-8,
+        quad_rtol = 1e-9,
+        quad_atol = 1e-15,
     )
     n_high = NCscale - 1
     lambda_high = first(quadgk(
@@ -558,8 +563,10 @@ end
     ))
     reference_high = (-im / 0.3) * 2lambda_high
     high_moment_error = abs(value_high - reference_high) / abs(reference_high)
-    @info "finite-temperature high-moment optical_cond1 error" high_moment_error
-    @test high_moment_error < 1e-8
+    @info "finite-temperature high-moment optical_cond1 error" high_moment_error abs(reference_high)
+    # mixed criterion, as the contract promises: the integral is tiny, so a
+    # pure relative 1e-8 would demand sub-roundoff absolute accuracy
+    @test abs(value_high - reference_high) <= 1e-8 * abs(reference_high) + 1e-15
 
     mu_dense = [tr(Matrix(Jx) * S * Matrix(Jy) * T) / D
         for T in _chebyshev_matrices(H_norm, NCo), S in _chebyshev_matrices(H_norm, NCo)]
