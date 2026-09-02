@@ -10,12 +10,17 @@ function _check_cpge_inputs(mu3, NC, omega1, omega2, lambda, delta)
         throw(ArgumentError("NC exceeds the supplied moment dimensions"))
     lambda >= 0 || throw(ArgumentError("lambda must be nonnegative (got $lambda)"))
     delta >= 0 || throw(ArgumentError("delta must be nonnegative (got $delta)"))
-    if iszero(omega1 + omega2) && iszero(lambda) && iszero(delta)
+    Omega = omega1 + omega2
+    # RR shift differences are omega1, RA shift differences are Omega, and AA
+    # shift differences are omega2. Equal edges coincide at zero difference;
+    # opposite Chebyshev edges coincide when the difference is +/-2.
+    coincidences = (omega1, omega2, Omega)
+    if iszero(lambda) && iszero(delta) && any(x -> x in (-2, 0, 2), coincidences)
         throw(
             ArgumentError(
-                "Omega = omega1 + omega2 is zero and the shifted-edge integral is " *
-                "unregularized; use lambda > 0, delta > 0, or Omega != 0. See the " *
-                "cpge docstring for the Omega = 0 protocol and regularization recipe.",
+                "coincident shifted Green-function edges require lambda > 0 or " *
+                "delta > 0 when omega1, omega2, or Omega = omega1 + omega2 is " *
+                "0 or +/-2; see the cpge docstring for the regularization recipe.",
             ),
         )
     end
@@ -150,14 +155,17 @@ protocol sets `Omega = 0` exactly, uses Jackson broadening, and identifies an
 calibration constant was fitted with the previous reconstruction and must be
 re-fitted for this implementation.
 
-At `Omega = omega1_tilde + omega2_tilde == 0`, at least one of `lambda > 0`
-or `delta > 0` is required. `lambda` is the rescaled Green broadening.
+When any of `omega1_tilde`, `omega2_tilde`, or
+`Omega = omega1_tilde + omega2_tilde` equals `0`, `+2`, or `-2`, at least one
+of `lambda > 0` or `delta > 0` is required. These are exactly the coincident
+same- or opposite-band-edge Green singularities; either regularizer resolves
+every such coincidence. `lambda` is the rescaled Green broadening.
 `delta` instead zeroes every *shifted* Green coefficient on the annulus
 `1-delta < |z| < 1+delta`; it is never applied to the delta coefficient.
-Calls with `Omega == lambda == delta == 0` throw with this recipe.
+Unregularized calls at any of the listed coincidences throw.
 
 Adaptive quadrature reuses the shared shifted-edge breakpoints and endpoint
-maps and requires `error <= quad_atol + quad_rtol*norm(integral)`. It throws
+maps and requires `error <= quad_atol + quad_rtol*abs(integral)`. It throws
 if `maxevals` is insufficient; symmetry-forbidden zero components need a
 nonzero `quad_atol`. Exclusion-annulus boundaries are additional finite-jump
 breakpoints. Cost is `O(N_nodes*NC^3)` with `O(NC^2)` node workspace.

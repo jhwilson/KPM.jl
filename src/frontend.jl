@@ -408,10 +408,10 @@ exactly this relabeling.
 The reconstruction integrates the diamagnetic term from optional `m1` and
 the `1/a`-weighted paramagnetic term in one node function, preserving their
 low-frequency cancellation before the quadrature error estimate. The integral
-must satisfy `error <= quad_atol + quad_rtol*norm(I)`; otherwise it throws with
-the available tolerance, evaluation-budget, and broadening knobs. A nonzero
-`quad_atol` is needed for exactly zero components. Cost is `O(N_nodes*NC^2)`
-per tensor component.
+must satisfy `error[k] <= quad_atol + quad_rtol*abs(I[k])` for every batched
+component; otherwise it throws with the available tolerance,
+evaluation-budget, and broadening knobs. A nonzero `quad_atol` is needed for
+exactly zero components. Cost is `O(N_nodes*NC^2)` per tensor component.
 """
 function optical_cond(
     m2::ConductivityMoments,

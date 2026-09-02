@@ -448,10 +448,20 @@ end
     @test !isapprox(permuted, direct; rtol = 1e-3, atol = 1e-8)
 end
 
-@testset "Omega = 0 regularization" begin
+@testset "coincident shifted-edge regularization" begin
     NC = 12
-    omega1, omega2 = 0.31, -0.31
     mu3 = KPM.kpm_3d(H_norm, J[1], J[2], J[3], NC, D, D; psi_in = psi)
+
+    # RR coincidences are controlled by omega1, AA by omega2, and RA by
+    # Omega. Zero shift differences coincide the same edge; +/-2 coincide
+    # opposite Chebyshev edges.
+    for difference in (-2.0, 0.0, 2.0)
+        @test_throws ArgumentError KPM.cpge(mu3, NC, difference, 0.2)
+        @test_throws ArgumentError KPM.cpge(mu3, NC, 0.3, difference)
+        @test_throws ArgumentError KPM.cpge(mu3, NC, 0.7, difference - 0.7)
+    end
+
+    omega1, omega2 = 0.31, -0.31
     err = try
         KPM.cpge(mu3, NC, omega1, omega2)
         nothing
@@ -461,61 +471,75 @@ end
     @test err isa ArgumentError
     @test occursin("lambda > 0", sprint(showerror, err))
     @test occursin("delta > 0", sprint(showerror, err))
-    @test occursin("Omega != 0", sprint(showerror, err))
+    @test occursin("0 or +/-2", sprint(showerror, err))
 
     lambda = 0.05
-    value_lambda = KPM.cpge(
-        mu3,
-        NC,
-        omega1,
-        omega2;
-        E_f = 0.15,
-        lambda = lambda,
-        quad_rtol = 1e-9,
-        quad_atol = 2e-11,
-    )
-    ref_lambda = cpge_eigen_reference(
-        H_norm,
-        J[1],
-        J[2],
-        J[3],
-        NC,
-        omega1,
-        omega2;
-        xF = 0.15,
-        beta = Inf,
-        lambda = lambda,
-    )
-    @test isfinite(value_lambda)
-    @test value_lambda ≈ ref_lambda rtol = 1e-8 atol = 2e-9
+    for (omega1, omega2) in ((0.0, 0.2), (0.3, 0.0), (0.7, -0.7))
+        value_lambda = KPM.cpge(
+            mu3,
+            NC,
+            omega1,
+            omega2;
+            E_f = 0.15,
+            lambda = lambda,
+            quad_rtol = 1e-9,
+            quad_atol = 2e-11,
+        )
+        ref_lambda = cpge_eigen_reference(
+            H_norm,
+            J[1],
+            J[2],
+            J[3],
+            NC,
+            omega1,
+            omega2;
+            xF = 0.15,
+            beta = Inf,
+            lambda = lambda,
+        )
+        @test isfinite(value_lambda)
+        @test value_lambda ≈ ref_lambda rtol = 1e-8 atol = 2e-9
 
-    value_delta4 = KPM.cpge(
-        mu3,
-        NC,
-        omega1,
-        omega2;
-        E_f = 0.15,
-        delta = 1e-4,
-        quad_rtol = 2e-8,
-        quad_atol = 2e-10,
-    )
-    value_delta5 = KPM.cpge(
-        mu3,
-        NC,
-        omega1,
-        omega2;
-        E_f = 0.15,
-        delta = 1e-5,
-        quad_rtol = 2e-8,
-        quad_atol = 2e-10,
-    )
-    delta_sensitivity = abs(value_delta4 - value_delta5) / abs(value_delta5)
-    @info "CPGE Omega=0 delta sensitivity" value_delta4 value_delta5 delta_sensitivity
-    @test isfinite(value_delta4)
-    @test isfinite(value_delta5)
-    # Measured at 3.32% for this finite-NC helix: the edge-exclusion dependence
-    # is weak compared with the response, but is not a quadrature-level effect.
-    @test delta_sensitivity < 5e-2
+        value_delta4 = KPM.cpge(
+            mu3,
+            NC,
+            omega1,
+            omega2;
+            E_f = 0.15,
+            delta = 1e-4,
+            quad_rtol = 2e-8,
+            quad_atol = 2e-10,
+        )
+        value_delta5 = KPM.cpge(
+            mu3,
+            NC,
+            omega1,
+            omega2;
+            E_f = 0.15,
+            delta = 1e-5,
+            quad_rtol = 2e-8,
+            quad_atol = 2e-10,
+        )
+        ref_delta4 = cpge_eigen_reference(
+            H_norm,
+            J[1],
+            J[2],
+            J[3],
+            NC,
+            omega1,
+            omega2;
+            xF = 0.15,
+            beta = Inf,
+            lambda = 0.0,
+            delta = 1e-4,
+        )
+        delta_sensitivity = abs(value_delta4 - value_delta5) / abs(value_delta5)
+        @info "CPGE coincident-edge delta sensitivity" omega1 omega2 value_delta4 value_delta5 delta_sensitivity
+        @test isfinite(value_delta4)
+        @test isfinite(value_delta5)
+        @test value_delta4 ≈ ref_delta4 rtol = 1e-8 atol = 2e-9
+        @test delta_sensitivity < 5e-2
+    end
 end
 
 # A finite-N exact time-reversal identity for the requested antisymmetrized
@@ -549,6 +573,30 @@ end
     @test values ≈ [
         KPM.d_cpge(mu3, NC, omega1, omega2, node; lambda = lambda) for node in grid
     ] rtol = 1e-12
+
+    x_delta, delta = 0.5, 1e-3
+    ref_delta = cpge_eigen_integrand(
+        F,
+        A,
+        B,
+        C,
+        T,
+        kh,
+        NC,
+        omega1,
+        omega2,
+        x_delta,
+        0.0,
+        delta,
+    )
+    @test KPM.d_cpge(
+        mu3,
+        NC,
+        omega1,
+        omega2,
+        x_delta;
+        delta = delta,
+    ) ≈ ref_delta rtol = 1e-10 atol = 1e-12
 end
 
 @testset "CPGE input and quadrature errors" begin

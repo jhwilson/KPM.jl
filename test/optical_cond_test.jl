@@ -114,6 +114,62 @@ function _ref_integral(fun, shifts, xF, beta, lambda; rtol = 2e-11, atol = 2e-13
     )
 end
 
+# Independent T=0 reference for a shifted Green singularity at the active
+# Fermi boundary. Unlike `_ref_integral`, boundary singularities are retained
+# explicitly and every singular endpoint is mapped with theta = theta_* +/- w*u^2.
+function _ref_endpoint_integral(fun, shifts, xF; rtol = 2e-11, atol = 2e-13)
+    lo = acos(clamp(xF, -1, 1))
+    points = Float64[lo, pi]
+    singular = Float64[]
+    for shift in shifts, edge in (-1.0, 1.0)
+        xstar = edge - shift
+        -1 < xstar < 1 || continue
+        theta = acos(xstar)
+        lo - 1e-13 <= theta <= pi + 1e-13 || continue
+        abs(theta - lo) <= 1e-13 && (theta = lo)
+        abs(theta - pi) <= 1e-13 && (theta = pi)
+        push!(points, theta)
+        push!(singular, theta)
+    end
+    sort!(points)
+    unique!(points)
+    isedge(theta) = any(s -> abs(theta - s) <= 1e-13, singular)
+    node(theta) = sin(theta) * fun(cos(theta))
+
+    function piece(a, b, leftedge, rightedge)
+        if leftedge && rightedge
+            mid = (a + b) / 2
+            return piece(a, mid, true, false) + piece(mid, b, false, true)
+        end
+        width = b - a
+        if leftedge
+            return first(quadgk(
+                u -> node(a + width * u^2) * (2width * u),
+                0.0,
+                1.0;
+                rtol = rtol,
+                atol = atol,
+                order = 21,
+            ))
+        elseif rightedge
+            return first(quadgk(
+                u -> node(b - width * u^2) * (2width * u),
+                0.0,
+                1.0;
+                rtol = rtol,
+                atol = atol,
+                order = 21,
+            ))
+        end
+        return first(quadgk(node, a, b; rtol = rtol, atol = atol, order = 21))
+    end
+
+    return sum(
+        piece(points[k], points[k+1], isedge(points[k]), isedge(points[k+1])) for
+        k = 1:(length(points)-1)
+    )
+end
+
 function _eigenbasis_reference(Hnorm, Ja, Jb, NC, omega; xF, beta, lambda)
     F = eigen(Hermitian(Matrix(Hnorm)))
     A = F.vectors' * Matrix(Ja) * F.vectors
@@ -139,6 +195,25 @@ function _eigenbasis_reference(Hnorm, Ja, Jb, NC, omega; xF, beta, lambda)
         return acc / length(F.values)
     end
     return (-im / omega) * _ref_integral(integrand, (omega, -omega), xF, beta, lambda)
+end
+
+function _eigenbasis_endpoint_reference(Hnorm, Ja, Jb, NC, omega; xF)
+    F = eigen(Hermitian(Matrix(Hnorm)))
+    A = F.vectors' * Matrix(Ja) * F.vectors
+    B = F.vectors' * Matrix(Jb) * F.vectors
+    T = hcat((_ref_chebyshev(E, NC) for E in F.values)...)
+    kh = [_ref_jackson(n, NC) * _ref_hn(n) for n = 0:(NC-1)]
+    function integrand(x)
+        deltaK = transpose(kh .* _ref_delta(x, NC)) * T
+        greenR = transpose(kh .* _ref_green(x + omega, NC, 0.0, :R)) * T
+        greenA = transpose(kh .* _ref_green(x - omega, NC, 0.0, :A)) * T
+        return sum(
+            A[a, b] * B[b, a] *
+            (greenR[a] * deltaK[b] + deltaK[a] * greenA[b]) for
+            a in eachindex(F.values), b in eachindex(F.values)
+        ) / length(F.values)
+    end
+    return (-im / omega) * _ref_endpoint_integral(integrand, (omega, -omega), xF)
 end
 
 function _diamagnetic_reference(Hnorm, Jaa, NC, omega; xF, beta)
@@ -350,6 +425,46 @@ end
             rtol = 2e-12, atol = 2e-14)
     end
     @test loose ≈ tight rtol = 1e-10 atol = 1e-12
+
+    omega_edge = 0.3
+    for xF_edge in (1 - omega_edge, -1 + omega_edge)
+        endpoint_ref = _eigenbasis_endpoint_reference(
+            H_norm,
+            Jx,
+            Jy,
+            NCo,
+            omega_edge;
+            xF = xF_edge,
+        )
+        endpoint_value = KPM.optical_cond2(
+            mu2,
+            NCo,
+            omega_edge;
+            E_f = xF_edge,
+            quad_rtol = 2e-10,
+            quad_atol = 2e-12,
+        )
+        @test endpoint_value ≈ endpoint_ref rtol = 1e-8 atol = 2e-10
+    end
+
+    full_band = KPM.optical_cond2(
+        mu2,
+        NCo,
+        omega_edge;
+        E_f = 1.0,
+        lambda = 0.03,
+        quad_atol = 2e-10,
+    )
+    @test KPM.optical_cond2(
+        mu2,
+        NCo,
+        omega_edge;
+        E_f = 1.2,
+        lambda = 0.03,
+        quad_atol = 2e-10,
+    ) ≈ full_band rtol = 1e-12 atol = 1e-12
+    @test iszero(KPM.optical_cond2(mu2, NCo, omega_edge; E_f = -1.0))
+    @test iszero(KPM.optical_cond2(mu2, NCo, omega_edge; E_f = -1.2))
 end
 
 @testset "optical moment orientation" begin
@@ -399,6 +514,53 @@ end
     separate = [KPM.optical_cond2(mu, NCo, omega; kwargs...) for mu in (mu_xy, mu_yx)]
     @test batch ≈ separate rtol = 1e-13 atol = 1e-13
 
+    NCscale = 64
+    easy = zeros(ComplexF64, NCscale, NCscale)
+    hard = zeros(ComplexF64, NCscale, NCscale)
+    easy[1, 1] = 10
+    hard[end, end] = 1
+    scale_kwargs = (;
+        E_f = 0.2,
+        lambda = 0.02,
+        quad_rtol = 1e-8,
+        quad_atol = 0.0,
+    )
+    scale_batch = KPM.optical_cond2((easy, hard), NCscale, 0.3; scale_kwargs...)
+    scale_separate = [
+        KPM.optical_cond2(mu, NCscale, 0.3; scale_kwargs...) for mu in (easy, hard)
+    ]
+    component_errors = abs.(scale_batch .- scale_separate) ./ abs.(scale_separate)
+    @info "unequal-scale optical batch component errors" component_errors
+    @test all(component_errors .< 1e-8)
+
+    identity_kernel = (n, N) -> 1.0
+    mu1_high = zeros(ComplexF64, NCscale)
+    mu1_high[end] = 1
+    beta_high, xF_high = 12.0, 0.2
+    value_high = KPM.optical_cond1(
+        mu1_high,
+        NCscale,
+        0.3;
+        E_f = xF_high,
+        beta = beta_high,
+        kernel = identity_kernel,
+        quad_rtol = 1e-8,
+    )
+    n_high = NCscale - 1
+    lambda_high = first(quadgk(
+        theta -> cos(n_high * theta) / pi /
+                 (1 + exp(beta_high * (cos(theta) - xF_high))),
+        0.0,
+        pi;
+        rtol = 1e-13,
+        atol = 1e-18,
+        order = 63,
+    ))
+    reference_high = (-im / 0.3) * 2lambda_high
+    high_moment_error = abs(value_high - reference_high) / abs(reference_high)
+    @info "finite-temperature high-moment optical_cond1 error" high_moment_error
+    @test high_moment_error < 1e-8
+
     mu_dense = [tr(Matrix(Jx) * S * Matrix(Jy) * T) / D
         for T in _chebyshev_matrices(H_norm, NCo), S in _chebyshev_matrices(H_norm, NCo)]
     kh = [_ref_jackson(n, NCo) * _ref_hn(n) for n = 0:(NCo-1)]
@@ -426,6 +588,18 @@ end
     @test_throws ArgumentError KPM.optical_cond2(mu, 8, 0.3; lambda = -0.1)
     @test_throws ErrorException KPM.optical_cond2(
         ones(ComplexF64, 8, 8), 8, 0.3; maxevals = 5)
+    zero_component_error = try
+        KPM.optical_cond2(
+            (ones(ComplexF64, 8, 8), zeros(ComplexF64, 8, 8)),
+            8,
+            0.3,
+        )
+        nothing
+    catch err
+        err
+    end
+    @test zero_component_error isa ErrorException
+    @test occursin("quad_atol is required", sprint(showerror, zero_component_error))
 end
 
 @testset "typed optical layer and physical anchors" begin
@@ -471,6 +645,33 @@ end
     @test vector isa Vector{ComplexF64}
     @test vector[1] ≈ scalar rtol = 1e-13 atol = 1e-13
     @test batch ≈ [scalar, scalar] rtol = 1e-13 atol = 1e-13
+
+    mixed_batch = KPM.optical_cond(
+        (mxx, mxy),
+        omega_api;
+        area = areabig,
+        Ef = hbig.b,
+        m1s = (m1xx, nothing),
+        quad_atol = 1e-12,
+    )
+    mixed_separate = [
+        KPM.optical_cond(
+            mxx,
+            omega_api;
+            area = areabig,
+            Ef = hbig.b,
+            m1 = m1xx,
+            quad_atol = 1e-12,
+        ),
+        KPM.optical_cond(
+            mxy,
+            omega_api;
+            area = areabig,
+            Ef = hbig.b,
+            quad_atol = 1e-12,
+        ),
+    ]
+    @test mixed_batch ≈ mixed_separate rtol = 1e-10 atol = 1e-12
 
     omega1 = 1e-3hbig.a
     omega2 = 2e-3hbig.a

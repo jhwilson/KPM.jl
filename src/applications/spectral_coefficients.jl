@@ -117,7 +117,9 @@ end
 Integrate `f(cos(theta))*F(theta)` over the occupied part of `(0, pi)`.
 Shifted real-axis Green-function edges are split out and regularized by an
 endpoint-squaring map when `lambda == 0`. The summed QuadGK estimate must
-satisfy `error <= atol + rtol*norm(integral)` or the call throws.
+satisfy `error[k] <= atol + rtol*abs(integral[k])` for every component or the
+call throws. Vector-valued integrands use a scale-estimating first pass and a
+weighted maximum-norm second pass; both share `maxevals`.
 """
 function _spectral_integral(
     F!,
@@ -141,8 +143,8 @@ function _spectral_integral(
 
     ncomp = _spectral_ncomp(F!, NC)
     ncomp > 0 || throw(ArgumentError("the node function must have at least one component"))
-    integral = zeros(ComplexF64, ncomp)
-    isinf(beta_a) && xF <= -1 && return integral, 0.0
+    empty_integral = zeros(ComplexF64, ncomp)
+    isinf(beta_a) && xF <= -1 && return empty_integral, 0.0
 
     theta_F = acos(clamp(xF, -1, 1))
     theta_lo = isinf(beta_a) ? theta_F : 0.0
@@ -154,7 +156,9 @@ function _spectral_integral(
             xstar = edge - shift
             if -1 < xstar < 1
                 theta = acos(xstar)
-                theta_lo < theta < theta_hi || continue
+                theta_lo - 1e-12 <= theta <= theta_hi + 1e-12 || continue
+                abs(theta - theta_lo) <= 1e-12 && (theta = theta_lo)
+                abs(theta - theta_hi) <= 1e-12 && (theta = theta_hi)
                 push!(points, theta)
                 push!(singular, theta)
             end
@@ -173,11 +177,6 @@ function _spectral_integral(
         iszero(lambda) && is_singular(points[k]) && is_singular(points[k+1]) ? 2 : 1 for
         k = 1:(length(points)-1)
     )
-    # Leave headroom for cancellation when the independently estimated piece
-    # errors are summed against the norm of the final integral.
-    piece_rtol = rtol / (10piece_count)
-    piece_atol = atol / (10piece_count)
-
     evaluations = Ref(0)
     function node(theta)
         evaluations[] += 1
@@ -187,13 +186,12 @@ function _spectral_integral(
         return out
     end
 
-    total_error = 0.0
-    function integrate_piece(a, b, left_singular, right_singular)
+    function integrate_piece(a, b, left_singular, right_singular, pass_rtol, pass_atol, pass_norm)
         a == b && return zeros(ComplexF64, ncomp), 0.0
         if left_singular && right_singular
             mid = (a + b) / 2
-            I1, E1 = integrate_piece(a, mid, true, false)
-            I2, E2 = integrate_piece(mid, b, false, true)
+            I1, E1 = integrate_piece(a, mid, true, false, pass_rtol, pass_atol, pass_norm)
+            I2, E2 = integrate_piece(mid, b, false, true, pass_rtol, pass_atol, pass_norm)
             return I1 + I2, E1 + E2
         end
         width = b - a
@@ -212,11 +210,11 @@ function _spectral_integral(
                 integrand,
                 qa,
                 qb;
-                rtol = piece_rtol,
-                atol = piece_atol,
+                rtol = pass_rtol,
+                atol = pass_atol,
                 maxevals = remaining,
                 order = order,
-                norm = LinearAlgebra.norm,
+                norm = pass_norm,
             )
         catch err
             err isa InterruptException && rethrow()
@@ -224,53 +222,76 @@ function _spectral_integral(
         end
     end
 
-    for k = 1:(length(points)-1)
-        a, b = points[k], points[k+1]
-        value, estimate = integrate_piece(a, b, is_singular(a), is_singular(b))
-        integral .+= value
-        total_error += estimate
+    function integrate_pass(pass_rtol, pass_atol, pass_norm)
+        integral = zeros(ComplexF64, ncomp)
+        total_error = 0.0
+        for k = 1:(length(points)-1)
+            a, b = points[k], points[k+1]
+            value, estimate = integrate_piece(
+                a,
+                b,
+                is_singular(a),
+                is_singular(b),
+                pass_rtol,
+                pass_atol,
+                pass_norm,
+            )
+            integral .+= value
+            total_error += estimate
+        end
+        return integral, total_error
     end
-    total_error <= atol + rtol * LinearAlgebra.norm(integral) ||
+
+    # Leave headroom for cancellation when the independently estimated piece
+    # errors are summed against the norm of the final integral.
+    piece_rtol = rtol / (10piece_count)
+    piece_atol = atol / (10piece_count)
+    first_integral, first_error = integrate_pass(piece_rtol, piece_atol, LinearAlgebra.norm)
+    first_error <= atol + rtol * LinearAlgebra.norm(first_integral) ||
         _quad_contract_error(
             rtol,
             atol,
             maxevals,
             lambda,
-            "estimated error $total_error",
+            "estimated error $first_error",
         )
-    return integral, total_error
+    ncomp == 1 && return first_integral, first_error
+
+    scales = atol .+ rtol .* abs.(first_integral)
+    any(iszero, scales) && _quad_contract_error(
+        rtol,
+        atol,
+        maxevals,
+        lambda,
+        "quad_atol is required for exactly-zero components",
+    )
+    weights = inv.(scales)
+    component_norm = x -> maximum(k -> abs(x[k]) * weights[k], eachindex(weights))
+    integral, weighted_error = integrate_pass(
+        0.0,
+        1 / (10piece_count),
+        component_norm,
+    )
+    weighted_error <= 1 || _quad_contract_error(
+        rtol,
+        atol,
+        maxevals,
+        lambda,
+        "maximum scaled estimated error $weighted_error",
+    )
+    return integral, weighted_error
 end
 
 function _lambda_coefficients(
     NC::Integer,
     xF::Real,
-    beta_a::Real;
-    rtol::Real = 1e-8,
-    atol::Real = 0.0,
-    maxevals::Integer = 10^6,
 )
-    if isinf(beta_a)
-        xF <= -1 && return zeros(ComplexF64, NC)
-        theta_F = acos(clamp(xF, -1, 1))
-        lambda_n = zeros(ComplexF64, NC)
-        lambda_n[1] = 1 - theta_F / pi
-        @inbounds for n = 1:(NC-1)
-            lambda_n[n+1] = -sin(n * theta_F) / (n * pi)
-        end
-        return lambda_n
+    xF <= -1 && return zeros(ComplexF64, NC)
+    theta_F = acos(clamp(xF, -1, 1))
+    lambda_n = zeros(ComplexF64, NC)
+    lambda_n[1] = 1 - theta_F / pi
+    @inbounds for n = 1:(NC-1)
+        lambda_n[n+1] = -sin(n * theta_F) / (n * pi)
     end
-
-    F! = (out, theta) -> chebyshev_delta_theta!(out, theta)
-    value, _ = _spectral_integral(
-        _SpectralNodeFunction(F!, NC),
-        NC,
-        (),
-        xF,
-        beta_a,
-        0.0;
-        rtol = rtol,
-        atol = atol,
-        maxevals = maxevals,
-    )
-    return value
+    return lambda_n
 end

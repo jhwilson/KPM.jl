@@ -19,8 +19,9 @@ in `e^2/h`, multiply by `2pi*D/(A*a)`, or use [`optical_cond`](@ref).
 
 The moments are kernel- and `hn`-improved on the host. At zero temperature
 `Lambda_n` is analytic; finite-temperature quadrature enforces
-`error <= quad_atol + quad_rtol*norm(I)` and throws if `maxevals` is
-insufficient. A nonzero `quad_atol` is needed for exactly zero components.
+`error <= quad_atol + quad_rtol*abs(I)` on the scalar contracted integrand and
+throws if `maxevals` is insufficient. A nonzero `quad_atol` is needed for an
+exactly zero result.
 """
 function optical_cond1(
     mu1,
@@ -35,15 +36,46 @@ function optical_cond1(
 )
     _check_optical_inputs(mu1, NC, omega_tilde)
     mu_tilde = maybe_to_host(muND_apply_kernel_and_h(view(mu1, 1:NC), Int(NC), kernel; dims = [1]))
-    lambda_n = _lambda_coefficients(
-        NC,
-        E_f,
-        beta;
-        rtol = quad_rtol,
-        atol = quad_atol,
-        maxevals = maxevals,
-    )
-    return ComplexF64(-im * sum(mu_tilde .* lambda_n) / omega_tilde)
+    integral = if isinf(beta)
+        sum(mu_tilde .* _lambda_coefficients(NC, E_f))
+    else
+        active = findall(!iszero, mu_tilde)
+        function node(theta)
+            return sum(
+                mu_tilde[n] * cos((n - 1) * theta) for n in active
+            ) / pi / (1 + exp(beta * (cos(theta) - E_f)))
+        end
+        value, estimate = try
+            quadgk(
+                node,
+                0.0,
+                pi;
+                rtol = quad_rtol / 10,
+                atol = quad_atol / 10,
+                maxevals = maxevals,
+                order = 31,
+                norm = abs,
+            )
+        catch err
+            err isa InterruptException && rethrow()
+            _quad_contract_error(
+                quad_rtol,
+                quad_atol,
+                maxevals,
+                0.0,
+                sprint(showerror, err),
+            )
+        end
+        estimate <= quad_atol + quad_rtol * abs(value) || _quad_contract_error(
+            quad_rtol,
+            quad_atol,
+            maxevals,
+            0.0,
+            "estimated error $estimate",
+        )
+        value
+    end
+    return ComplexF64(-im * integral / omega_tilde)
 end
 
 function _optical_node_function(mus, NC, omega_tilde, lambda)
@@ -86,9 +118,9 @@ differ by exactly this index relabeling.
 `E_f`, `omega_tilde`, and `lambda` are rescaled; finite `lambda` replaces
 JL's `i0` by `i*lambda`. For a two-dimensional result in `e^2/h`, multiply
 by `2pi*D/(A*a^2)`, or use [`optical_cond`](@ref). The adaptive integral
-enforces `error <= quad_atol + quad_rtol*norm(I)` and throws if `maxevals` is
-insufficient; exactly zero components require nonzero `quad_atol`. Cost is
-`O(N_nodes*NC^2)`.
+enforces `error[k] <= quad_atol + quad_rtol*abs(I[k])` for every batched
+component and throws if `maxevals` is insufficient; exactly zero components
+require nonzero `quad_atol`. Cost is `O(N_nodes*NC^2)`.
 """
 function optical_cond2(
     mu2,
