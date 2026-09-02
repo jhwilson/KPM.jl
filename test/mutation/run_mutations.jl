@@ -63,6 +63,28 @@ const MUTATIONS = [
         ["optical_cond_test.jl"],
     ),
     Mutation(
+        "optical_orientation",
+        "transpose the stored 2D moment table in the optical node contraction",
+        "src/applications/optical_cond.jl",
+        [
+            "            mul!(rightR[k], mus[k], gR)" =>
+                "            mul!(rightR[k], transpose(mus[k]), gR)",
+            "            mul!(rightD[k], mus[k], delta)" =>
+                "            mul!(rightD[k], transpose(mus[k]), delta)",
+        ],
+        ["optical_cond_test.jl"],
+    ),
+    Mutation(
+        "optical_delta_pi",
+        "drop the package-normalized 1/pi factor from delta(theta)",
+        "src/applications/spectral_coefficients.jl",
+        [
+            "    delta[1] = inv(pi)" => "    delta[1] = 1",
+            "    delta[2] = c / pi" => "    delta[2] = c",
+        ],
+        ["optical_cond_test.jl"],
+    ),
+    Mutation(
         "jackson_identity",
         "replace the Jackson kernel by the identity kernel g_n = 1",
         "src/kernels/jackson_kernel.jl",
