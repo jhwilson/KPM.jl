@@ -409,16 +409,15 @@ end
         (gR * transpose(delta) + delta * transpose(gA)))
     @test KPM.d_optical_cond2(mu_xy, NCo, omega, x; lambda = 0.03) ≈ ref rtol = 1e-10
 
-    grid1, values1 = KPM.d_optical_cond1(
-        KPM.kpm_1d_current(H_norm, Jxx, NCo, D, D; psi_in = psi),
-        NCo; N_int = 7, e_range = [-0.8, 0.8])
-    @test values1 == [KPM.d_optical_cond1(
-        KPM.kpm_1d_current(H_norm, Jxx, NCo, D, D; psi_in = psi), NCo, x)
-        for x in grid1]
+    # grid methods agree with the scalar ones (rtol contract: the moments are
+    # recomputed per call and device reductions may reorder the sums)
+    mu1_grid = KPM.kpm_1d_current(H_norm, Jxx, NCo, D, D; psi_in = psi)
+    grid1, values1 = KPM.d_optical_cond1(mu1_grid, NCo; N_int = 7, e_range = [-0.8, 0.8])
+    @test values1 ≈ [KPM.d_optical_cond1(mu1_grid, NCo, x) for x in grid1] rtol = 1e-12
     grid2, values2 = KPM.d_optical_cond2(mu_xy, NCo, omega;
         lambda = 0.03, N_int = 7, e_range = [-0.8, 0.8])
-    @test values2 == [KPM.d_optical_cond2(mu_xy, NCo, omega, x; lambda = 0.03)
-        for x in grid2]
+    @test values2 ≈ [KPM.d_optical_cond2(mu_xy, NCo, omega, x; lambda = 0.03)
+        for x in grid2] rtol = 1e-12
 end
 
 @testset "optical input and quadrature errors" begin

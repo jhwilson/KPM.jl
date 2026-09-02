@@ -546,9 +546,9 @@ end
         N_int = 7,
         e_range = [-0.8, 0.8],
     )
-    @test values == [
+    @test values ≈ [
         KPM.d_cpge(mu3, NC, omega1, omega2, node; lambda = lambda) for node in grid
-    ]
+    ] rtol = 1e-12
 end
 
 @testset "CPGE input and quadrature errors" begin
