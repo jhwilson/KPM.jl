@@ -1,5 +1,4 @@
-function _check_optical_inputs(mu, NC, omega, lambda = 0.0)
-    iszero(omega) && throw(ArgumentError("optical conductivity is singular at omega = 0"))
+function _check_optical_inputs(mu, NC, lambda = 0.0)
     lambda >= 0 || throw(ArgumentError("lambda must be nonnegative (got $lambda)"))
     NC > 0 || throw(ArgumentError("NC must be positive"))
     all(size(mu, d) >= NC for d = 1:ndims(mu)) ||
@@ -14,8 +13,9 @@ end
 
 Return the bare diamagnetic optical term
 `(-im/omega_tilde) sum_n mu1_tilde[n] Lambda_n` in rescaled energy units.
-`E_f` and `omega_tilde` are rescaled. For a two-dimensional physical result
-in `e^2/h`, multiply by `2pi*D/(A*a)`, or use [`optical_cond`](@ref).
+`E_f` and `omega_tilde` are rescaled, and `beta` is inverse rescaled energy
+(`beta = beta_physical*a`). For a two-dimensional physical result in `e^2/h`,
+multiply by `2pi*D/(A*a)`, or use [`optical_cond`](@ref).
 
 The moments are kernel- and `hn`-improved on the host. At zero temperature
 `Lambda_n` is analytic; finite-temperature quadrature enforces
@@ -34,7 +34,9 @@ function optical_cond1(
     quad_atol::Real = 0.0,
     maxevals::Integer = 10^6,
 )
-    _check_optical_inputs(mu1, NC, omega_tilde)
+    iszero(omega_tilde) &&
+        throw(ArgumentError("optical conductivity is singular at omega = 0"))
+    _check_optical_inputs(mu1, NC)
     mu_tilde = maybe_to_host(muND_apply_kernel_and_h(view(mu1, 1:NC), Int(NC), kernel; dims = [1]))
     integral = if isinf(beta)
         sum(mu_tilde .* _lambda_coefficients(NC, E_f))
@@ -115,9 +117,10 @@ as `omega_tilde -> 0`, including the package's ED/FHS-anchored Hall convention:
 quantity is their `sigma^{beta alpha}` because the two textbook Kubo forms
 differ by exactly this index relabeling.
 
-`E_f`, `omega_tilde`, and `lambda` are rescaled; finite `lambda` replaces
-JL's `i0` by `i*lambda`. For a two-dimensional result in `e^2/h`, multiply
-by `2pi*D/(A*a^2)`, or use [`optical_cond`](@ref). The adaptive integral
+`E_f`, `omega_tilde`, and `lambda` are rescaled, while `beta` is inverse
+rescaled energy (`beta = beta_physical*a`); finite `lambda` replaces JL's
+`i0` by `i*lambda`. For a two-dimensional result in `e^2/h`, multiply by
+`2pi*D/(A*a^2)`, or use [`optical_cond`](@ref). The adaptive integral
 enforces `error[k] <= quad_atol + quad_rtol*abs(I[k])` for every batched
 component and throws if `maxevals` is insufficient; exactly zero components
 require nonzero `quad_atol`. Cost is `O(N_nodes*NC^2)`.
@@ -163,8 +166,10 @@ function optical_cond2(
     maxevals::Integer = 10^6,
 )
     isempty(mus) && return ComplexF64[]
+    iszero(omega_tilde) &&
+        throw(ArgumentError("optical conductivity is singular at omega = 0"))
     for mu in mus
-        _check_optical_inputs(mu, NC, omega_tilde, lambda)
+        _check_optical_inputs(mu, NC, lambda)
     end
     mu_tilde = tuple(
         (maybe_to_host(mu2D_apply_kernel_and_h(view(mu, 1:NC, 1:NC), Int(NC), kernel)) for mu in mus)...,
@@ -196,10 +201,12 @@ end
     d_optical_cond1(mu1, NC, x; kernel=JacksonKernel)
 
 The rescaled-energy integrand `sum_n mu1_tilde[n] Delta_n(x)` per unit `dx`,
-for `x` strictly inside `(-1,1)`.
+for `x` strictly inside `(-1,1)`. The Fermi weight is omitted, so this
+resolved function takes no `beta`; in a manual integral, `beta` is inverse
+rescaled energy.
 """
 function d_optical_cond1(mu1, NC::Integer, x::Real; kernel = JacksonKernel)
-    _check_optical_inputs(mu1, NC, 1.0)
+    _check_optical_inputs(mu1, NC)
     mu_tilde = maybe_to_host(muND_apply_kernel_and_h(view(mu1, 1:NC), Int(NC), kernel; dims = [1]))
     return ComplexF64(sum(mu_tilde .* _delta_coefficients_x(NC, x)))
 end
@@ -225,7 +232,11 @@ The rescaled-energy paramagnetic integrand per unit `dx`. The package layout
 `sigma_xy = +C` in the package's ED/FHS-anchored convention. In the labels of
 Joao--Lopes Eqs. 26, 42, and 44, this is their `sigma^{beta alpha}` because
 the two textbook Kubo forms differ by exactly this relabeling.
-`lambda >= 0` is the rescaled Green broadening.
+`lambda >= 0` is the rescaled Green broadening. The Fermi weight is omitted,
+so this resolved function takes no `beta`; in a manual integral, `beta` is
+inverse rescaled energy. Unlike [`optical_cond2`](@ref), the resolved
+integrand is finite and accepted at `omega_tilde = 0` away from its Green
+singular points.
 """
 function d_optical_cond2(
     mu2,
@@ -235,7 +246,7 @@ function d_optical_cond2(
     lambda::Real = 0.0,
     kernel = JacksonKernel,
 )
-    _check_optical_inputs(mu2, NC, omega_tilde, lambda)
+    _check_optical_inputs(mu2, NC, lambda)
     mu_tilde = maybe_to_host(mu2D_apply_kernel_and_h(view(mu2, 1:NC, 1:NC), Int(NC), kernel))
     delta = _delta_coefficients_x(NC, x)
     gR = zeros(ComplexF64, NC)

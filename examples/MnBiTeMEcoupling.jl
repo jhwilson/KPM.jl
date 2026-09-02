@@ -8,19 +8,18 @@ function MET0(
     mu2d,
     NC,
     ω;
-    δ = 1e-5,
     λ = 0.0,
     kernel = KPM.JacksonKernel,
     h = 0.001,
     Emin = -0.8,
     Emax = 0.0,
 )
-    x_all = collect(Emin:h:Emax)
+    x_all = collect((Emin + h / 2):h:(Emax - h / 2))
     y_2 = zeros(ComplexF64, length(x_all))
     mu2d_dev = KPM.maybe_to_device(mu2d[1:NC, 1:NC])
 
     for (i, x) in enumerate(x_all)
-        y_2[i] += KPM.d_optical_cond2(mu2d_dev, NC, ω, x; λ = λ, kernel = kernel)
+        y_2[i] += KPM.d_optical_cond2(mu2d_dev, NC, ω, x; lambda = λ, kernel = kernel)
     end
     #return x_all, y_2
     return sum(y_2) * h * (1im)
@@ -136,19 +135,18 @@ function MET0test(
     mu2d,
     NC,
     ω;
-    δ = 1e-5,
     λ = 0.0,
     kernel = KPM.JacksonKernel,
     h = 0.001,
     Emin = -0.8,
     Emax = 0.0,
 )
-    x_all = collect(Emin:h:Emax)
+    x_all = collect((Emin + h / 2):h:(Emax - h / 2))
     y_2 = zeros(ComplexF64, length(x_all))
     mu2d_dev = KPM.maybe_to_device(mu2d[1:NC, 1:NC])
 
     for (i, x) in enumerate(x_all)
-        y_2[i] += KPM.d_optical_cond2(mu2d_dev, NC, ω, x; λ = λ, kernel = kernel)
+        y_2[i] += KPM.d_optical_cond2(mu2d_dev, NC, ω, x; lambda = λ, kernel = kernel)
     end
     return x_all, y_2
     #return sum(y_2) * h * (1im)

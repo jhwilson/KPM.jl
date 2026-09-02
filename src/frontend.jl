@@ -392,9 +392,10 @@ end
 
 Reconstruct the physical linear optical conductivity at physical frequency
 `omega`, returning `sigma/(e^2/h)` for a two-dimensional sample of `area`.
-`Ef`, `omega`, and `lambda` use the original Hamiltonian's energy units;
-`lambda` implements JL's `i0 -> i*lambda`. Current operators used to produce
-the moments must be built from the unrescaled Hamiltonian.
+`Ef`, `omega`, and `lambda` use the original Hamiltonian's energy units, and
+`beta` is inverse physical energy; `lambda` implements JL's
+`i0 -> i*lambda`. Current operators used to produce the moments must be built
+from the unrescaled Hamiltonian.
 
 The package table
 `mu2[n,m] = Tr[Jalpha*T_m(H_norm)*Jbeta*T_n(H_norm)]/NH` is contracted

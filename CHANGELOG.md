@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ForwardDiff; Zygote is no longer a dependency.
 - The finite-`beta` `chern_marker` documentation now distinguishes the
   smoothed Fermi-operator marker from finite-temperature Hall conductivity.
+- `d_optical_cond1` and `d_optical_cond2` now accept the finite resolved integrand at `omega = 0`.
+- `cpge` and `d_cpge` now reject unregularized coincident Green edges at individual, sum, or opposite-edge frequency shifts.
 
 ### Added
 

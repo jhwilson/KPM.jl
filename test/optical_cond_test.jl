@@ -585,6 +585,7 @@ end
 @testset "optical input and quadrature errors" begin
     mu = zeros(ComplexF64, 8, 8)
     @test_throws ArgumentError KPM.optical_cond2(mu, 8, 0.0)
+    @test isfinite(KPM.d_optical_cond2(mu, 8, 0.0, 0.0))
     @test_throws ArgumentError KPM.optical_cond2(mu, 8, 0.3; lambda = -0.1)
     @test_throws ErrorException KPM.optical_cond2(
         ones(ComplexF64, 8, 8), 8, 0.3; maxevals = 5)
@@ -673,19 +674,51 @@ end
     ]
     @test mixed_batch ≈ mixed_separate rtol = 1e-10 atol = 1e-12
 
-    omega1 = 1e-3hbig.a
-    omega2 = 2e-3hbig.a
-    sigma1 = real(
-        KPM.optical_cond(mxy, omega1; area = areabig, Ef = hbig.b, quad_atol = 1e-12),
+    beta_physical = 3.2
+    omega_beta = 0.35hbig.a
+    Ef_beta = hbig.b + 0.1hbig.a
+    lambda_beta = 0.03hbig.a
+    typed_beta = KPM.optical_cond(
+        mxy,
+        omega_beta;
+        area = areabig,
+        Ef = Ef_beta,
+        beta = beta_physical,
+        lambda = lambda_beta,
+        quad_rtol = 2e-10,
+        quad_atol = 2e-12,
     )
-    sigma2 = real(
-        KPM.optical_cond(mxy, omega2; area = areabig, Ef = hbig.b, quad_atol = 1e-12),
+    bare_beta = KPM.optical_cond2(
+        mxy.mu,
+        NCbig,
+        omega_beta / hbig.a;
+        E_f = (Ef_beta - hbig.b) / hbig.a,
+        beta = beta_physical * hbig.a,
+        lambda = lambda_beta / hbig.a,
+        quad_rtol = 2e-10,
+        quad_atol = 2e-12,
     )
-    # Linear Richardson extrapolation gives 1.00162145255 versus
-    # kubo_bastin_cond = 1.00162526452, a relative difference of 3.81e-6.
-    sigma_dc = 2sigma1 - sigma2
+    bare_beta *= 2pi * Dbig / (areabig * hbig.a^2)
+    @test typed_beta ≈ bare_beta rtol = 1e-10 atol = 1e-12
+
+    sigma(q) = real(KPM.optical_cond(
+        mxy,
+        q * hbig.a;
+        area = areabig,
+        Ef = hbig.b,
+        quad_atol = 1e-12,
+    ))
+    sigma_half = sigma(5e-4)
+    sigma_h = sigma(1e-3)
+    sigma_2h = sigma(2e-3)
+    sigma_dc = (4sigma_h - sigma_2h) / 3
+    sigma_dc_half = (4sigma_half - sigma_h) / 3
     sigma_bastin = KPM.kubo_bastin_cond(mxy, hbig.b; area = areabig)
-    @test sigma_dc ≈ sigma_bastin rtol = 1e-4
+    dc_relative_error = abs(sigma_dc - sigma_bastin) / abs(sigma_bastin)
+    dc_step_stability = abs(sigma_dc_half - sigma_dc) / abs(sigma_dc)
+    @info "optical DC Richardson anchor" sigma_bastin sigma_dc sigma_dc_half dc_relative_error dc_step_stability
+    @test dc_step_stability < 1e-8
+    @test sigma_dc ≈ sigma_bastin rtol = 1e-6
 
     # This anchor uses a 12x12 torus rather than the 6x6 torus in
     # kubo_bastin_test.jl; the same generous 5e-2 KPM-to-C tolerance is used.

@@ -58,10 +58,10 @@ dσE = KPM.d_dc_cond(m2, E_values)                 # Kubo–Bastin integrand
 For reproducible random-phase probe vectors pass an explicit RNG:
 `KPM.dos_moments(h; NC, NR, rng=Xoshiro(42))` (`using Random`). The raw-array
 interface below remains fully supported; the typed methods use the same code
-paths. `optical_cond` accepts physical frequency, Fermi energy, and broadening
-and returns the two-dimensional conductivity in e²/h. The bare
-`optical_cond1/2` and nonlinear `cpge` interfaces use rescaled energies as
-stated in their docstrings.
+paths. `optical_cond` accepts physical frequency, Fermi energy, and broadening,
+with `beta` in inverse physical energy, and returns the two-dimensional
+conductivity in e²/h. The bare `optical_cond1/2` and nonlinear `cpge`
+interfaces use rescaled energies and inverse-rescaled-energy `beta`.
 
 ## Capability
 

@@ -134,8 +134,10 @@ i\\int_0^\\pi d\\theta\\,\\tilde f(\\cos\\theta)\\,[RR(\\theta)+RA(\\theta)+AA(\
 
 There is no `Omega` prefactor and no `1/(omega1_tilde*omega2_tilde)` factor;
 `omega2_tilde = -omega1_tilde` is legal with the regularization described
-below. In units `e = hbar = 1`, the physical response of Wu et al., PRB 110,
-014201, Eqs. 6/A1 (three-current term only), is
+below. `E_f`, both frequencies, and `lambda` are rescaled energies; `beta` is
+inverse rescaled energy (`beta = beta_physical*a`). In units `e = hbar = 1`,
+the physical response of Wu et al., PRB 110, 014201, Eqs. 6/A1
+(three-current term only), is
 `chi_alpha_beta_gamma = D/(V*a^2) * cpge(...)`, in their `e^3/hbar^2` units.
 
 The package table is
@@ -218,6 +220,9 @@ end
 Return the host-side energy-resolved bracket `RR + RA + AA` per unit `dx` at
 `-1 < x < 1`, with `Delta_n(x) = T_n(x)/(pi*sqrt(1-x^2))`. The Fermi weight
 and the overall factor `im` in [`cpge`](@ref) are not included.
+
+This resolved function therefore takes no `beta`; in a manual integral,
+`beta` is inverse rescaled energy.
 
 The grid method without `x` returns `(energy_grid, values)` and accepts
 `N_int=2NC` and `e_range=[-1,1]`.
