@@ -301,6 +301,10 @@ KPM.whichcore() || @testset "supplied-workspace allocation guard" begin
         alloc[NC] = _allocated_kpm2d!(H, J, μ, ψ, ws, NC, NR, NH)
     end
     @test alloc[64] < 1_000_000
-    # 512 vs 2048 block pairs: a 100-byte per-pair leak would add ~150 KB
-    @test alloc[64] - alloc[32] < 65_536
+    # 512 vs 2048 block pairs: a 100-byte per-pair leak would add ~150 KB.
+    # SparseArrays on Julia 1.10 allocates ~64 B inside every 5-arg sparse
+    # mul! (64 B × 3072 extra recurrence steps = 196608 B here); the
+    # per-block guard is only meaningful where the stdlib kernel is
+    # allocation-free (Julia ≥ 1.11).
+    VERSION >= v"1.11" && @test alloc[64] - alloc[32] < 65_536
 end
