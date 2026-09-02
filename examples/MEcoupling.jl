@@ -20,7 +20,7 @@ function MET0(
     mu2d_dev = KPM.maybe_to_device(mu2d[1:NC, 1:NC])
 
     for (i, x) in enumerate(x_all)
-        y_2[i] += KPM.d_optical_cond2(mu2d_dev, NC, ω, x; δ = δ, λ = λ, kernel = kernel)
+        y_2[i] += KPM.d_optical_cond2(mu2d_dev, NC, ω, x; λ = λ, kernel = kernel)
     end
     #return x_all, y_2
     return sum(y_2) * h * (1im)

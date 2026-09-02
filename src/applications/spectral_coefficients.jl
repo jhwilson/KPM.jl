@@ -165,6 +165,14 @@ function _spectral_integral(
     points = _deduplicate_sorted(points)
     singular = _deduplicate_sorted(singular)
     is_singular(theta) = any(abs(theta - s) <= 1e-12 for s in singular)
+    piece_count = sum(
+        iszero(lambda) && is_singular(points[k]) && is_singular(points[k+1]) ? 2 : 1 for
+        k = 1:(length(points)-1)
+    )
+    # Leave headroom for cancellation when the independently estimated piece
+    # errors are summed against the norm of the final integral.
+    piece_rtol = rtol / (10piece_count)
+    piece_atol = atol / (10piece_count)
 
     evaluations = Ref(0)
     function node(theta)
@@ -200,8 +208,8 @@ function _spectral_integral(
                 integrand,
                 qa,
                 qb;
-                rtol = rtol,
-                atol = atol,
+                rtol = piece_rtol,
+                atol = piece_atol,
                 maxevals = remaining,
                 order = order,
                 norm = LinearAlgebra.norm,

@@ -153,6 +153,37 @@ function _diamagnetic_reference(Hnorm, Jaa, NC, omega; xF, beta)
     return (-im / omega) * _ref_integral(integrand, (), xF, beta, 0.0)
 end
 
+function _second_current(H, J)
+    Hd = Matrix(H)
+    Jd = Matrix(J)
+    displacement = [
+        abs(Hd[i, j]) > 0 ? Jd[i, j] / Hd[i, j] : 0.0 + 0.0im for
+        i in axes(Hd, 1), j in axes(Hd, 2)
+    ]
+    return sparse(Hd .* displacement .^ 2)
+end
+
+function _lehmann_optical_reference(Hnorm, Ja, Jb, omega, lambda, xF)
+    F = eigen(Hermitian(Matrix(Hnorm)))
+    A = F.vectors' * Matrix(Ja) * F.vectors
+    B = F.vectors' * Matrix(Jb) * F.vectors
+    lorentz(x, E) = lambda / (pi * ((x - E)^2 + lambda^2))
+    function integrand(x)
+        acc = 0.0 + 0.0im
+        for a in eachindex(F.values), b in eachindex(F.values)
+            greenR = inv(x + omega - F.values[a] + im * lambda)
+            greenA = inv(x - omega - F.values[b] - im * lambda)
+            acc += A[a, b] * B[b, a] * (
+                greenR * lorentz(x, F.values[b]) +
+                lorentz(x, F.values[a]) * greenA
+            )
+        end
+        return acc / length(F.values)
+    end
+    integral = first(quadgk(integrand, -Inf, xF; rtol = 1e-11, atol = 1e-13))
+    return (-im / omega) * integral
+end
+
 # Small exact-trace Haldane fixture.
 Hop, Jx, Jy, area = haldane_model(3, 3; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0)
 D = size(Hop, 1)
@@ -396,4 +427,166 @@ end
     @test_throws ArgumentError KPM.optical_cond2(mu, 8, 0.3; lambda = -0.1)
     @test_throws ErrorException KPM.optical_cond2(
         ones(ComplexF64, 8, 8), 8, 0.3; maxevals = 5)
+end
+
+@testset "typed optical layer and physical anchors" begin
+    Hbig, Jxbig, Jybig, areabig =
+        haldane_model(12, 12; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0)
+    Dbig = size(Hbig, 1)
+    hbig = KPM.rescale(Hbig; center = true)
+    psibig = Matrix{ComplexF64}(I, Dbig, Dbig)
+    NCbig = 256
+    mxy = KPM.cond_moments(hbig, Jxbig, Jybig; NC = NCbig, psi_in = copy(psibig))
+    mxx = KPM.cond_moments(hbig, Jxbig, Jxbig; NC = NCbig, psi_in = copy(psibig))
+    Jxxbig = _second_current(Hbig, Jxbig)
+    m1xx = KPM.current_moments(hbig, Jxxbig, NCbig, Dbig; psi_in = copy(psibig))
+
+    @test m1xx isa KPM.CurrentMoments
+    @test KPM.nc(m1xx) == NCbig
+    @test m1xx.mu[1] ≈ tr(Jxxbig) / Dbig rtol = 1e-12 atol = 1e-14
+    @test occursin("CurrentMoments", string(m1xx))
+
+    omega_api = 0.35hbig.a
+    scalar = KPM.optical_cond(
+        mxy,
+        omega_api;
+        area = areabig,
+        Ef = hbig.b,
+        quad_atol = 1e-12,
+    )
+    vector = KPM.optical_cond(
+        mxy,
+        [omega_api, 0.4hbig.a];
+        area = areabig,
+        Ef = hbig.b,
+        quad_atol = 1e-12,
+    )
+    batch = KPM.optical_cond(
+        (mxy, mxy),
+        omega_api;
+        area = areabig,
+        Ef = hbig.b,
+        quad_atol = 1e-12,
+    )
+    @test scalar isa ComplexF64
+    @test vector isa Vector{ComplexF64}
+    @test vector[1] ≈ scalar rtol = 1e-13 atol = 1e-13
+    @test batch ≈ [scalar, scalar] rtol = 1e-13 atol = 1e-13
+
+    omega1 = 1e-3hbig.a
+    omega2 = 2e-3hbig.a
+    sigma1 = real(
+        KPM.optical_cond(mxy, omega1; area = areabig, Ef = hbig.b, quad_atol = 1e-12),
+    )
+    sigma2 = real(
+        KPM.optical_cond(mxy, omega2; area = areabig, Ef = hbig.b, quad_atol = 1e-12),
+    )
+    # Linear Richardson extrapolation gives 1.00162145255 versus
+    # kubo_bastin_cond = 1.00162526452, a relative difference of 3.81e-6.
+    sigma_dc = 2sigma1 - sigma2
+    sigma_bastin = KPM.kubo_bastin_cond(mxy, hbig.b; area = areabig)
+    @test sigma_dc ≈ sigma_bastin rtol = 1e-4
+
+    # This anchor uses a 12x12 torus rather than the 6x6 torus in
+    # kubo_bastin_test.jl; the same generous 5e-2 KPM-to-C tolerance is used.
+    C_fhs = chern_number_fhs(
+        haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0);
+        Nk = 30,
+    )
+    @test C_fhs ≈ 1.0 atol = 1e-10
+    @test sigma_bastin ≈ C_fhs atol = 5e-2
+
+    frequencies = [hbig.a, 1.5hbig.a]
+    spectrum = eigvals(Hermitian(Matrix(Hbig)))
+    gap = 2minimum(abs.(spectrum .- hbig.b))
+    bandwidth = maximum(spectrum) - minimum(spectrum)
+    @test all((gap .< frequencies) .& (frequencies .< bandwidth))
+    sigma_xx = KPM.optical_cond(
+        mxx,
+        frequencies;
+        area = areabig,
+        Ef = hbig.b,
+        m1 = m1xx,
+        quad_atol = 1e-12,
+    )
+    @test real.(sigma_xx) ≈ [1.24501644500, 0.07108598834] rtol = 2e-8
+    @test all(real.(sigma_xx) .> 0)
+
+    omega_tilde = 1e-3
+    dia = real(
+        im * omega_tilde * KPM.optical_cond1(
+            m1xx.mu,
+            NCbig,
+            omega_tilde;
+            E_f = 0.0,
+            quad_atol = 1e-12,
+        ),
+    )
+    para = real(
+        im * omega_tilde * KPM.optical_cond2(
+            mxx.mu,
+            NCbig,
+            omega_tilde;
+            E_f = 0.0,
+            quad_atol = 1e-12,
+        ),
+    ) / hbig.a
+    # Measured |dia + Re(para)/a|/|dia| = 5.4316e-4 at NC=256.
+    gauge_residual = abs(dia + para) / abs(dia)
+    @test gauge_residual < 2e-3
+
+    Hsmall, Jxsmall, _, _ =
+        haldane_model(3, 3; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0)
+    Dsmall = size(Hsmall, 1)
+    hsmall = KPM.rescale(Hsmall; center = true)
+    NCsmall = 64
+    psismall = Matrix{ComplexF64}(I, Dsmall, Dsmall)
+    muxx_small = KPM.kpm_2d(
+        hsmall.H,
+        Jxsmall,
+        Jxsmall,
+        NCsmall,
+        Dsmall,
+        Dsmall;
+        psi_in = psismall,
+    )
+    omega_small = 0.5
+    spectrum_small = eigvals(Hermitian(Matrix(Hsmall)))
+    physical_bandwidth = maximum(spectrum_small) - minimum(spectrum_small)
+    lambda_small = 0.02physical_bandwidth / hsmall.a
+    value_small = KPM.optical_cond2(
+        muxx_small,
+        NCsmall,
+        omega_small;
+        E_f = 0.0,
+        lambda = lambda_small,
+        quad_atol = 1e-12,
+    )
+    ref_small = _lehmann_optical_reference(
+        hsmall.H,
+        Jxsmall,
+        Jxsmall,
+        omega_small,
+        lambda_small,
+        0.0,
+    )
+    # At NC=64 the Jackson-smeared, compact-support KPM spectrum differs from
+    # the exact Lorentzian tails; the measured relative difference is 9.95%.
+    @test value_small ≈ ref_small rtol = 0.1
+
+    bad_m1 = KPM.CurrentMoments(m1xx.mu, m1xx.a + 0.1, m1xx.b, m1xx.NH, m1xx.NR)
+    @test_throws ArgumentError KPM.optical_cond(
+        mxx,
+        omega_api;
+        area = areabig,
+        m1 = bad_m1,
+    )
+    @test_throws ArgumentError KPM.optical_cond(mxy, 0.0; area = areabig)
+    @test_throws ArgumentError KPM.optical_cond(
+        mxy,
+        omega_api;
+        area = areabig,
+        lambda = -0.1,
+    )
+    @test_throws ArgumentError KPM.optical_cond(mxy, omega_api; area = 0.0)
 end
