@@ -6,8 +6,6 @@ struct _SpectralNodeFunction{F}
 end
 
 (F::_SpectralNodeFunction)(out, theta) = F.f!(out, theta)
-_spectral_ncomp(F::_SpectralNodeFunction, NC) = F.ncomp
-_spectral_ncomp(F, NC) = NC
 
 """
     chebyshev_delta_theta!(delta, theta)
@@ -106,7 +104,7 @@ function _quad_contract_error(rtol, atol, maxevals, lambda, detail = "")
     return error(
         "spectral quadrature did not meet its error contract$suffix; adjust " *
         "quad_rtol, quad_atol, maxevals, or lambda. A nonzero quad_atol is " *
-        "needed for symmetry-forbidden components that are exactly zero.",
+        "needed for components that vanish by cancellation.",
     )
 end
 
@@ -118,11 +116,17 @@ Integrate `f(cos(theta))*F(theta)` over the occupied part of `(0, pi)`.
 Shifted real-axis Green-function edges are split out and regularized by an
 endpoint-squaring map when `lambda == 0`. The summed QuadGK estimate must
 satisfy `error[k] <= atol + rtol*abs(integral[k])` for every component or the
-call throws. Vector-valued integrands use a scale-estimating first pass and a
-weighted maximum-norm second pass; both share `maxevals`.
+call throws. Vector-valued integrands use a scale-estimating first pass
+followed by up to three weighted maximum-norm passes. After each weighted
+pass, its component scales are checked against the values that pass would
+return; inconsistent scales are recomputed from those values before the next
+pass. Every pass and piece shares one hard `maxevals` node-evaluation budget.
+A component sampled as identically zero throughout the first pass has zero
+first-pass integral and error estimate, is omitted from the weighted norm, and
+is returned as zero.
 """
 function _spectral_integral(
-    F!,
+    F!::_SpectralNodeFunction,
     NC::Integer,
     shifts,
     xF::Real,
@@ -141,7 +145,7 @@ function _spectral_integral(
     maxevals > 0 || throw(ArgumentError("maxevals must be positive"))
     order > 0 || throw(ArgumentError("order must be positive"))
 
-    ncomp = _spectral_ncomp(F!, NC)
+    ncomp = F!.ncomp
     ncomp > 0 || throw(ArgumentError("the node function must have at least one component"))
     empty_integral = zeros(ComplexF64, ncomp)
     isinf(beta_a) && xF <= -1 && return empty_integral, 0.0
@@ -178,11 +182,25 @@ function _spectral_integral(
         k = 1:(length(points)-1)
     )
     evaluations = Ref(0)
+    first_pass_nonzero = falses(ncomp)
+    tracking_first_pass = Ref(true)
     function node(theta)
+        evaluations[] < maxevals || _quad_contract_error(
+            rtol,
+            atol,
+            maxevals,
+            lambda,
+            "maxevals exhausted",
+        )
         evaluations[] += 1
         out = zeros(ComplexF64, ncomp)
         F!(out, theta)
         out .*= _spectral_fermi(cos(theta), xF, beta_a)
+        if tracking_first_pass[]
+            @inbounds for k in eachindex(out)
+                first_pass_nonzero[k] |= !iszero(out[k])
+            end
+        end
         return out
     end
 
@@ -218,6 +236,10 @@ function _spectral_integral(
             )
         catch err
             err isa InterruptException && rethrow()
+            err isa ErrorException && startswith(
+                err.msg,
+                "spectral quadrature did not meet its error contract",
+            ) && rethrow()
             _quad_contract_error(rtol, atol, maxevals, lambda, sprint(showerror, err))
         end
     end
@@ -247,6 +269,7 @@ function _spectral_integral(
     piece_rtol = rtol / (10piece_count)
     piece_atol = atol / (10piece_count)
     first_integral, first_error = integrate_pass(piece_rtol, piece_atol, LinearAlgebra.norm)
+    tracking_first_pass[] = false
     first_error <= atol + rtol * LinearAlgebra.norm(first_integral) ||
         _quad_contract_error(
             rtol,
@@ -257,29 +280,51 @@ function _spectral_integral(
         )
     ncomp == 1 && return first_integral, first_error
 
+    exact_zero = iszero.(first_integral) .& .!first_pass_nonzero
+    all(exact_zero) && return first_integral, first_error
+    active = findall(!, exact_zero)
     scales = atol .+ rtol .* abs.(first_integral)
-    any(iszero, scales) && _quad_contract_error(
+    any(k -> iszero(scales[k]), active) && _quad_contract_error(
         rtol,
         atol,
         maxevals,
         lambda,
-        "quad_atol is required for exactly-zero components",
+        "quad_atol is required for components that vanish by cancellation",
     )
-    weights = inv.(scales)
-    component_norm = x -> maximum(k -> abs(x[k]) * weights[k], eachindex(weights))
-    integral, weighted_error = integrate_pass(
-        0.0,
-        1 / (10piece_count),
-        component_norm,
-    )
-    weighted_error <= 1 || _quad_contract_error(
-        rtol,
-        atol,
-        maxevals,
-        lambda,
-        "maximum scaled estimated error $weighted_error",
-    )
-    return integral, weighted_error
+
+    # Scale consistency is checked against the values returned by each
+    # weighted pass. At most three weighted passes are allowed: a failed check
+    # updates the scales from the latest values, and the third failure throws.
+    for weighted_pass = 1:3
+        weights = zeros(Float64, ncomp)
+        weights[active] .= inv.(scales[active])
+        component_norm = x -> maximum(k -> abs(x[k]) * weights[k], active)
+        integral, weighted_error = integrate_pass(
+            0.0,
+            1 / (10piece_count),
+            component_norm,
+        )
+        integral[exact_zero] .= 0
+        weighted_error <= 1 || _quad_contract_error(
+            rtol,
+            atol,
+            maxevals,
+            lambda,
+            "maximum scaled estimated error $weighted_error",
+        )
+        returned_scales = atol .+ rtol .* abs.(integral)
+        all(k -> scales[k] <= returned_scales[k], active) &&
+            return integral, weighted_error
+        weighted_pass == 3 && _quad_contract_error(
+            rtol,
+            atol,
+            maxevals,
+            lambda,
+            "component scales remained inconsistent after 3 weighted passes",
+        )
+        scales .= returned_scales
+    end
+    error("unreachable")
 end
 
 function _lambda_coefficients(

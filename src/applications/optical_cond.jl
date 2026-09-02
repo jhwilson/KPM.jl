@@ -1,8 +1,17 @@
-function _check_optical_inputs(mu, NC, lambda = 0.0)
+function _check_optical_inputs(mu, NC, lambda = 0.0; omega_tilde = nothing)
     lambda >= 0 || throw(ArgumentError("lambda must be nonnegative (got $lambda)"))
     NC > 0 || throw(ArgumentError("NC must be positive"))
     all(size(mu, d) >= NC for d = 1:ndims(mu)) ||
         throw(ArgumentError("NC exceeds the supplied moment dimensions"))
+    if omega_tilde !== nothing && iszero(lambda) && abs(omega_tilde) == 2
+        throw(
+            ArgumentError(
+                "the shifted band edge coincides with the bare-band endpoint at " *
+                "|omega_tilde| = 2; lambda > 0 (λ > 0) is required to " *
+                "regularize the logarithmic singularity.",
+            ),
+        )
+    end
     return nothing
 end
 
@@ -20,8 +29,8 @@ multiply by `2pi*D/(A*a)`, or use [`optical_cond`](@ref).
 The moments are kernel- and `hn`-improved on the host. At zero temperature
 `Lambda_n` is analytic; finite-temperature quadrature enforces
 `error <= quad_atol + quad_rtol*abs(I)` on the scalar contracted integrand and
-throws if `maxevals` is insufficient. A nonzero `quad_atol` is needed for an
-exactly zero result.
+throws if `maxevals` is insufficient. A nonzero `quad_atol` is needed for a
+component that vanishes by cancellation.
 """
 function optical_cond1(
     mu1,
@@ -122,8 +131,11 @@ rescaled energy (`beta = beta_physical*a`); finite `lambda` replaces JL's
 `i0` by `i*lambda`. For a two-dimensional result in `e^2/h`, multiply by
 `2pi*D/(A*a^2)`, or use [`optical_cond`](@ref). The adaptive integral
 enforces `error[k] <= quad_atol + quad_rtol*abs(I[k])` for every batched
-component and throws if `maxevals` is insufficient; exactly zero components
-require nonzero `quad_atol`. Cost is `O(N_nodes*NC^2)`.
+component and throws if `maxevals` is insufficient. Exact-zero components are
+returned as zero, while components that vanish by cancellation require a
+nonzero `quad_atol`. When `abs(omega_tilde) == 2`, the unregularized integral
+has a logarithmic endpoint singularity and therefore requires `lambda > 0`.
+Cost is `O(N_nodes*NC^2)`.
 """
 function optical_cond2(
     mu2,
@@ -169,7 +181,7 @@ function optical_cond2(
     iszero(omega_tilde) &&
         throw(ArgumentError("optical conductivity is singular at omega = 0"))
     for mu in mus
-        _check_optical_inputs(mu, NC, lambda)
+        _check_optical_inputs(mu, NC, lambda; omega_tilde = omega_tilde)
     end
     mu_tilde = tuple(
         (maybe_to_host(mu2D_apply_kernel_and_h(view(mu, 1:NC, 1:NC), Int(NC), kernel)) for mu in mus)...,

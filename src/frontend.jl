@@ -412,7 +412,10 @@ low-frequency cancellation before the quadrature error estimate. The integral
 must satisfy `error[k] <= quad_atol + quad_rtol*abs(I[k])` for every batched
 component; otherwise it throws with the available tolerance,
 evaluation-budget, and broadening knobs. A nonzero `quad_atol` is needed for
-exactly zero components. Cost is `O(N_nodes*NC^2)` per tensor component.
+components that vanish by cancellation; exact-zero components are returned as
+zero. When `abs(omega) == 2a`, the unregularized integral has a logarithmic
+endpoint singularity and therefore requires `lambda > 0`. Cost is
+`O(N_nodes*NC^2)` per tensor component.
 """
 function optical_cond(
     m2::ConductivityMoments,
@@ -488,6 +491,16 @@ function optical_cond(
         m1s
     end
 
+    omega_tilde = omega / reference.a
+    lambda_tilde = lambda / reference.a
+    for moments in m2s
+        _check_optical_inputs(
+            moments.mu,
+            NC,
+            lambda_tilde;
+            omega_tilde = omega_tilde,
+        )
+    end
     mu2s = tuple(
         (maybe_to_host(mu2D_apply_kernel_and_h(m.mu, NC, kernel)) for m in m2s)...,
     )
@@ -499,8 +512,6 @@ function optical_cond(
             m in current
         )...,
     )
-    omega_tilde = omega / reference.a
-    lambda_tilde = lambda / reference.a
     xF = (Ef - reference.b) / reference.a
     beta_a = beta * reference.a
     F! = _typed_optical_node_function(

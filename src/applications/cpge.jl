@@ -168,9 +168,10 @@ Unregularized calls at any of the listed coincidences throw.
 
 Adaptive quadrature reuses the shared shifted-edge breakpoints and endpoint
 maps and requires `error <= quad_atol + quad_rtol*abs(integral)`. It throws
-if `maxevals` is insufficient; symmetry-forbidden zero components need a
-nonzero `quad_atol`. Exclusion-annulus boundaries are additional finite-jump
-breakpoints. Cost is `O(N_nodes*NC^3)` with `O(NC^2)` node workspace.
+if `maxevals` is insufficient; a nonzero `quad_atol` is needed for components
+that vanish by cancellation. Exact-zero components are returned as zero.
+Exclusion-annulus boundaries are additional finite-jump breakpoints. Cost is
+`O(N_nodes*NC^3)` with `O(NC^2)` node workspace.
 """
 function cpge(
     mu3,

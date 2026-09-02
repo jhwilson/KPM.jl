@@ -533,7 +533,67 @@ end
     @info "unequal-scale optical batch component errors" component_errors
     @test all(component_errors .< 1e-8)
 
+    NCcancel = 32
     identity_kernel = (n, N) -> 1.0
+    omega_cancel, xF_cancel, lambda_cancel = 0.3, 0.2, 0.02
+    function fixed_basis_reference(i, j)
+        delta = zeros(ComplexF64, NCcancel)
+        gR = similar(delta)
+        gA = similar(delta)
+        coefficient = _ref_hn(i - 1) * _ref_hn(j - 1)
+        node(theta) = begin
+            KPM.chebyshev_delta_theta!(delta, theta)
+            xnode = cos(theta)
+            KPM.green_coefficients!(gR, xnode + omega_cancel, lambda_cancel, Val(:R))
+            KPM.green_coefficients!(gA, xnode - omega_cancel, lambda_cancel, Val(:A))
+            coefficient * (gR[i] * delta[j] + delta[i] * gA[j]) *
+            KPM._spectral_fermi(xnode, xF_cancel, Inf)
+        end
+        points = Float64[acos(xF_cancel), pi]
+        for shift in (omega_cancel, -omega_cancel), edge in (-1.0, 1.0)
+            xstar = edge - shift
+            -1 < xstar < 1 && push!(points, acos(xstar))
+        end
+        sort!(unique!(points))
+        integral = first(quadgk(
+            node,
+            points...;
+            rtol = 1e-13,
+            atol = 1e-16,
+            order = 63,
+        ))
+        return (-im / omega_cancel) * integral
+    end
+
+    mu_A = zeros(ComplexF64, NCcancel, NCcancel)
+    mu_B = zeros(ComplexF64, NCcancel, NCcancel)
+    cancel_order = 12
+    mu_A[1, 1] = 1
+    mu_B[cancel_order, cancel_order] = 1
+    ref_A = fixed_basis_reference(1, 1)
+    ref_B = fixed_basis_reference(cancel_order, cancel_order)
+    epsilon = 1e-6
+    mu_cancel = mu_A - (1 - epsilon) * (ref_A / ref_B) * mu_B
+    # The second reference follows from linearity of the two independently
+    # integrated basis tables, avoiding a cancellation-limited oracle call.
+    references = [ref_A, epsilon * ref_A]
+    cancel_atol, cancel_rtol = 2e-14, 1e-8
+    cancellation_batch = KPM.optical_cond2(
+        (mu_A, mu_cancel),
+        NCcancel,
+        omega_cancel;
+        E_f = xF_cancel,
+        lambda = lambda_cancel,
+        kernel = identity_kernel,
+        quad_rtol = cancel_rtol,
+        quad_atol = cancel_atol,
+    )
+    cancellation_errors = abs.(cancellation_batch .- references)
+    cancellation_bounds = cancel_atol .+ cancel_rtol .* abs.(references)
+    @info "cancellation-dominated optical batch errors" cancellation_errors cancellation_bounds
+    @test abs(references[2]) < 2epsilon * abs(references[1])
+    @test all(cancellation_errors .<= cancellation_bounds)
+
     mu1_high = zeros(ComplexF64, NCscale)
     mu1_high[end] = 1
     beta_high, xF_high = 12.0, 0.2
@@ -589,6 +649,90 @@ end
         for x in grid2] rtol = 1e-12
 end
 
+@testset "spectral integrator contracts" begin
+    one_calls = Ref(0)
+    one_component! = function (out, theta)
+        one_calls[] += 1
+        out[1] = 1
+        return out
+    end
+    one_value, _ = KPM._spectral_integral(
+        KPM._SpectralNodeFunction(one_component!, 1),
+        4,
+        (),
+        1.0,
+        Inf,
+        0.01;
+        atol = 1e-12,
+    )
+    @test one_value ≈ ComplexF64[pi] rtol = 1e-12
+
+    three_component! = function (out, theta)
+        out .= (1, 2, -3im)
+        return out
+    end
+    three_value, _ = KPM._spectral_integral(
+        KPM._SpectralNodeFunction(three_component!, 3),
+        2,
+        (),
+        1.0,
+        Inf,
+        0.01;
+        atol = 1e-12,
+    )
+    @test three_value ≈ pi .* ComplexF64[1, 2, -3im] rtol = 1e-12
+
+    function budget_outcome(maxevals; ncomp = 1, shifts = (), breakpoints = ())
+        calls = Ref(0)
+        counted! = function (out, theta)
+            calls[] += 1
+            for k in eachindex(out)
+                out[k] = k + cos((2k + 1) * theta)
+            end
+            return out
+        end
+        outcome = try
+            KPM._spectral_integral(
+                KPM._SpectralNodeFunction(counted!, ncomp),
+                4,
+                shifts,
+                1.0,
+                Inf,
+                0.0;
+                rtol = 1e-8,
+                atol = 1e-12,
+                maxevals = maxevals,
+                breakpoints = breakpoints,
+            )
+        catch err
+            err
+        end
+        return calls[], outcome
+    end
+
+    one_piece_calls, one_piece_outcome = budget_outcome(7)
+    @test one_piece_outcome isa ErrorException
+    @test one_piece_calls <= 7
+
+    many_piece_calls, many_piece_outcome = budget_outcome(
+        20;
+        breakpoints = (0.4, 0.8, 1.2),
+    )
+    @test many_piece_outcome isa ErrorException
+    @test many_piece_calls <= 20
+
+    both_singular_calls, both_singular_outcome = budget_outcome(
+        35;
+        shifts = (-0.5, 0.5),
+    )
+    @test both_singular_outcome isa ErrorException
+    @test both_singular_calls <= 35
+
+    two_pass_calls, two_pass_outcome = budget_outcome(30; ncomp = 2)
+    @test !(two_pass_outcome isa Exception)
+    @test two_pass_calls <= 30
+end
+
 @testset "optical input and quadrature errors" begin
     mu = zeros(ComplexF64, 8, 8)
     @test_throws ArgumentError KPM.optical_cond2(mu, 8, 0.0)
@@ -596,18 +740,52 @@ end
     @test_throws ArgumentError KPM.optical_cond2(mu, 8, 0.3; lambda = -0.1)
     @test_throws ErrorException KPM.optical_cond2(
         ones(ComplexF64, 8, 8), 8, 0.3; maxevals = 5)
-    zero_component_error = try
-        KPM.optical_cond2(
-            (ones(ComplexF64, 8, 8), zeros(ComplexF64, 8, 8)),
-            8,
-            0.3,
-        )
+    nonzero_scalar = KPM.optical_cond2(ones(ComplexF64, 8, 8), 8, 0.3)
+    zero_scalar = KPM.optical_cond2(zeros(ComplexF64, 8, 8), 8, 0.3)
+    exact_zero_batch = KPM.optical_cond2(
+        (ones(ComplexF64, 8, 8), zeros(ComplexF64, 8, 8)),
+        8,
+        0.3,
+    )
+    @test exact_zero_batch[1] ≈ nonzero_scalar rtol = 1e-12 atol = 1e-12
+    @test iszero(exact_zero_batch[2])
+    @test exact_zero_batch[2] == zero_scalar
+
+    mu_edge = ones(ComplexF64, 1, 1)
+    edge_error = try
+        KPM.optical_cond2(mu_edge, 1, 2.0)
         nothing
     catch err
         err
     end
-    @test zero_component_error isa ErrorException
-    @test occursin("quad_atol is required", sprint(showerror, zero_component_error))
+    @test edge_error isa ArgumentError
+    @test occursin("lambda > 0", sprint(showerror, edge_error))
+    @test occursin("λ > 0", sprint(showerror, edge_error))
+    @test_throws ArgumentError KPM.optical_cond2(mu_edge, 1, -2.0)
+    @test_throws ArgumentError KPM.optical_cond2((mu_edge, mu_edge), 1, 2.0)
+
+    edge_lambdas = [1e-2, 1e-3, 1e-4]
+    edge_imaginary = [
+        imag(KPM.optical_cond2(
+            mu_edge,
+            1,
+            2.0;
+            lambda = lambda,
+            quad_rtol = 1e-10,
+            quad_atol = 1e-12,
+        )) for lambda in edge_lambdas
+    ]
+    decade_slope = log(10) / (4pi)
+    @test edge_imaginary ≈ [-0.3771920064, -0.5607056905, -0.7439677148] rtol = 1e-3
+    @test abs(edge_imaginary[3] - edge_imaginary[2]) ≈ decade_slope rtol = 1e-3
+
+    typed_edge = KPM.ConductivityMoments(mu_edge, 3.0, 0.2, 1, 1)
+    @test_throws ArgumentError KPM.optical_cond(
+        typed_edge,
+        6.0;
+        area = 1.0,
+        Ef = 0.2,
+    )
 end
 
 @testset "typed optical layer and physical anchors" begin
