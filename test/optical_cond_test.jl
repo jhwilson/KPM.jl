@@ -238,25 +238,26 @@ function _second_current(H, J)
     return sparse(Hd .* displacement .^ 2)
 end
 
-function _lehmann_optical_reference(Hnorm, Ja, Jb, omega, lambda, xF)
+# Exact Lehmann reference for the package regularization: sharp delta(x - H)
+# and Lorentzian-lambda Green's functions (only g_n carries lambda), T = 0 with
+# the Fermi level at xF, rescaled units. This is the NC -> infinity limit of
+# optical_cond2; a reference that also broadens the delta is a different
+# regularization and does not converge to the KPM value.
+function _lehmann_exact_reference(Hnorm, Ja, Jb, omega, lambda, xF)
     F = eigen(Hermitian(Matrix(Hnorm)))
+    E = F.values
     A = F.vectors' * Matrix(Ja) * F.vectors
     B = F.vectors' * Matrix(Jb) * F.vectors
-    lorentz(x, E) = lambda / (pi * ((x - E)^2 + lambda^2))
-    function integrand(x)
-        acc = 0.0 + 0.0im
-        for a in eachindex(F.values), b in eachindex(F.values)
-            greenR = inv(x + omega - F.values[a] + im * lambda)
-            greenA = inv(x - omega - F.values[b] - im * lambda)
-            acc += A[a, b] * B[b, a] * (
-                greenR * lorentz(x, F.values[b]) +
-                lorentz(x, F.values[a]) * greenA
+    occupied(e) = e <= xF ? 1.0 : 0.0
+    acc = 0.0 + 0.0im
+    for a in eachindex(E), b in eachindex(E)
+        acc +=
+            A[a, b] * B[b, a] * (
+                occupied(E[b]) / (E[b] + omega - E[a] + im * lambda) +
+                occupied(E[a]) / (E[a] - omega - E[b] - im * lambda)
             )
-        end
-        return acc / length(F.values)
     end
-    integral = first(quadgk(integrand, -Inf, xF; rtol = 1e-11, atol = 1e-13))
-    return (-im / omega) * integral
+    return (-im / omega) * acc / length(E)
 end
 
 # Small exact-trace Haldane fixture.
@@ -1016,44 +1017,66 @@ end
     end
 
     lehmann_time = @elapsed begin
-        Hsmall, Jxsmall, _, _ =
-            haldane_model(3, 3; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0)
-        Dsmall = size(Hsmall, 1)
-        hsmall = KPM.rescale(Hsmall; center = true)
-        NCsmall = 64
-        psismall = Matrix{ComplexF64}(I, Dsmall, Dsmall)
-        muxx_small = KPM.kpm_2d(
-            hsmall.H,
-            Jxsmall,
-            Jxsmall,
-            NCsmall,
-            Dsmall,
-            Dsmall;
-            psi_in = psismall,
+        # Exact Lehmann anchor at finite frequency (12x12 torus, NC = 256,
+        # exact probes): measured relative differences 5.4e-4, 4.9e-4 (xx at
+        # omega = a, 1.5a) and 1.9e-4, 4.8e-4 (xy); 4e-5 at NC = 1024.
+        lambda_lehmann = 0.1hbig.a
+        lehmann_pref = 2pi * Dbig / (areabig * hbig.a^2)
+        lehmann_cases = ((mxx, m1xx, Jxbig, Jxbig), (mxy, nothing, Jxbig, Jybig))
+
+        # Factor-2 convention pin. Pairing the paper's Delta_n, g_n (which carry
+        # 2/(1 + delta_n0)) with the package's hn = (1, 2, 2, ...) is the same
+        # as feeding the fixed code a table rescaled by hn(n) hn(m): weight 1
+        # on (0,0), 2 on the n = 0 / m = 0 lines, 4 on the bulk. That is not an
+        # overall scale; measured mutant/exact = 1.86, -4.81 (xx), 4.10, 1.18 (xy).
+        hn_vec = Float64[KPM.hn(n) for n = 0:(NCbig-1)]
+        fifth_bug(m::KPM.ConductivityMoments) = KPM.ConductivityMoments(
+            KPM.maybe_to_host(m.mu) .* (hn_vec * hn_vec'),
+            m.a,
+            m.b,
+            m.NH,
+            m.NR,
         )
-        omega_small = 0.5
-        spectrum_small = eigvals(Hermitian(Matrix(Hsmall)))
-        physical_bandwidth = maximum(spectrum_small) - minimum(spectrum_small)
-        lambda_small = 0.02physical_bandwidth / hsmall.a
-        value_small = KPM.optical_cond2(
-            muxx_small,
-            NCsmall,
-            omega_small;
-            E_f = 0.0,
-            lambda = lambda_small,
-            quad_atol = 1e-12,
-        )
-        ref_small = _lehmann_optical_reference(
-            hsmall.H,
-            Jxsmall,
-            Jxsmall,
-            omega_small,
-            lambda_small,
-            0.0,
-        )
-        # At NC=64 the Jackson-smeared, compact-support KPM spectrum differs from
-        # the exact Lorentzian tails; the measured relative difference is 9.95%.
-        @test value_small ≈ ref_small rtol = 0.1
+        fifth_bug(m::KPM.CurrentMoments) =
+            KPM.CurrentMoments(KPM.maybe_to_host(m.mu) .* hn_vec, m.a, m.b, m.NH, m.NR)
+        fifth_bug(::Nothing) = nothing
+
+        for (m2, m1, Ja, Jb) in lehmann_cases, omega_tilde in (1.0, 1.5)
+            exact = real(
+                lehmann_pref * _lehmann_exact_reference(
+                    hbig.H,
+                    Ja,
+                    Jb,
+                    omega_tilde,
+                    lambda_lehmann / hbig.a,
+                    0.0,
+                ),
+            )
+            value = real(
+                KPM.optical_cond(
+                    m2,
+                    omega_tilde * hbig.a;
+                    area = areabig,
+                    Ef = hbig.b,
+                    m1 = m1,
+                    lambda = lambda_lehmann,
+                    quad_atol = 1e-12,
+                ),
+            )
+            @test value ≈ exact rtol = 2e-3
+            mutant = real(
+                KPM.optical_cond(
+                    fifth_bug(m2),
+                    omega_tilde * hbig.a;
+                    area = areabig,
+                    Ef = hbig.b,
+                    m1 = fifth_bug(m1),
+                    lambda = lambda_lehmann,
+                    quad_atol = 1e-12,
+                ),
+            )
+            @test abs(mutant / exact - 1) > 0.1
+        end
     end
 
     @info "typed optical anchor block timings (s)" setup_time typed_bare_time dc_time dissipation_time gauge_time lehmann_time

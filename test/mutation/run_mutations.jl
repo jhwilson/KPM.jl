@@ -85,6 +85,14 @@ const MUTATIONS = [
         ["optical_cond_test.jl"],
     ),
     Mutation(
+        "factor2_convention",
+        "square hn: the paper's 2/(1+delta_n0) applied on top of the package's hn",
+        "src/kernels/kernels.jl",
+        ["hn(n::Integer) = (n!=0) + 1 # h(0) = 1, otherwise 2" =>
+            "hn(n::Integer) = ((n!=0) + 1)^2 # h(0) = 1, otherwise 2"],
+        ["optical_cond_test.jl", "cpge_test.jl"],
+    ),
+    Mutation(
         "cpge_orientation",
         "replace the CPGE coefficient-to-moment slot map by the identity map",
         "src/applications/cpge.jl",
