@@ -312,8 +312,12 @@ function _spectral_integral(
             lambda,
             "maximum scaled estimated error $weighted_error",
         )
+        # 5% slack: the pass-to-pass value change is roundoff/adaptive-path
+        # noise, and a strict comparison would demand |I| to be monotone
+        # between passes (a coin flip per component) and could throw after
+        # three passes on nothing but that noise.
         returned_scales = atol .+ rtol .* abs.(integral)
-        all(k -> scales[k] <= returned_scales[k], active) &&
+        all(k -> scales[k] <= 1.05 * returned_scales[k], active) &&
             return integral, weighted_error
         weighted_pass == 3 && _quad_contract_error(
             rtol,
