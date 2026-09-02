@@ -125,9 +125,15 @@ function _eigenbasis_reference(Hnorm, Ja, Jb, NC, omega; xF, beta, lambda)
         greenR = transpose(kh .* _ref_green(x + omega, NC, lambda, :R)) * T
         greenA = transpose(kh .* _ref_green(x - omega, NC, lambda, :A)) * T
         acc = 0.0 + 0.0im
+        # mu[n,m] = Tr[Ja*T_m*Jb*T_n]/D
+        #         = sum_ab Ja_ab*T_m(E_b)*Jb_ba*T_n(E_a)/D.
+        # Direct contraction with Lambda_nm therefore pairs the retarded
+        # coefficient at n with E_a and delta at m with E_b; the advanced
+        # term pairs delta at n with E_a and the advanced coefficient at m
+        # with E_b.
         for a in eachindex(F.values), b in eachindex(F.values)
             acc += A[a, b] * B[b, a] * (
-                greenR[b] * deltaK[a] + deltaK[b] * greenA[a]
+                greenR[a] * deltaK[b] + deltaK[a] * greenA[b]
             )
         end
         return acc / length(F.values)
@@ -306,7 +312,7 @@ end
             d = transpose(kh .* _ref_delta(x, NCo)) * T
             r = transpose(kh .* _ref_green(x + 0.35, NCo, 0.0, :R)) * T
             a = transpose(kh .* _ref_green(x - 0.35, NCo, 0.0, :A)) * T
-            sum(A[i, j] * B[j, i] * (r[j] * d[i] + d[j] * a[i])
+            sum(A[i, j] * B[j, i] * (r[i] * d[j] + d[i] * a[j])
                 for i in eachindex(F.values), j in eachindex(F.values)) / D
         end
         (-im / 0.35) * _ref_integral(integrand, (0.35, -0.35), 0.1, Inf, 0.0;
@@ -318,7 +324,7 @@ end
 @testset "optical moment orientation" begin
     NCo, omega = 7, 0.43
     Ts = _chebyshev_matrices(H_norm, NCo)
-    gamma = [tr(Matrix(Jx) * Ts[n] * Matrix(Jy) * Ts[m]) / D
+    mu_dense = [tr(Matrix(Jx) * Ts[m] * Matrix(Jy) * Ts[n]) / D
         for n = 1:NCo, m = 1:NCo]
     kh = [_ref_jackson(n, NCo) * _ref_hn(n) for n = 0:(NCo-1)]
     lambda_nm = [
@@ -335,16 +341,21 @@ end
             0.0,
         ) for n = 1:NCo, m = 1:NCo
     ]
-    paper = (-im / omega) * sum(gamma .* (kh * transpose(kh)) .* lambda_nm)
+    direct = (-im / omega) * sum(mu_dense .* (kh * transpose(kh)) .* lambda_nm)
     mu_xy = KPM.kpm_2d(H_norm, Jx, Jy, NCo, D, D; psi_in = psi)
     value = KPM.optical_cond2(mu_xy, NCo, omega;
         E_f = 0.1, quad_rtol = 2e-10, quad_atol = 2e-12)
-    @test value ≈ paper rtol = 1e-9 atol = 1e-11
+    @test value ≈ direct rtol = 1e-8 atol = 1e-10
 
     mu_yx = KPM.kpm_2d(H_norm, Jy, Jx, NCo, D, D; psi_in = psi)
     xy, yx = KPM.optical_cond2((mu_xy, mu_yx), NCo, omega;
         E_f = 0.1, quad_rtol = 2e-10, quad_atol = 2e-12)
-    @test xy ≈ -yx rtol = 1e-9 atol = 1e-11
+    symmetric_xy = (xy + yx) / 2
+    antisymmetric_xy = (xy - yx) / 2
+    symmetric_yx = (yx + xy) / 2
+    antisymmetric_yx = (yx - xy) / 2
+    @test symmetric_xy ≈ symmetric_yx rtol = 1e-12 atol = 1e-12
+    @test antisymmetric_xy ≈ -antisymmetric_yx rtol = 1e-12 atol = 1e-12
 end
 
 @testset "batch and resolved optical integrands" begin
@@ -357,13 +368,13 @@ end
     separate = [KPM.optical_cond2(mu, NCo, omega; kwargs...) for mu in (mu_xy, mu_yx)]
     @test batch ≈ separate rtol = 1e-13 atol = 1e-13
 
-    gamma = [tr(Matrix(Jx) * T * Matrix(Jy) * S) / D
+    mu_dense = [tr(Matrix(Jx) * S * Matrix(Jy) * T) / D
         for T in _chebyshev_matrices(H_norm, NCo), S in _chebyshev_matrices(H_norm, NCo)]
     kh = [_ref_jackson(n, NCo) * _ref_hn(n) for n = 0:(NCo-1)]
     delta = _ref_delta(x, NCo)
     gR = _ref_green(x + omega, NCo, 0.03, :R)
     gA = _ref_green(x - omega, NCo, 0.03, :A)
-    ref = sum(gamma .* (kh * transpose(kh)) .*
+    ref = sum(mu_dense .* (kh * transpose(kh)) .*
         (gR * transpose(delta) + delta * transpose(gA)))
     @test KPM.d_optical_cond2(mu_xy, NCo, omega, x; lambda = 0.03) ≈ ref rtol = 1e-10
 

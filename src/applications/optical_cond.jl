@@ -58,9 +58,9 @@ function _optical_node_function(mus, NC, omega_tilde, lambda)
         green_coefficients!(gR, x + omega_tilde, lambda, Val(:R))
         green_coefficients!(gA, x - omega_tilde, lambda, Val(:A))
         @inbounds for k in eachindex(mus)
-            mul!(rightR[k], mus[k], gR)
-            mul!(rightD[k], mus[k], delta)
-            out[k] = sum(delta .* rightR[k]) + sum(gA .* rightD[k])
+            mul!(rightR[k], mus[k], delta)
+            mul!(rightD[k], mus[k], gA)
+            out[k] = sum(gR .* rightR[k]) + sum(delta .* rightD[k])
         end
         return out
     end
@@ -74,10 +74,14 @@ end
 
 Return the bare paramagnetic optical term `(-im/omega_tilde) integral B` in
 rescaled units. Here
-`B = Delta'*(mu2_tilde*gR) + gA'*(mu2_tilde*Delta)`, with plain transposes.
-Package moments obey `mu2[n,m] = Tr[Jalpha T_m Jbeta T_n]/D`, so the paper
-tensor is `Gamma_nm = mu2[m,n]`; the displayed contraction implements that
-map without transposing the stored table.
+`B = gR'*(mu2_tilde*Delta) + Delta'*(mu2_tilde*gA)`, with plain transposes.
+The package table `mu2[n,m] = Tr[Jalpha T_m Jbeta T_n]/D` is contracted
+directly with `Lambda_nm`. This orientation reproduces [`kubo_bastin_cond`](@ref)
+as `omega_tilde -> 0`, including the package's ED/FHS-anchored Hall convention:
+`Jalpha` is the response direction, `Jbeta` is the field direction, and
+`sigma_xy = +C`. In the labels of Joao--Lopes Eqs. 26, 42, and 44, the same
+quantity is their `sigma^{beta alpha}` because the two textbook Kubo forms
+differ by exactly this index relabeling.
 
 `E_f`, `omega_tilde`, and `lambda` are rescaled; finite `lambda` replaces
 JL's `i0` by `i*lambda`. For a two-dimensional result in `e^2/h`, multiply
@@ -183,8 +187,13 @@ end
     d_optical_cond2(mu2, NC, omega_tilde, x; lambda=0, kernel=JacksonKernel)
 
 The rescaled-energy paramagnetic integrand per unit `dx`. The package layout
-is `mu2[n,m] = Tr[Jalpha T_m Jbeta T_n]/D`, equivalent to paper
-`Gamma_nm = mu2[m,n]`. `lambda >= 0` is the rescaled Green broadening.
+`mu2[n,m] = Tr[Jalpha T_m Jbeta T_n]/D` is contracted directly with
+`Lambda_nm`. This is the orientation whose zero-frequency limit matches
+[`kubo_bastin_cond`](@ref): `Jalpha` is response, `Jbeta` is field, and
+`sigma_xy = +C` in the package's ED/FHS-anchored convention. In the labels of
+Joao--Lopes Eqs. 26, 42, and 44, this is their `sigma^{beta alpha}` because
+the two textbook Kubo forms differ by exactly this relabeling.
+`lambda >= 0` is the rescaled Green broadening.
 """
 function d_optical_cond2(
     mu2,
@@ -201,7 +210,7 @@ function d_optical_cond2(
     gA = similar(gR)
     green_coefficients!(gR, x + omega_tilde, lambda, Val(:R))
     green_coefficients!(gA, x - omega_tilde, lambda, Val(:A))
-    return ComplexF64(sum(delta .* (mu_tilde * gR)) + sum(gA .* (mu_tilde * delta)))
+    return ComplexF64(sum(gR .* (mu_tilde * delta)) + sum(delta .* (mu_tilde * gA)))
 end
 
 function d_optical_cond2(

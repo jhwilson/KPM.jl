@@ -67,10 +67,10 @@ const MUTATIONS = [
         "transpose the stored 2D moment table in the optical node contraction",
         "src/applications/optical_cond.jl",
         [
-            "            mul!(rightR[k], mus[k], gR)" =>
-                "            mul!(rightR[k], transpose(mus[k]), gR)",
-            "            mul!(rightD[k], mus[k], delta)" =>
-                "            mul!(rightD[k], transpose(mus[k]), delta)",
+            "            mul!(rightR[k], mus[k], delta)" =>
+                "            mul!(rightR[k], transpose(mus[k]), delta)",
+            "            mul!(rightD[k], mus[k], gA)" =>
+                "            mul!(rightD[k], transpose(mus[k]), gA)",
         ],
         ["optical_cond_test.jl"],
     ),
