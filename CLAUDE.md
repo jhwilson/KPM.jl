@@ -19,7 +19,7 @@ julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 
 # Single test file: most need only KPM + Test
 julia --project=. -e 'using Test, KPM; include("test/dos_test.jl")'
-# …but integration_test.jl (JLD2) and optional_cuda_test.jl (CUDA) need the
+# …but optional_cuda_test.jl (CUDA) needs the
 # test extras — run those through Pkg.test() or a TestEnv-activated session.
 
 # Docs (Documenter.jl; deployed from main by CI). The committed

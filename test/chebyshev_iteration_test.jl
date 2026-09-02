@@ -1,5 +1,6 @@
 using Test
 using LinearAlgebra
+using Random
 using SparseArrays
 using KPM
 
@@ -11,11 +12,13 @@ NH = 4
 NR = 2
 Niter = 6
 
-Hrand = randn(ComplexF64, NH, NH) + 1im * randn(ComplexF64, NH, NH)
+rng = Xoshiro(1234)
+
+Hrand = randn(rng, ComplexF64, NH, NH) + 1im * randn(rng, ComplexF64, NH, NH)
 H = (Hrand + Hrand') / 2
 
-ψ0 = randn(ComplexF64, NH, NR) + 1im * randn(ComplexF64, NH, NR)
-ψ1 = randn(ComplexF64, NH, NR) + 1im * randn(ComplexF64, NH, NR)
+ψ0 = randn(rng, ComplexF64, NH, NR) + 1im * randn(rng, ComplexF64, NH, NR)
+ψ1 = randn(rng, ComplexF64, NH, NR) + 1im * randn(rng, ComplexF64, NH, NR)
 
 ψall = zeros(ComplexF64, NH, NR, Niter)
 ψall[:, :, 1] .= ψ0

@@ -92,6 +92,54 @@ end
     @test mu2x ≈ 4 .* mu1x rtol = 1e-10
 end
 
+@testset "kpm_1d force_norm=true == pre-normalized probes" begin
+    # `force_norm` calls normalize_by_col on psi_in *in place* before the
+    # recurrence, so unequal-norm columns must give exactly the moments of the
+    # column-normalized probes. rtol = 1e-12: identical arithmetic, the only
+    # difference is when the division by the column norm happens.
+    rng = Xoshiro(19)
+    NH = 48
+    NC = 16
+    NR = 4
+    A = randn(rng, ComplexF64, NH, NH)
+    H = sparse((A + A') / (2 * NH))
+
+    scales = reshape([1.0, 5.0, 0.2, 12.0], 1, NR)   # deliberately unequal norms
+    psi_raw = KPM.random_phase_vectors(rng, NH, NR) .* scales
+
+    p_forced = copy(psi_raw)
+    mu_forced = KPM.kpm_1d(H, NC, NR; psi_in = p_forced, force_norm = true)
+    p_pre = copy(psi_raw)
+    KPM.normalize_by_col(p_pre, NR)
+    mu_pre = KPM.kpm_1d(H, NC, NR; psi_in = p_pre)
+    @test mu_forced ≈ mu_pre rtol = 1e-12
+
+    # force_norm normalizes psi_in in place (documented side effect)
+    @test p_forced ≈ p_pre rtol = 1e-12
+
+    # counterfactual: without force_norm the moments carry the |ψ|² factors,
+    # so they must differ by far more than the tolerance above
+    mu_raw = KPM.kpm_1d(H, NC, NR; psi_in = copy(psi_raw))
+    @test !isapprox(mu_raw, mu_pre; rtol = 1e-3)
+
+    # same for the independent bra/ket branch of kpm_1d
+    psi_l = KPM.random_phase_vectors(Xoshiro(21), NH, NR) .* scales
+    psi_r = KPM.random_phase_vectors(Xoshiro(22), NH, NR) .* reverse(scales, dims = 2)
+    mu_lr_forced = KPM.kpm_1d(
+        H,
+        NC,
+        NR;
+        psi_in_l = copy(psi_l),
+        psi_in_r = copy(psi_r),
+        force_norm = true,
+    )
+    pl, pr = copy(psi_l), copy(psi_r)
+    KPM.normalize_by_col(pl, NR)
+    KPM.normalize_by_col(pr, NR)
+    mu_lr_pre = KPM.kpm_1d(H, NC, NR; psi_in_l = pl, psi_in_r = pr)
+    @test mu_lr_forced ≈ mu_lr_pre rtol = 1e-12
+end
+
 @testset "dos energy derivative (dE_order=1)" begin
     rng = Xoshiro(17)
     NH = 256
@@ -99,7 +147,7 @@ end
     A = randn(rng, ComplexF64, NH, NH)
     H = sparse((A + A') / 2)
     a, H_norm = KPM.normalizeH(H)
-    mu = KPM.kpm_1d(H_norm, NC, 8)
+    mu = KPM.kpm_1d(H_norm, NC, 8; psi_in = KPM.random_phase_vectors(Xoshiro(18), NH, 8))
 
     E_grid = collect(range(-0.4a, 0.4a; length = 9))
     _, drho = KPM.dos(mu, a; E_grid = E_grid, N_tilde = length(E_grid), dE_order = 1)

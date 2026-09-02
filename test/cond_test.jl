@@ -1,5 +1,6 @@
 using Test
 using LinearAlgebra
+using SparseArrays
 using Random
 using KPM
 
@@ -37,6 +38,97 @@ end
     dσ = KPM.d_dc_cond(mu, a, [0.3, 2.5 * a])
     @test isfinite(dσ[1])
     @test dσ[2] == 0.0
+end
+
+@testset "d_dc_cond(dE_order=1) vs central finite differences" begin
+    # The dE_order = 1 path differentiates the same reconstruction through
+    # Zygote.forwarddiff, so it must reproduce a finite-difference derivative
+    # of the dE_order = 0 curve.
+    #
+    # Step size: the fourth-order central stencil
+    #   f'(E) ≈ [f(E-2h) - 8f(E-h) + 8f(E+h) - f(E+2h)] / (12h)
+    # has truncation error h⁴ f⁽⁵⁾/30. Measured relative deviation from the
+    # analytic derivative at this μ, NC = 16, a = 1.7:
+    #   h/a = 1e-2 → 1.1e-5,  3e-3 → 8.8e-8,  1e-3 → 1.1e-9   (h⁴ scaling).
+    # Roundoff is eps·|f|/(h|f'|) ≈ 1e-14 at h = 1e-3·a, so the total error at
+    # that step is ~1e-9 — two orders below the 1e-7 tolerance asserted here.
+    rng = Xoshiro(8)
+    NC = 16
+    a = 1.7
+    b = 0.35
+    mu = randn(rng, ComplexF64, NC, NC)
+    f0(E) = KPM.d_dc_cond(mu, a, [E]; b = b, NC = NC)[1]
+    h = 1e-3 * a
+    for E in (b - 0.5a, b + 0.3a, b + 0.72a)
+        d1 = KPM.d_dc_cond(mu, a, [E]; b = b, NC = NC, dE_order = 1)[1]
+        fd = (f0(E - 2h) - 8 * f0(E - h) + 8 * f0(E + h) - f0(E + 2h)) / (12h)
+        @test d1 ≈ fd rtol = 1e-7
+    end
+
+    # scalar-energy method delegates to the array one
+    @test KPM.d_dc_cond(mu, a, b + 0.3a; b = b, NC = NC, dE_order = 1) ==
+          KPM.d_dc_cond(mu, a, [b + 0.3a]; b = b, NC = NC, dE_order = 1)
+end
+
+@testset "d_dc_cond(dE_order=2) is currently unsupported" begin
+    # PINNED LIMITATION. The throw originates in Zygote's `forward_jacobian`
+    # when Zygote.forwarddiff is nested, not mutation in Γnmμnmαβ (which is
+    # now a pure matvec pair in src/applications/dc_cond_util.jl:21). The
+    # replacement check is the fourth-order second-derivative stencil below.
+    rng = Xoshiro(8)
+    NC = 16
+    a = 1.7
+    b = 0.35
+    mu = randn(rng, ComplexF64, NC, NC)
+    E = b
+    f0(E) = KPM.d_dc_cond(mu, a, [E]; b = b, NC = NC)[1]
+    h = 1e-3 * a  # documented step: balances this stencil's O(h⁴) truncation and roundoff
+    stencil = (-f0(E + 2h) + 16f0(E + h) - 30f0(E) + 16f0(E - h) - f0(E - 2h)) /
+              (12h^2)
+    d2 = try
+        KPM.d_dc_cond(mu, a, [E]; b = b, NC = NC, dE_order = 2)[1]
+    catch
+        NaN
+    end
+    @test_broken d2 ≈ stencil rtol = 1e-7
+end
+
+@testset "kpm_2d moment_parity selects the documented index parity" begin
+    # `moment_parity=:ODD` keeps μnm with mod(n+m, 2) == 1 (0-based n, m) and
+    # zeroes the rest; `:EVEN` keeps the complement. The kept entries must be
+    # bit-identical to the :NONE calculation — the parity option only skips
+    # work, it must not change any number.
+    rng = Xoshiro(31)
+    D = 10
+    NC = 8
+    A = randn(rng, ComplexF64, D, D)
+    Hd = (A + A') / 2
+    Hd ./= (2 * maximum(abs, eigvals(Hermitian(Hd))))
+    H = sparse(Hd)
+    Jα = sparse(randn(rng, ComplexF64, D, D))
+    Jβ = sparse(randn(rng, ComplexF64, D, D))
+    psi = Matrix{ComplexF64}(I, D, D)          # exact trace
+
+    mu_none = KPM.kpm_2d(H, Jα, Jβ, NC, D, D; psi_in = psi, moment_parity = :NONE)
+    mu_odd = KPM.kpm_2d(H, Jα, Jβ, NC, D, D; psi_in = psi, moment_parity = :ODD)
+    mu_even = KPM.kpm_2d(H, Jα, Jβ, NC, D, D; psi_in = psi, moment_parity = :EVEN)
+
+    mask_odd = [mod((n - 1) + (m - 1), 2) == 1 for n = 1:NC, m = 1:NC]
+    @test mu_odd == mu_none .* mask_odd
+    @test mu_even == mu_none .* .!mask_odd
+    @test mu_odd .+ mu_even == mu_none
+    @test count(!iszero, mu_odd) == NC^2 ÷ 2
+
+    @test_throws ArgumentError KPM.kpm_2d(
+        H,
+        Jα,
+        Jβ,
+        NC,
+        D,
+        D;
+        psi_in = psi,
+        moment_parity = :SOMETHING,
+    )
 end
 
 @testset "kernel application: no-mutate variants match" begin
