@@ -85,6 +85,40 @@ end
     @test σxy_kpm ≈ σxy_ed atol = 0.03
 end
 
+@testset "currents must come from the unrescaled H: the a² counterfactual" begin
+    # Package convention (CLAUDE.md, kubo_bastin_cond docstring): the bond
+    # currents are (J_α)_ij = H_ij (r_i - r_j)_α built from the ORIGINAL H.
+    # Applying the same rule to H_norm = (H - b I)/a instead scales every
+    # off-diagonal entry by 1/a — the b-shift is diagonal and carries no
+    # displacement — so both current operators shrink by a, the moments by a²,
+    # and, since σ ∝ Re[Γ μ̃]/a² is linear in μ, the reported σ by a².
+    #
+    # The bond displacements are recovered from the model's own J and H (they
+    # are user data, not something inferred from the matrix) and the bond rule
+    # is then re-applied to H_norm, so the counterfactual really is "the same
+    # construction on the wrong Hamiltonian".
+    Hd = Matrix(H)
+    Hnd = Matrix(H_norm)
+    disp(Jm) = [abs(Hd[i, j]) > 0 ? Jm[i, j] / Hd[i, j] : 0.0 + 0im for i = 1:D, j = 1:D]
+    dxm, dym = disp(Matrix(Jx)), disp(Matrix(Jy))
+    Jx_wrong = sparse(Hnd .* dxm)
+    Jy_wrong = sparse(Hnd .* dym)
+    @test Jx_wrong ≈ Jx ./ a rtol = 1e-12          # the claim above, checked
+    @test Jy_wrong ≈ Jy ./ a rtol = 1e-12
+
+    mu_wrong = KPM.kpm_2d(H_norm, Jx_wrong, Jy_wrong, NC, D, D; psi_in = psi)
+    @test mu_wrong ≈ mu2D_xy ./ a^2 rtol = 1e-10   # moment-level statement
+
+    σ_right = KPM.kubo_bastin_cond(mu2D_xy, a, 0.0; b = b, NH = D, area = area)
+    σ_wrong = KPM.kubo_bastin_cond(mu_wrong, a, 0.0; b = b, NH = D, area = area)
+    σxy_ed = ed_hall_conductivity_T0(H, Jx, Jy, area; Ef = 0.0)
+
+    @test σ_right ≈ σxy_ed atol = 0.03             # correct convention: matches ED
+    @test σ_wrong ≈ σ_right / a^2 rtol = 1e-10     # wrong convention: off by a²
+    @test a^2 > 5                                  # ...and a² is not close to 1,
+    @test !isapprox(σ_wrong, σxy_ed; atol = 0.3)   # so the error is not subtle
+end
+
 @testset "σ_xx: zero in the gap, matches broadened ED in the band" begin
     # insulating: no longitudinal response at Ef in the gap
     σxx_gap = KPM.kubo_bastin_cond(mu2D_xx, a, 0.0; b = b, NH = D, area = area)

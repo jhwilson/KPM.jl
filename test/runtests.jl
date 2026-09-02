@@ -42,6 +42,14 @@ end
     include("kubo_bastin_test.jl")
 end
 
+@testset "optical conductivity (applications/optical_cond.jl)" begin
+    include("optical_cond_test.jl")
+end
+
+@testset "CPGE and 3D moments (applications/cpge.jl)" begin
+    include("cpge_test.jl")
+end
+
 @testset "thermoelectric vs exact diagonalization" begin
     include("thermoelectric_test.jl")
 end

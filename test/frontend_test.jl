@@ -170,10 +170,32 @@ end
         b = 0.2,
     )
 
+    # DOS sum rule, deterministically. With unit-norm probes μ₀ = Tr[T₀]/D = 1
+    # exactly (identity probes make the stochastic trace exact), and
+    # ∫_{-1}^{1} Tₙ(x)/(π√(1-x²)) dx = δ_{n0} with g₀ = h₀ = 1 for every
+    # kernel, so ∫ρ dE = 1 identically. Evaluating that integral with the
+    # Gauss–Chebyshev rule that inverts the 1/√(1-x²) weight,
+    #   ∫ρ dE = (1/N) Σ_k a π √(1-x_k²) ρ(a x_k + b),  x_k = cos((k-½)π/N),
+    # is exact for the NC-term series once N > NC — hence rtol 1e-12, not the
+    # 0.15 that a stochastic trace on a coarse grid used to need.
+    psi_full = Matrix{ComplexF64}(I, NH, NH)
+    m_full = KPM.dos_moments(h; NC = 128, psi_in = psi_full)
+    @test m_full.mu[1] ≈ 1.0 rtol = 1e-12
+    Nq = 512
+    xq = [cos((k - 0.5) * pi / Nq) for k = 1:Nq]
+    _, rho_q = KPM.dos(m_full; E_grid = h.a .* xq .+ h.b)
+    @test sum(h.a * pi .* sqrt.(1 .- xq .^ 2) .* rho_q) / Nq ≈ 1.0 rtol = 1e-12
+
+    # The same sum rule read off a uniform grid: the default E_range is
+    # b ± 0.99a, so the trapezoid integral misses the band-edge tails. The
+    # measured deficit is 2.3e-5 and is N_tilde-independent above ~4096
+    # (window truncation, not quadrature error); 1e-4 is 4× that.
+    E_t, rho_t = KPM.dos(m_full; N_tilde = 4096)
+    integral = sum((rho_t[1:(end-1)] .+ rho_t[2:end]) .* diff(E_t)) / 2
+    @test isapprox(integral, 1.0; atol = 1e-4)
+
     E, rho = KPM.dos(h; NC = 128, NR = 4, rng = Xoshiro(7))
     @test all(isfinite, rho)
-    integral = sum((rho[1:(end-1)] .+ rho[2:end]) .* diff(E)) / 2
-    @test isapprox(integral, 1.0; rtol = 0.15)
     @test occursin("DosMoments", string(moments))
     @test occursin("RescaledHamiltonian", string(h))
 end
