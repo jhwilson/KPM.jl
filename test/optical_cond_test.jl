@@ -514,87 +514,9 @@ end
     separate = [KPM.optical_cond2(mu, NCo, omega; kwargs...) for mu in (mu_xy, mu_yx)]
     @test batch ≈ separate rtol = 1e-13 atol = 1e-13
 
-    NCscale = 64
-    easy = zeros(ComplexF64, NCscale, NCscale)
-    hard = zeros(ComplexF64, NCscale, NCscale)
-    easy[1, 1] = 10
-    hard[end, end] = 1
-    scale_kwargs = (;
-        E_f = 0.2,
-        lambda = 0.02,
-        quad_rtol = 1e-8,
-        quad_atol = 0.0,
-    )
-    scale_batch = KPM.optical_cond2((easy, hard), NCscale, 0.3; scale_kwargs...)
-    scale_separate = [
-        KPM.optical_cond2(mu, NCscale, 0.3; scale_kwargs...) for mu in (easy, hard)
-    ]
-    component_errors = abs.(scale_batch .- scale_separate) ./ abs.(scale_separate)
-    @info "unequal-scale optical batch component errors" component_errors
-    @test all(component_errors .< 1e-8)
-
-    NCcancel = 32
+    NChigh = 64
     identity_kernel = (n, N) -> 1.0
-    omega_cancel, xF_cancel, lambda_cancel = 0.3, 0.2, 0.02
-    function fixed_basis_reference(i, j)
-        delta = zeros(ComplexF64, NCcancel)
-        gR = similar(delta)
-        gA = similar(delta)
-        coefficient = _ref_hn(i - 1) * _ref_hn(j - 1)
-        node(theta) = begin
-            KPM.chebyshev_delta_theta!(delta, theta)
-            xnode = cos(theta)
-            KPM.green_coefficients!(gR, xnode + omega_cancel, lambda_cancel, Val(:R))
-            KPM.green_coefficients!(gA, xnode - omega_cancel, lambda_cancel, Val(:A))
-            coefficient * (gR[i] * delta[j] + delta[i] * gA[j]) *
-            KPM._spectral_fermi(xnode, xF_cancel, Inf)
-        end
-        points = Float64[acos(xF_cancel), pi]
-        for shift in (omega_cancel, -omega_cancel), edge in (-1.0, 1.0)
-            xstar = edge - shift
-            -1 < xstar < 1 && push!(points, acos(xstar))
-        end
-        sort!(unique!(points))
-        integral = first(quadgk(
-            node,
-            points...;
-            rtol = 1e-13,
-            atol = 1e-16,
-            order = 63,
-        ))
-        return (-im / omega_cancel) * integral
-    end
-
-    mu_A = zeros(ComplexF64, NCcancel, NCcancel)
-    mu_B = zeros(ComplexF64, NCcancel, NCcancel)
-    cancel_order = 12
-    mu_A[1, 1] = 1
-    mu_B[cancel_order, cancel_order] = 1
-    ref_A = fixed_basis_reference(1, 1)
-    ref_B = fixed_basis_reference(cancel_order, cancel_order)
-    epsilon = 1e-6
-    mu_cancel = mu_A - (1 - epsilon) * (ref_A / ref_B) * mu_B
-    # The second reference follows from linearity of the two independently
-    # integrated basis tables, avoiding a cancellation-limited oracle call.
-    references = [ref_A, epsilon * ref_A]
-    cancel_atol, cancel_rtol = 2e-14, 1e-8
-    cancellation_batch = KPM.optical_cond2(
-        (mu_A, mu_cancel),
-        NCcancel,
-        omega_cancel;
-        E_f = xF_cancel,
-        lambda = lambda_cancel,
-        kernel = identity_kernel,
-        quad_rtol = cancel_rtol,
-        quad_atol = cancel_atol,
-    )
-    cancellation_errors = abs.(cancellation_batch .- references)
-    cancellation_bounds = cancel_atol .+ cancel_rtol .* abs.(references)
-    @info "cancellation-dominated optical batch errors" cancellation_errors cancellation_bounds
-    @test abs(references[2]) < 2epsilon * abs(references[1])
-    @test all(cancellation_errors .<= cancellation_bounds)
-
-    mu1_high = zeros(ComplexF64, NCscale)
+    mu1_high = zeros(ComplexF64, NChigh)
     mu1_high[end] = 1
     beta_high, xF_high = 12.0, 0.2
     # quad_rtol a decade below the assertion (the contract bounds the error
@@ -603,7 +525,7 @@ end
     # below machine precision
     value_high = KPM.optical_cond1(
         mu1_high,
-        NCscale,
+        NChigh,
         0.3;
         E_f = xF_high,
         beta = beta_high,
@@ -611,7 +533,7 @@ end
         quad_rtol = 1e-9,
         quad_atol = 1e-15,
     )
-    n_high = NCscale - 1
+    n_high = NChigh - 1
     lambda_high = first(quadgk(
         theta -> cos(n_high * theta) / pi /
                  (1 + exp(beta_high * (cos(theta) - xF_high))),
@@ -788,223 +710,351 @@ end
     )
 end
 
+@testset "typed optical batching on the 3x3 fixture" begin
+    small_setup_time = @elapsed begin
+        NCsmall = 32
+        hsmall = KPM.rescale(Hop; center = true)
+        psismall = Matrix{ComplexF64}(I, D, D)
+        mxy_small = KPM.cond_moments(
+            hsmall,
+            Jx,
+            Jy;
+            NC = NCsmall,
+            psi_in = copy(psismall),
+        )
+        mxx_small = KPM.cond_moments(
+            hsmall,
+            Jx,
+            Jx;
+            NC = NCsmall,
+            psi_in = copy(psismall),
+        )
+        m1xx_small = KPM.current_moments(
+            hsmall,
+            Jxx,
+            NCsmall,
+            D;
+            psi_in = copy(psismall),
+        )
+    end
+
+    api_time = @elapsed begin
+        omega_api = 0.35hsmall.a
+        scalar = KPM.optical_cond(
+            mxy_small,
+            omega_api;
+            area = area,
+            Ef = hsmall.b,
+            quad_atol = 1e-12,
+        )
+        vector = KPM.optical_cond(
+            mxy_small,
+            [omega_api, 0.4hsmall.a];
+            area = area,
+            Ef = hsmall.b,
+            quad_atol = 1e-12,
+        )
+        batch = KPM.optical_cond(
+            (mxy_small, mxy_small),
+            omega_api;
+            area = area,
+            Ef = hsmall.b,
+            quad_atol = 1e-12,
+        )
+        @test scalar isa ComplexF64
+        @test vector isa Vector{ComplexF64}
+        @test vector[1] ≈ scalar rtol = 1e-13 atol = 1e-13
+        @test batch ≈ [scalar, scalar] rtol = 1e-13 atol = 1e-13
+    end
+
+    mixed_time = @elapsed begin
+        mixed_batch = KPM.optical_cond(
+            (mxx_small, mxy_small),
+            omega_api;
+            area = area,
+            Ef = hsmall.b,
+            m1s = (m1xx_small, nothing),
+            quad_atol = 1e-12,
+        )
+        mixed_separate = [
+            KPM.optical_cond(
+                mxx_small,
+                omega_api;
+                area = area,
+                Ef = hsmall.b,
+                m1 = m1xx_small,
+                quad_atol = 1e-12,
+            ),
+            scalar,
+        ]
+        @test mixed_batch ≈ mixed_separate rtol = 1e-10 atol = 1e-12
+    end
+
+    scale_time = @elapsed begin
+        omega_cancel, xF_cancel, lambda_cancel = 0.3, 0.2, 0.02
+        scale_tables = (10 .* mxy_small.mu, mxx_small.mu)
+        scale_kwargs = (;
+            E_f = xF_cancel,
+            lambda = lambda_cancel,
+            quad_rtol = 1e-8,
+            quad_atol = 0.0,
+        )
+        scale_batch = KPM.optical_cond2(
+            scale_tables,
+            NCsmall,
+            omega_cancel;
+            scale_kwargs...,
+        )
+        scale_separate = [
+            KPM.optical_cond2(mu, NCsmall, omega_cancel; scale_kwargs...) for
+            mu in scale_tables
+        ]
+        component_errors = abs.(scale_batch .- scale_separate) ./ abs.(scale_separate)
+        @info "unequal-scale optical batch component errors" component_errors
+        @test all(component_errors .< 1e-8)
+    end
+
+    function fixed_optical_reference(mu)
+        mu_tilde = KPM.mu2D_apply_kernel_and_h(mu, NCsmall, KPM.JacksonKernel)
+        delta = zeros(ComplexF64, NCsmall)
+        gR = similar(delta)
+        gA = similar(delta)
+        node(theta) = begin
+            KPM.chebyshev_delta_theta!(delta, theta)
+            xnode = cos(theta)
+            KPM.green_coefficients!(gR, xnode + omega_cancel, lambda_cancel, Val(:R))
+            KPM.green_coefficients!(gA, xnode - omega_cancel, lambda_cancel, Val(:A))
+            (sum(gR .* (mu_tilde * delta)) + sum(delta .* (mu_tilde * gA))) *
+            KPM._spectral_fermi(xnode, xF_cancel, Inf)
+        end
+        points = Float64[acos(xF_cancel), pi]
+        for shift in (omega_cancel, -omega_cancel), edge in (-1.0, 1.0)
+            xstar = edge - shift
+            -1 < xstar < 1 && push!(points, acos(xstar))
+        end
+        sort!(points)
+        unique!(points)
+        integral = first(quadgk(
+            node,
+            points...;
+            rtol = 1e-13,
+            atol = 1e-15,
+            order = 63,
+        ))
+        return (-im / omega_cancel) * integral
+    end
+
+    cancellation_time = @elapsed begin
+        ref_A = fixed_optical_reference(mxy_small.mu)
+        ref_B = fixed_optical_reference(mxx_small.mu)
+        epsilon = 1e-6
+        mu_cancel = mxy_small.mu -
+                    (1 - epsilon) * (ref_A / ref_B) * mxx_small.mu
+        references = [ref_A, epsilon * ref_A]
+        cancel_atol, cancel_rtol = 2e-13, 1e-8
+        cancellation_batch = KPM.optical_cond2(
+            (mxy_small.mu, mu_cancel),
+            NCsmall,
+            omega_cancel;
+            E_f = xF_cancel,
+            lambda = lambda_cancel,
+            quad_rtol = cancel_rtol,
+            quad_atol = cancel_atol,
+        )
+        cancellation_errors = abs.(cancellation_batch .- references)
+        cancellation_bounds = cancel_atol .+ cancel_rtol .* abs.(references)
+        @info "cancellation-dominated optical batch errors" cancellation_errors cancellation_bounds
+        @test abs(references[2]) < 2epsilon * abs(references[1])
+        @test all(cancellation_errors .<= cancellation_bounds)
+    end
+
+    validation_time = @elapsed begin
+        bad_m1 = KPM.CurrentMoments(
+            m1xx_small.mu,
+            m1xx_small.a + 0.1,
+            m1xx_small.b,
+            m1xx_small.NH,
+            m1xx_small.NR,
+        )
+        @test_throws ArgumentError KPM.optical_cond(
+            mxx_small,
+            omega_api;
+            area = area,
+            m1 = bad_m1,
+        )
+        @test_throws ArgumentError KPM.optical_cond(mxy_small, 0.0; area = area)
+        @test_throws ArgumentError KPM.optical_cond(
+            mxy_small,
+            omega_api;
+            area = area,
+            lambda = -0.1,
+        )
+        @test_throws ArgumentError KPM.optical_cond(mxy_small, omega_api; area = 0.0)
+    end
+    @info "small-fixture optical block timings (s)" small_setup_time api_time mixed_time scale_time cancellation_time validation_time
+end
+
 @testset "typed optical layer and physical anchors" begin
-    Hbig, Jxbig, Jybig, areabig =
-        haldane_model(12, 12; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0)
-    Dbig = size(Hbig, 1)
-    hbig = KPM.rescale(Hbig; center = true)
-    psibig = Matrix{ComplexF64}(I, Dbig, Dbig)
-    NCbig = 256
-    mxy = KPM.cond_moments(hbig, Jxbig, Jybig; NC = NCbig, psi_in = copy(psibig))
-    mxx = KPM.cond_moments(hbig, Jxbig, Jxbig; NC = NCbig, psi_in = copy(psibig))
-    Jxxbig = _second_current(Hbig, Jxbig)
-    m1xx = KPM.current_moments(hbig, Jxxbig, NCbig, Dbig; psi_in = copy(psibig))
+    setup_time = @elapsed begin
+        Hbig, Jxbig, Jybig, areabig =
+            haldane_model(12, 12; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0)
+        Dbig = size(Hbig, 1)
+        hbig = KPM.rescale(Hbig; center = true)
+        psibig = Matrix{ComplexF64}(I, Dbig, Dbig)
+        NCbig = 256
+        mxy = KPM.cond_moments(hbig, Jxbig, Jybig; NC = NCbig, psi_in = copy(psibig))
+        mxx = KPM.cond_moments(hbig, Jxbig, Jxbig; NC = NCbig, psi_in = copy(psibig))
+        Jxxbig = _second_current(Hbig, Jxbig)
+        m1xx = KPM.current_moments(hbig, Jxxbig, NCbig, Dbig; psi_in = copy(psibig))
+    end
 
     @test m1xx isa KPM.CurrentMoments
     @test KPM.nc(m1xx) == NCbig
     @test m1xx.mu[1] ≈ tr(Jxxbig) / Dbig rtol = 1e-12 atol = 1e-14
     @test occursin("CurrentMoments", string(m1xx))
 
-    omega_api = 0.35hbig.a
-    scalar = KPM.optical_cond(
-        mxy,
-        omega_api;
-        area = areabig,
-        Ef = hbig.b,
-        quad_atol = 1e-12,
-    )
-    vector = KPM.optical_cond(
-        mxy,
-        [omega_api, 0.4hbig.a];
-        area = areabig,
-        Ef = hbig.b,
-        quad_atol = 1e-12,
-    )
-    batch = KPM.optical_cond(
-        (mxy, mxy),
-        omega_api;
-        area = areabig,
-        Ef = hbig.b,
-        quad_atol = 1e-12,
-    )
-    @test scalar isa ComplexF64
-    @test vector isa Vector{ComplexF64}
-    @test vector[1] ≈ scalar rtol = 1e-13 atol = 1e-13
-    @test batch ≈ [scalar, scalar] rtol = 1e-13 atol = 1e-13
+    typed_bare_time = @elapsed begin
+        beta_physical = 3.2
+        omega_beta = 0.35hbig.a
+        Ef_beta = hbig.b + 0.1hbig.a
+        lambda_beta = 0.03hbig.a
+        typed_beta = KPM.optical_cond(
+            mxy,
+            omega_beta;
+            area = areabig,
+            Ef = Ef_beta,
+            beta = beta_physical,
+            lambda = lambda_beta,
+            quad_rtol = 2e-10,
+            quad_atol = 2e-12,
+        )
+        bare_beta = KPM.optical_cond2(
+            mxy.mu,
+            NCbig,
+            omega_beta / hbig.a;
+            E_f = (Ef_beta - hbig.b) / hbig.a,
+            beta = beta_physical * hbig.a,
+            lambda = lambda_beta / hbig.a,
+            quad_rtol = 2e-10,
+            quad_atol = 2e-12,
+        )
+        bare_beta *= 2pi * Dbig / (areabig * hbig.a^2)
+        @test typed_beta ≈ bare_beta rtol = 1e-10 atol = 1e-12
+    end
 
-    mixed_batch = KPM.optical_cond(
-        (mxx, mxy),
-        omega_api;
-        area = areabig,
-        Ef = hbig.b,
-        m1s = (m1xx, nothing),
-        quad_atol = 1e-12,
-    )
-    mixed_separate = [
-        KPM.optical_cond(
+    dc_time = @elapsed begin
+        sigma(q) = real(KPM.optical_cond(
+            mxy,
+            q * hbig.a;
+            area = areabig,
+            Ef = hbig.b,
+            quad_atol = 1e-12,
+        ))
+        sigma_half = sigma(5e-4)
+        sigma_h = sigma(1e-3)
+        sigma_2h = sigma(2e-3)
+        sigma_dc = (4sigma_h - sigma_2h) / 3
+        sigma_dc_half = (4sigma_half - sigma_h) / 3
+        sigma_bastin = KPM.kubo_bastin_cond(mxy, hbig.b; area = areabig)
+        dc_relative_error = abs(sigma_dc - sigma_bastin) / abs(sigma_bastin)
+        dc_step_stability = abs(sigma_dc_half - sigma_dc) / abs(sigma_dc)
+        @info "optical DC Richardson anchor" sigma_bastin sigma_dc sigma_dc_half dc_relative_error dc_step_stability
+        @test dc_step_stability < 1e-8
+        @test sigma_dc ≈ sigma_bastin rtol = 1e-6
+
+        # This anchor uses a 12x12 torus rather than the 6x6 torus in
+        # kubo_bastin_test.jl; the same generous 5e-2 KPM-to-C tolerance is used.
+        C_fhs = chern_number_fhs(
+            haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0);
+            Nk = 30,
+        )
+        @test C_fhs ≈ 1.0 atol = 1e-10
+        @test sigma_bastin ≈ C_fhs atol = 5e-2
+    end
+
+    dissipation_time = @elapsed begin
+        frequencies = [hbig.a, 1.5hbig.a]
+        spectrum = eigvals(Hermitian(Matrix(Hbig)))
+        gap = 2minimum(abs.(spectrum .- hbig.b))
+        bandwidth = maximum(spectrum) - minimum(spectrum)
+        @test all((gap .< frequencies) .& (frequencies .< bandwidth))
+        sigma_xx = KPM.optical_cond(
             mxx,
-            omega_api;
+            frequencies;
             area = areabig,
             Ef = hbig.b,
             m1 = m1xx,
             quad_atol = 1e-12,
-        ),
-        KPM.optical_cond(
-            mxy,
-            omega_api;
+        )
+        @test real.(sigma_xx) ≈ [1.24501644500, 0.07108598834] rtol = 2e-8
+        @test all(real.(sigma_xx) .> 0)
+    end
+
+    gauge_time = @elapsed begin
+        omega_tilde = 1e-3
+        dia = real(
+            im * omega_tilde * KPM.optical_cond1(
+                m1xx.mu,
+                NCbig,
+                omega_tilde;
+                E_f = 0.0,
+                quad_atol = 1e-12,
+            ),
+        )
+        gauge_sigma = KPM.optical_cond(
+            mxx,
+            omega_tilde * hbig.a;
             area = areabig,
             Ef = hbig.b,
+            m1 = m1xx,
             quad_atol = 1e-12,
-        ),
-    ]
-    @test mixed_batch ≈ mixed_separate rtol = 1e-10 atol = 1e-12
+        )
+        dia_physical = 2pi * Dbig / (areabig * hbig.a) * dia
+        gauge_residual = abs(real(im * omega_tilde * gauge_sigma)) / abs(dia_physical)
+        @test gauge_residual < 2e-3
+    end
 
-    beta_physical = 3.2
-    omega_beta = 0.35hbig.a
-    Ef_beta = hbig.b + 0.1hbig.a
-    lambda_beta = 0.03hbig.a
-    typed_beta = KPM.optical_cond(
-        mxy,
-        omega_beta;
-        area = areabig,
-        Ef = Ef_beta,
-        beta = beta_physical,
-        lambda = lambda_beta,
-        quad_rtol = 2e-10,
-        quad_atol = 2e-12,
-    )
-    bare_beta = KPM.optical_cond2(
-        mxy.mu,
-        NCbig,
-        omega_beta / hbig.a;
-        E_f = (Ef_beta - hbig.b) / hbig.a,
-        beta = beta_physical * hbig.a,
-        lambda = lambda_beta / hbig.a,
-        quad_rtol = 2e-10,
-        quad_atol = 2e-12,
-    )
-    bare_beta *= 2pi * Dbig / (areabig * hbig.a^2)
-    @test typed_beta ≈ bare_beta rtol = 1e-10 atol = 1e-12
-
-    sigma(q) = real(KPM.optical_cond(
-        mxy,
-        q * hbig.a;
-        area = areabig,
-        Ef = hbig.b,
-        quad_atol = 1e-12,
-    ))
-    sigma_half = sigma(5e-4)
-    sigma_h = sigma(1e-3)
-    sigma_2h = sigma(2e-3)
-    sigma_dc = (4sigma_h - sigma_2h) / 3
-    sigma_dc_half = (4sigma_half - sigma_h) / 3
-    sigma_bastin = KPM.kubo_bastin_cond(mxy, hbig.b; area = areabig)
-    dc_relative_error = abs(sigma_dc - sigma_bastin) / abs(sigma_bastin)
-    dc_step_stability = abs(sigma_dc_half - sigma_dc) / abs(sigma_dc)
-    @info "optical DC Richardson anchor" sigma_bastin sigma_dc sigma_dc_half dc_relative_error dc_step_stability
-    @test dc_step_stability < 1e-8
-    @test sigma_dc ≈ sigma_bastin rtol = 1e-6
-
-    # This anchor uses a 12x12 torus rather than the 6x6 torus in
-    # kubo_bastin_test.jl; the same generous 5e-2 KPM-to-C tolerance is used.
-    C_fhs = chern_number_fhs(
-        haldane_bloch(; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0);
-        Nk = 30,
-    )
-    @test C_fhs ≈ 1.0 atol = 1e-10
-    @test sigma_bastin ≈ C_fhs atol = 5e-2
-
-    frequencies = [hbig.a, 1.5hbig.a]
-    spectrum = eigvals(Hermitian(Matrix(Hbig)))
-    gap = 2minimum(abs.(spectrum .- hbig.b))
-    bandwidth = maximum(spectrum) - minimum(spectrum)
-    @test all((gap .< frequencies) .& (frequencies .< bandwidth))
-    sigma_xx = KPM.optical_cond(
-        mxx,
-        frequencies;
-        area = areabig,
-        Ef = hbig.b,
-        m1 = m1xx,
-        quad_atol = 1e-12,
-    )
-    @test real.(sigma_xx) ≈ [1.24501644500, 0.07108598834] rtol = 2e-8
-    @test all(real.(sigma_xx) .> 0)
-
-    omega_tilde = 1e-3
-    dia = real(
-        im * omega_tilde * KPM.optical_cond1(
-            m1xx.mu,
-            NCbig,
-            omega_tilde;
+    lehmann_time = @elapsed begin
+        Hsmall, Jxsmall, _, _ =
+            haldane_model(3, 3; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0)
+        Dsmall = size(Hsmall, 1)
+        hsmall = KPM.rescale(Hsmall; center = true)
+        NCsmall = 64
+        psismall = Matrix{ComplexF64}(I, Dsmall, Dsmall)
+        muxx_small = KPM.kpm_2d(
+            hsmall.H,
+            Jxsmall,
+            Jxsmall,
+            NCsmall,
+            Dsmall,
+            Dsmall;
+            psi_in = psismall,
+        )
+        omega_small = 0.5
+        spectrum_small = eigvals(Hermitian(Matrix(Hsmall)))
+        physical_bandwidth = maximum(spectrum_small) - minimum(spectrum_small)
+        lambda_small = 0.02physical_bandwidth / hsmall.a
+        value_small = KPM.optical_cond2(
+            muxx_small,
+            NCsmall,
+            omega_small;
             E_f = 0.0,
+            lambda = lambda_small,
             quad_atol = 1e-12,
-        ),
-    )
-    para = real(
-        im * omega_tilde * KPM.optical_cond2(
-            mxx.mu,
-            NCbig,
-            omega_tilde;
-            E_f = 0.0,
-            quad_atol = 1e-12,
-        ),
-    ) / hbig.a
-    # Measured |dia + Re(para)/a|/|dia| = 5.4316e-4 at NC=256.
-    gauge_residual = abs(dia + para) / abs(dia)
-    @test gauge_residual < 2e-3
+        )
+        ref_small = _lehmann_optical_reference(
+            hsmall.H,
+            Jxsmall,
+            Jxsmall,
+            omega_small,
+            lambda_small,
+            0.0,
+        )
+        # At NC=64 the Jackson-smeared, compact-support KPM spectrum differs from
+        # the exact Lorentzian tails; the measured relative difference is 9.95%.
+        @test value_small ≈ ref_small rtol = 0.1
+    end
 
-    Hsmall, Jxsmall, _, _ =
-        haldane_model(3, 3; t = 1.0, t2 = 0.2, ϕ = pi / 2, m = 0.0)
-    Dsmall = size(Hsmall, 1)
-    hsmall = KPM.rescale(Hsmall; center = true)
-    NCsmall = 64
-    psismall = Matrix{ComplexF64}(I, Dsmall, Dsmall)
-    muxx_small = KPM.kpm_2d(
-        hsmall.H,
-        Jxsmall,
-        Jxsmall,
-        NCsmall,
-        Dsmall,
-        Dsmall;
-        psi_in = psismall,
-    )
-    omega_small = 0.5
-    spectrum_small = eigvals(Hermitian(Matrix(Hsmall)))
-    physical_bandwidth = maximum(spectrum_small) - minimum(spectrum_small)
-    lambda_small = 0.02physical_bandwidth / hsmall.a
-    value_small = KPM.optical_cond2(
-        muxx_small,
-        NCsmall,
-        omega_small;
-        E_f = 0.0,
-        lambda = lambda_small,
-        quad_atol = 1e-12,
-    )
-    ref_small = _lehmann_optical_reference(
-        hsmall.H,
-        Jxsmall,
-        Jxsmall,
-        omega_small,
-        lambda_small,
-        0.0,
-    )
-    # At NC=64 the Jackson-smeared, compact-support KPM spectrum differs from
-    # the exact Lorentzian tails; the measured relative difference is 9.95%.
-    @test value_small ≈ ref_small rtol = 0.1
+    @info "typed optical anchor block timings (s)" setup_time typed_bare_time dc_time dissipation_time gauge_time lehmann_time
 
-    bad_m1 = KPM.CurrentMoments(m1xx.mu, m1xx.a + 0.1, m1xx.b, m1xx.NH, m1xx.NR)
-    @test_throws ArgumentError KPM.optical_cond(
-        mxx,
-        omega_api;
-        area = areabig,
-        m1 = bad_m1,
-    )
-    @test_throws ArgumentError KPM.optical_cond(mxy, 0.0; area = areabig)
-    @test_throws ArgumentError KPM.optical_cond(
-        mxy,
-        omega_api;
-        area = areabig,
-        lambda = -0.1,
-    )
-    @test_throws ArgumentError KPM.optical_cond(mxy, omega_api; area = 0.0)
 end
