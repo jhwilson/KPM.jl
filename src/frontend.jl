@@ -805,12 +805,15 @@ operator is not a legal position observable on a torus. At `beta = Inf` the
 marker summed over the whole finite sample converges to the exact identity
 ``\\mathrm{Im}\\,\\mathrm{Tr}[PXQYP] = 0`` — topology is read from a bulk
 average with the boundary excluded, never the full trace. At finite `beta`
-that identity does **not** hold (the Fermi–Dirac operator is not
-idempotent): the thermal marker is a smooth diagnostic whose whole-sample
-sum is genuinely nonzero, while its bulk average still tracks `C` for
-temperatures well below the gap. Cost is two `NC`-step recurrences per
-`batch_size` sites (five complex `NH × batch_size` device workspaces,
-≈ `80·NH·batch_size` bytes); for a regional average that does not need
+the routine returns the marker built from the smoothed Fermi operator, not
+the finite-temperature Hall conductivity ``\\sigma_{xy}(T)``: its local
+spectral weight is ``f_a f_c(1-f_b)`` rather than the Kubo--Bastin
+``[\\min(f_a,f_c)-f_b]_+``, and the two coincide only at zero temperature.
+The finite-`beta` whole-sample sum can therefore be genuinely nonzero because
+the Fermi--Dirac operator is not idempotent, while its bulk average still
+tracks `C` for temperatures well below the gap. Cost is two `NC`-step
+recurrences per `batch_size` sites (five complex `NH × batch_size` device
+workspaces, ≈ `80·NH·batch_size` bytes); for a regional average that does not need
 every site, see [`chern_marker_region`](@ref).
 """
 function chern_marker(
