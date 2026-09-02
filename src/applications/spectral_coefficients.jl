@@ -1,9 +1,15 @@
 using QuadGK
 
+# `exact_zero[k]` marks a component whose inputs are structurally zero (an
+# all-zero moment table); it is skipped by the weighted passes and returned as
+# 0. Structural zero is never inferred from quadrature samples: a nonzero
+# integrand can vanish at every node of one rule.
 struct _SpectralNodeFunction{F}
     f!::F
     ncomp::Int
+    exact_zero::Vector{Bool}
 end
+_SpectralNodeFunction(f!, ncomp::Integer) = _SpectralNodeFunction(f!, Int(ncomp), fill(false, ncomp))
 
 (F::_SpectralNodeFunction)(out, theta) = F.f!(out, theta)
 
@@ -121,9 +127,10 @@ followed by up to three weighted maximum-norm passes. After each weighted
 pass, its component scales are checked against the values that pass would
 return; inconsistent scales are recomputed from those values before the next
 pass. Every pass and piece shares one hard `maxevals` node-evaluation budget.
-A component sampled as identically zero throughout the first pass has zero
-first-pass integral and error estimate, is omitted from the weighted norm, and
-is returned as zero.
+A component flagged structurally zero by the caller (`exact_zero` in the
+node function, from an all-zero moment table) is omitted from the weighted
+norm and returned as zero; a component that vanishes by cancellation keeps a
+zero scale and is rejected with the `quad_atol` message after any pass.
 """
 function _spectral_integral(
     F!::_SpectralNodeFunction,
@@ -182,8 +189,6 @@ function _spectral_integral(
         k = 1:(length(points)-1)
     )
     evaluations = Ref(0)
-    first_pass_nonzero = falses(ncomp)
-    tracking_first_pass = Ref(true)
     function node(theta)
         evaluations[] < maxevals || _quad_contract_error(
             rtol,
@@ -196,11 +201,6 @@ function _spectral_integral(
         out = zeros(ComplexF64, ncomp)
         F!(out, theta)
         out .*= _spectral_fermi(cos(theta), xF, beta_a)
-        if tracking_first_pass[]
-            @inbounds for k in eachindex(out)
-                first_pass_nonzero[k] |= !iszero(out[k])
-            end
-        end
         return out
     end
 
@@ -269,7 +269,6 @@ function _spectral_integral(
     piece_rtol = rtol / (10piece_count)
     piece_atol = atol / (10piece_count)
     first_integral, first_error = integrate_pass(piece_rtol, piece_atol, LinearAlgebra.norm)
-    tracking_first_pass[] = false
     first_error <= atol + rtol * LinearAlgebra.norm(first_integral) ||
         _quad_contract_error(
             rtol,
@@ -280,11 +279,17 @@ function _spectral_integral(
         )
     ncomp == 1 && return first_integral, first_error
 
-    exact_zero = iszero.(first_integral) .& .!first_pass_nonzero
+    exact_zero = F!.exact_zero
+    length(exact_zero) == ncomp || throw(ArgumentError("exact_zero mask length must equal ncomp"))
+    first_integral[exact_zero] .= 0
     all(exact_zero) && return first_integral, first_error
     active = findall(!, exact_zero)
     scales = atol .+ rtol .* abs.(first_integral)
-    any(k -> iszero(scales[k]), active) && _quad_contract_error(
+    # A zero scale on an active component is a cancellation zero: it needs an
+    # absolute tolerance, and must be rejected before it becomes an infinite
+    # weight (checked again after every scale update below).
+    cancellation_zero(sc) = any(k -> iszero(sc[k]), active)
+    cancellation_zero(scales) && _quad_contract_error(
         rtol,
         atol,
         maxevals,
@@ -327,6 +332,13 @@ function _spectral_integral(
             "component scales remained inconsistent after 3 weighted passes",
         )
         scales .= returned_scales
+        cancellation_zero(scales) && _quad_contract_error(
+            rtol,
+            atol,
+            maxevals,
+            lambda,
+            "quad_atol is required for components that vanish by cancellation",
+        )
     end
     error("unreachable")
 end

@@ -113,7 +113,7 @@ function _cpge_node_function(mu_tilde, NC, omega1, omega2, lambda, delta)
         out[1] = rr + ra + aa
         return out
     end
-    return _SpectralNodeFunction(F!, 1)
+    return _SpectralNodeFunction(F!, 1, [all(iszero, mu_tilde)])
 end
 
 function _cpge_kernel_moments(mu3, NC, kernel)

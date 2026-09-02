@@ -107,7 +107,7 @@ function _optical_node_function(mus, NC, omega_tilde, lambda)
         end
         return out
     end
-    return _SpectralNodeFunction(F!, length(mus))
+    return _SpectralNodeFunction(F!, length(mus), [all(iszero, mu) for mu in mus])
 end
 
 """

@@ -382,7 +382,11 @@ function _typed_optical_node_function(mu2s, mu1s, NC, omega_tilde, lambda_tilde,
         end
         return out
     end
-    return _SpectralNodeFunction(F!, length(mu2s))
+    structural_zero = [
+        all(iszero, mu2s[k]) && (mu1s[k] === nothing || all(iszero, mu1s[k])) for
+        k in eachindex(mu2s)
+    ]
+    return _SpectralNodeFunction(F!, length(mu2s), structural_zero)
 end
 
 """
