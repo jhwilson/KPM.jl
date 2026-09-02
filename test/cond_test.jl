@@ -110,9 +110,12 @@ end
     mu_even = KPM.kpm_2d(H, Jα, Jβ, NC, D, D; psi_in = psi, moment_parity = :EVEN)
 
     mask_odd = [mod((n - 1) + (m - 1), 2) == 1 for n = 1:NC, m = 1:NC]
-    @test mu_odd == mu_none .* mask_odd
-    @test mu_even == mu_none .* .!mask_odd
-    @test mu_odd .+ mu_even == mu_none
+    # rtol contract (not bit-exact): device reductions may reorder the sums
+    @test mu_odd ≈ mu_none .* mask_odd rtol = 1e-12
+    @test mu_even ≈ mu_none .* .!mask_odd rtol = 1e-12
+    @test mu_odd .+ mu_even ≈ mu_none rtol = 1e-12
+    @test all(iszero, mu_odd[.!mask_odd])
+    @test all(iszero, mu_even[mask_odd])
     @test count(!iszero, mu_odd) == NC^2 ÷ 2
 
     @test_throws ArgumentError KPM.kpm_2d(

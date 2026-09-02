@@ -83,11 +83,11 @@ paths against the `maybe_*` device helpers, but GPU support is not automatic —
 audit every allocation, view, `mul!`, and reduction, and expect to add
 CUDA-specialized methods in the extension. Known GPU limits:
 `Hermitian`-wrapped CuSparse `mul!` multiplies only the stored triangle (why
-`dc_long` materializes on host); the Γ contraction is not
-ForwardDiff-differentiable on GPU, so `d_dc_cond(...; dE_order ≥ 1)` fails
-with the CUDA device active unless the caller forces CPU execution (no
-automatic fallback); and `kpm_2d` accumulates its moment matrix on the host —
-`kubo_bastin_cond` reconstruction is CPU-side by design. `KPM.whichcore()`
+`dc_long` materializes on host); `kpm_2d` accumulates its moment matrix on
+the host, and all reconstruction (`kubo_bastin_cond`, `d_dc_cond` including
+its ForwardDiff derivative path, `optical_cond*`, `cpge`) is CPU-side by
+design — the device kernels do not support dual numbers, so `d_dc_cond` moves
+the kernel-improved moments to the host before differentiating. `KPM.whichcore()`
 reports whether the GPU path is active.
 
 **BdG on GPU**: the matrix-free `BdGOperator` action is host-only (blockwise

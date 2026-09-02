@@ -219,8 +219,9 @@ function d_dc_cond(
 
     dσE = zeros(Float64, size(E))
 
-    #process μtilde
-    μtilde = mu2D_apply_kernel_and_h(μ, NC, kernel)
+    # Host-side reconstruction: the Γ contraction runs on dual numbers for
+    # dE_order ≥ 1, which the device kernels do not support.
+    μtilde = maybe_to_host(mu2D_apply_kernel_and_h(μ, NC, kernel))
 
     g(x) = _d_dc_cond_single(μtilde, a, b, x, NC)
     for _ = 1:dE_order
