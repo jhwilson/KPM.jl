@@ -147,7 +147,7 @@ end
     A = randn(rng, ComplexF64, NH, NH)
     H = sparse((A + A') / 2)
     a, H_norm = KPM.normalizeH(H)
-    mu = KPM.kpm_1d(H_norm, NC, 8)
+    mu = KPM.kpm_1d(H_norm, NC, 8; psi_in = KPM.random_phase_vectors(Xoshiro(18), NH, 8))
 
     E_grid = collect(range(-0.4a, 0.4a; length = 9))
     _, drho = KPM.dos(mu, a; E_grid = E_grid, N_tilde = length(E_grid), dE_order = 1)

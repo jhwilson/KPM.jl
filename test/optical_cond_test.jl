@@ -140,6 +140,8 @@ end
     mu_cplx = vec(sum(mu_all, dims = 1) ./ N)
     @test mu_cplx ≈ [tr(Jring' * Tr_[n]) / N for n = 1:NCr] rtol = 1e-12 atol = 1e-14
     @test mu_cplx ≈ -tr_J rtol = 1e-12 atol = 1e-14   # = Tr[J† T_n] = -Tr[J T_n]
+    # review: kpm_1d_current contracts J† instead of the documented J.
+    @test_broken mu_cplx ≈ tr_J rtol = 1e-12 atol = 1e-14
 end
 
 @testset "kpm_1d_current: independent bra/ket is documented as unimplemented" begin
@@ -243,10 +245,18 @@ end
     Λ1 = [sum(weights .* (KPM.Δn.(nodes, n, δ) .* ff.(nodes))) for n = 0:(NC-1)]
     ref1 = -1im * sum(g .* Γ1 .* Λ1) / ω
     @test KPM.optical_cond1(Γ1, NC, ω; beta = beta, E_f = E_f, δ = δ) ≈ ref1 rtol = 1e-12
+    corrected_weights = weights .* sqrt.(1 .- nodes .^2)
+    Λ1_corrected = [
+        sum(corrected_weights .* (KPM.Δn.(nodes, n, δ) .* ff.(nodes))) for n = 0:(NC-1)
+    ]
+    corrected_ref1 = -1im * sum(g .* Γ1 .* Λ1_corrected) / ω
+    # review: quadrature double-counts 1/√(1−ε²); flip to @test when src is fixed
+    @test_broken KPM.optical_cond1(Γ1, NC, ω; beta = beta, E_f = E_f, δ = δ) ≈
+                 corrected_ref1 rtol = 1e-12
     @test abs(ref1) > 0
 
     # --- Λnm contribution (2D current-current moments)
-    Γ2 = KPM.kpm_2d(H_norm, Jx, Jx, NC, D, D; psi_in = psi)
+    Γ2 = KPM.kpm_2d(H_norm, Jx, Jy, NC, D, D; psi_in = psi)
     Λ2 = zeros(ComplexF64, NC, NC)
     for m = 0:(NC-1), n = 0:(NC-1)
         integrand(ϵ) =
@@ -258,11 +268,29 @@ end
     end
     ref2 = -1im * sum((g * g') .* Γ2 .* Λ2) / ω
     @test KPM.optical_cond2(Γ2, NC, ω; beta = beta, E_f = E_f, δ = δ) ≈ ref2 rtol = 1e-12
+    Λ2_corrected = zeros(ComplexF64, NC, NC)
+    for m = 0:(NC-1), n = 0:(NC-1)
+        integrand(ϵ) =
+            (
+                KPM.gn_R(ϵ + ω, n, 0.0, δ) * KPM.Δn(ϵ, m, δ) +
+                KPM.Δn(ϵ, n, δ) * KPM.gn_A(ϵ - ω, m, 0.0, δ)
+            ) * ff(ϵ)
+        Λ2_corrected[n+1, m+1] = sum(corrected_weights .* integrand.(nodes))
+    end
+    corrected_ref2 = -1im * sum((g * g') .* Γ2 .* Λ2_corrected) / ω
+    # review: quadrature double-counts 1/√(1−ε²); flip to @test when src is fixed
+    @test_broken KPM.optical_cond2(Γ2, NC, ω; beta = beta, E_f = E_f, δ = δ) ≈
+                 corrected_ref2 rtol = 1e-12
     @test abs(ref2) > 0
 
     # the 2D moments themselves are exact (identity probes)
-    Γ2_ref = [tr(Jx * Tmat[m] * Jx * Tmat[n]) / D for n = 1:NC, m = 1:NC]
+    Γ2_ref = [tr(Jx * Tmat[m] * Jy * Tmat[n]) / D for n = 1:NC, m = 1:NC]
     @test Γ2 ≈ Γ2_ref rtol = 1e-12
+    Γ2_paper = [tr(Jx * Tmat[n] * Jy * Tmat[m]) / D for n = 1:NC, m = 1:NC]
+    paper_ref2 = -1im * sum((g * g') .* Γ2_paper .* Λ2) / ω
+    # review: optical_cond2 contracts the transposed table
+    @test_broken KPM.optical_cond2(Γ2, NC, ω; beta = beta, E_f = E_f, δ = δ) ≈
+                 paper_ref2 rtol = 1e-12
 end
 
 @testset "d_optical_cond1/2 integrate to optical_cond1/2 on the same nodes" begin

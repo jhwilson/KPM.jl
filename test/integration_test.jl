@@ -47,13 +47,12 @@ Jx = sparse(rows, cols, dvals, NH, NH)
     @test ishermitian(H)
     λ = eigvals(Hermitian(Matrix(H)))
     @test maximum(λ) ≈ bandwidth / 2 rtol = 1e-10
-    @test minimum(abs, λ) ≈ gap / 2 rtol = 1e-2      # finite ring: discrete k
+    # k = π is on the 128-cell grid, gap edge exact
+    @test minimum(abs, λ) ≈ gap / 2 rtol = 1e-10
 
     a, H_norm = KPM.normalizeH(H)
-    # a = 2·max|E| / (2 - eps) with eps = 0.1. normalizeH gets max|E| from
-    # Arpack with tol = 1e-3, so a is only converged to ~1e-5 relative
-    # (measured 4.1e-6 here); 1e-4 leaves an order of magnitude.
-    @test a ≈ 2 * (bandwidth / 2) / (2 - 0.1) rtol = 1e-4
+    # normalizeH's Arpack estimate is only tol=1e-3 (src/utils/external.jl)
+    @test a ≈ 2 * (bandwidth / 2) / (2 - 0.1) rtol = 2e-3
 
     NC = 64
     psi = Matrix{ComplexF64}(I, NH, NH)              # exact trace

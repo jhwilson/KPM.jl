@@ -71,18 +71,26 @@ end
 end
 
 @testset "d_dc_cond(dE_order=2) is currently unsupported" begin
-    # PINNED LIMITATION. The second derivative composes Zygote reverse mode on
-    # top of the forward-mode first derivative, and the Γnm contraction
-    # (Γnmμnmαβ) mutates its accumulator, which Zygote rejects. `dos` documents
-    # and asserts the same dE_order ≤ 1 restriction; `d_dc_cond` does not, so
-    # it fails at run time instead. If this test starts failing because the
-    # call succeeds, replace it with a finite-difference check of the second
-    # derivative (the stencil is in the testset above).
+    # PINNED LIMITATION. The throw originates in Zygote's `forward_jacobian`
+    # when Zygote.forwarddiff is nested, not mutation in Γnmμnmαβ (which is
+    # now a pure matvec pair in src/applications/dc_cond_util.jl:21). The
+    # replacement check is the fourth-order second-derivative stencil below.
     rng = Xoshiro(8)
     NC = 16
+    a = 1.7
+    b = 0.35
     mu = randn(rng, ComplexF64, NC, NC)
-    @test_throws ErrorException KPM.d_dc_cond(mu, 1.7, [0.35]; b = 0.35, NC = NC,
-        dE_order = 2)
+    E = b
+    f0(E) = KPM.d_dc_cond(mu, a, [E]; b = b, NC = NC)[1]
+    h = 1e-3 * a  # documented step: balances this stencil's O(h⁴) truncation and roundoff
+    stencil = (-f0(E + 2h) + 16f0(E + h) - 30f0(E) + 16f0(E - h) - f0(E - 2h)) /
+              (12h^2)
+    d2 = try
+        KPM.d_dc_cond(mu, a, [E]; b = b, NC = NC, dE_order = 2)[1]
+    catch
+        NaN
+    end
+    @test_broken d2 ≈ stencil rtol = 1e-7
 end
 
 @testset "kpm_2d moment_parity selects the documented index parity" begin

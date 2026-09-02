@@ -127,15 +127,19 @@ Tmat = chebyshev_matrices(H_norm, NC)
     # machine precision: identical arithmetic up to summation order
     @test Γ ≈ Γ_ref rtol = 1e-12
 
-    # the transposed convention is *not* what is computed — guards against a
-    # silent index swap being introduced to match the docstring
-    Γ_swapped = permutedims(Γ_ref, (2, 1, 3))
-    @test !isapprox(Γ, Γ_swapped; rtol = 1e-3)
+    # review: kpm_3d! swaps the first two documented moment slots. This is the
+    # docstring layout Γ[n3, n2, n1] = ⟨ψ|T_n3 Jγ T_n2 Jβ T_n1 Jα|ψ⟩ / D.
+    Γ_docstring = [
+        tr(Tmat[n] * J[3] * Tmat[m] * J[2] * Tmat[p] * J[1]) / D for n = 1:NC,
+        m = 1:NC, p = 1:NC
+    ]
+    @test_broken Γ ≈ Γ_docstring rtol = 1e-12
 
     # in-place entry point writes the same thing
     Γ_ip = zeros(ComplexF64, NC, NC, NC)
     KPM.kpm_3d!(H_norm, J[1], J[2], J[3], NC, D, D, Γ_ip, psi, psi)
     @test Γ_ip ≈ Γ rtol = 1e-12
+    @test_broken Γ_ip ≈ Γ_docstring rtol = 1e-12
 
     # stochastic path: random-phase probes reproduce the exact trace with the
     # documented O(1/sqrt(NR·D)) accuracy. Measured max|ΔΓ|/max|Γ| at this
@@ -227,6 +231,8 @@ end
     g = [KPM.JacksonKernel(n, NC) * KPM.hn(n) for n = 0:(NC-1)]
 
     Λ = zeros(ComplexF64, NC, NC, NC)
+    Λ_corrected = zeros(ComplexF64, NC, NC, NC)
+    corrected_weights = weights .* sqrt.(1 .- nodes .^2)
     for p = 0:(NC-1), m = 0:(NC-1), n = 0:(NC-1)
         integrand(ϵ) =
             (
@@ -238,6 +244,7 @@ end
                 KPM.gn_A(ϵ - ω₁ - ω₂, p, 0.0, δ)
             ) * ff(ϵ)
         Λ[n+1, m+1, p+1] = sum(weights .* integrand.(nodes))
+        Λ_corrected[n+1, m+1, p+1] = sum(corrected_weights .* integrand.(nodes))
     end
 
     ref = zero(ComplexF64)
@@ -247,6 +254,13 @@ end
     ref *= 1im / (ω₁ * ω₂) * Ω
 
     @test val ≈ ref rtol = 1e-12
+    corrected_ref = zero(ComplexF64)
+    for p = 1:NC, m = 1:NC, n = 1:NC
+        corrected_ref += g[n] * g[m] * g[p] * Γ[n, m, p] * Λ_corrected[n, m, p]
+    end
+    corrected_ref *= 1im / (ω₁ * ω₂) * Ω
+    # review: quadrature double-counts 1/√(1−ε²); flip to @test when src is fixed
+    @test_broken val ≈ corrected_ref rtol = 1e-12
     @test isfinite(val)
     @test abs(val) > 0            # chiral model: response is not accidentally zero
 
